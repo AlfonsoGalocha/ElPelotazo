@@ -1,7 +1,7 @@
 .PHONY: install test lint format typecheck up down update train backtest report dev-api dev-frontend
 
 install:
-	python3.12 -m venv .venv
+	python3.10 -m venv .venv
 	. .venv/bin/activate && pip install --upgrade pip && pip install -e ".[dev]"
 	cd frontend && npm install
 

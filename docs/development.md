@@ -3,7 +3,7 @@
 ## Arrancar en local (sin Docker)
 
 ```bash
-python3.12 -m venv .venv && source .venv/bin/activate
+python3.10 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env   # SQLite por defecto, funciona sin tocar nada
 

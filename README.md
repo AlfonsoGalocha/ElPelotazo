@@ -39,7 +39,7 @@ Ver `docs/architecture.md` para el detalle de cada capa.
 ## Arrancar en 4 comandos (SQLite, sin Docker)
 
 ```bash
-python3.12 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+python3.10 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 python scripts/update_data.py           # resultados historicos reales
 python scripts/update_fixtures.py       # calendario real de la temporada en curso
 python scripts/train_models.py
