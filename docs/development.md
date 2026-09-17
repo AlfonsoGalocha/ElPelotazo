@@ -7,8 +7,8 @@ python3.12 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 cp .env.example .env   # SQLite por defecto, funciona sin tocar nada
 
-python scripts/update_data.py          # ingesta (requiere red sin restringir)
-python scripts/train_models.py         # entrena los 5 competitions
+python scripts/update_data.py          # ingesta real (mirror de GitHub, ver docs/data_sources.md)
+python scripts/train_models.py         # entrena los 5 competitions con datos reales
 uvicorn backend.app.main:app --reload  # API en :8000
 
 cd frontend && npm install && npm run dev  # dashboard en :3000

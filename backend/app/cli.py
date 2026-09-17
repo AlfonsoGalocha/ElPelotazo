@@ -22,13 +22,14 @@ from backend.app.config.settings import REPO_ROOT
 from backend.app.db.database import init_db, session_scope
 from backend.app.db.models.core import Competition
 from backend.app.features.goals import build_match_feature_table
+from backend.app.ingestion.football_data.history_dataset import ClubFootballMatchDataProvider
 from backend.app.ingestion.football_data.provider import (
     COMPETITION_DIV_CODES,
     FootballDataCoUkProvider,
 )
 from backend.app.models.goals.dixon_coles import DixonColesModel
 from backend.app.services.data_service import ingest_matches
-from backend.app.services.match_service import load_matches_dataframe
+from backend.app.services.match_service import load_market_odds_column, load_matches_dataframe
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import generate_predictions_for_competition
 from backend.app.utils.logging import get_logger
@@ -45,12 +46,19 @@ def _seasons_since(start_year: int = 2018) -> list[str]:
 
 
 @app.command()
-def update(competition: str = typer.Option(None), season: str = typer.Option(None)) -> None:
-    """Descarga e ingesta datos historicos (football-data.co.uk)."""
+def update(
+    competition: str = typer.Option(None),
+    season: str = typer.Option(None),
+    source: str = typer.Option(
+        "history_dataset",
+        help="'history_dataset' (mirror en GitHub, recomendado) o 'football_data_co_uk' (fuente directa).",
+    ),
+) -> None:
+    """Descarga e ingesta datos historicos reales (resultados + cuotas)."""
     init_db()
     competitions = [competition] if competition else ALL_COMPETITIONS
     seasons = [season] if season else _seasons_since()
-    provider = FootballDataCoUkProvider()
+    provider = ClubFootballMatchDataProvider() if source == "history_dataset" else FootballDataCoUkProvider()
 
     with session_scope() as db:
         for comp in competitions:
@@ -94,7 +102,15 @@ def backtest(competition: str, market: str = "over_2_5", output: str | None = No
             raise typer.Exit(1)
         matches = load_matches_dataframe(db, comp.id)
         table = build_match_feature_table(matches)
-        results = run_walk_forward_backtest(table, DixonColesModel, market)
+
+        odds_col = f"market_odds_{market}"
+        odds_by_match = load_market_odds_column(db, table["match_id"].tolist(), market)
+        table[odds_col] = table["match_id"].map(odds_by_match)
+        has_market_odds = table[odds_col].notna().any()
+
+        results = run_walk_forward_backtest(
+            table, DixonColesModel, market, market_odds_col=odds_col if has_market_odds else None
+        )
         summary = summarize_backtest(results)
 
     output_path = Path(output) if output else REPO_ROOT / "data" / "processed" / f"backtest_{competition}_{market}.json"

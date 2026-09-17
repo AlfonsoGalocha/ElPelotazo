@@ -6,7 +6,8 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from backend.app.db.models.core import Season
-from backend.app.db.models.matches import Match, MatchStatistics
+from backend.app.db.models.matches import Match, MatchOdds, MatchStatistics
+from backend.app.market.odds import best_available_quote
 
 
 def load_matches_dataframe(db: Session, competition_id: int | None = None) -> pd.DataFrame:
@@ -51,3 +52,32 @@ def load_matches_dataframe(db: Session, competition_id: int | None = None) -> pd
     if not df.empty:
         df = df.sort_values("date").reset_index(drop=True)
     return df
+
+
+def load_market_odds_column(db: Session, match_ids: list[int], market_key: str) -> dict[int, float]:
+    """Cuota de MERCADO (no sin vig) por match_id para un mercado del MVP,
+    usada SOLO en backtesting para simular una estrategia hipotetica
+    (`market_strategy_metrics`), nunca como feature de entrenamiento (evitaria
+    "closing line leakage": la cuota de cierre no se conoce antes del partido).
+    """
+    from backend.app.services.prediction_service import MARKET_TO_ODDS_LOOKUP
+
+    if market_key not in MARKET_TO_ODDS_LOOKUP or not match_ids:
+        return {}
+    market, line, selection = MARKET_TO_ODDS_LOOKUP[market_key]
+
+    odds_by_match = (
+        db.query(MatchOdds)
+        .filter(MatchOdds.match_id.in_(match_ids), MatchOdds.market == market, MatchOdds.line == line)
+        .all()
+    )
+    grouped: dict[int, list[MatchOdds]] = {}
+    for row in odds_by_match:
+        grouped.setdefault(row.match_id, []).append(row)
+
+    result = {}
+    for match_id, rows in grouped.items():
+        quote = best_available_quote(rows, market, line, selection)
+        if quote:
+            result[match_id] = quote.market_odds
+    return result

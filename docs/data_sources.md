@@ -6,29 +6,46 @@ Cada fuente implementa `backend/app/ingestion/base.py::DataProvider`
 (`is_available()` + `fetch_matches()`). El resto del sistema nunca sabe de
 donde vinieron los datos: solo ve `RawMatchRecord`.
 
-## football-data.co.uk — PRINCIPAL, ACTIVA
+## Club Football Match Data (mirror de GitHub) — PRINCIPAL, ACTIVA, USADA PARA EL RESULTADO FINAL
+
+- **Adapter**: `backend/app/ingestion/football_data/history_dataset.py::ClubFootballMatchDataProvider`.
+- **Fuente real**: [xgabora/Club-Football-Match-Data-2000-2025](https://github.com/xgabora/Club-Football-Match-Data-2000-2025)
+  (Gabor, A. 2026), un mirror publico y citable que agrega el MISMO dato de
+  football-data.co.uk (resultados, estadisticas de partido, cuotas Bet365)
+  en un unico CSV historico, descargable desde `raw.githubusercontent.com`.
+- **Por que este y no football-data.co.uk directo**: el contenedor donde se
+  desarrollo este proyecto tiene el egress de red restringido a un
+  allowlist (PyPI, npm, GitHub) que no incluye football-data.co.uk pero si
+  incluye GitHub. Este adapter permitio poblar la base de datos con **datos
+  100% reales** (14,383 partidos, 5 ligas, 2018/19-2026/27) sin depender de
+  esa restriccion.
+- **Cobertura**: resultados, tiros, tiros a puerta, corners, faltas,
+  tarjetas, y cuotas de Bet365 para 1X2 y Over/Under 2.5 goles (una unica
+  linea; por eso `over_1_5`, `over_3_5` y `btts` no tienen
+  `market_probability` real desde esta fuente — se deja `None`, nunca se
+  inventa).
+- **Cache**: se descarga una vez a `data/external/club_football_match_data_matches.csv`
+  (~45 MB, gitignored) y se reutiliza en llamadas sucesivas.
+- **Estado**: usado por defecto en `scripts/update_data.py` (`--source history_dataset`).
+
+## football-data.co.uk directo — ALTERNATIVA, ACTIVA (requiere red sin restringir)
 
 - **Formato**: CSV publico por temporada/liga (`mmz4281/{temporada}/{div}.csv`).
 - **Cobertura**: 5 ligas objetivo desde los 90 (sobra para el requisito
   2018/19+). Incluye resultados, tiros, corners, tarjetas, faltas, arbitro y
   **cuotas de cierre de varias casas** (Bet365, Pinnacle, William Hill,
-  Betfair Exchange).
+  Betfair Exchange) — mas completo en bookmakers que el mirror de GitHub.
 - **Licencia/ToS**: uso personal/educativo. Sin API key. Sin SLA formal.
 - **Limitaciones**: sin xG, sin posesion siempre, sin datos live, sin
   jugadores.
-- **Estado**: `FOOTBALL_DATA_CO_UK_ENABLED=true` por defecto.
-
-### Nota sobre el entorno de desarrollo de este proyecto
-
-El contenedor donde se construyo este MVP tiene el egress de red restringido
-a un allowlist (PyPI, npm, GitHub) que **no incluye football-data.co.uk**. El
-adapter (`backend/app/ingestion/football_data/provider.py`) esta
-implementado y probado unitariamente contra CSVs de ejemplo
-(`FootballDataCoUkProvider.parse_csv`), pero la descarga real
-(`fetch_matches`, que hace `httpx.get`) solo pudo probarse con datos
-sinteticos en este entorno. **Ejecuta `python scripts/update_data.py` en un
-entorno con acceso a internet sin restringir** para poblar la base de datos
-con partidos reales.
+- **Estado**: `FOOTBALL_DATA_CO_UK_ENABLED=true` por defecto en `.env`, pero
+  el adapter (`backend/app/ingestion/football_data/provider.py`) solo pudo
+  probarse unitariamente contra CSVs de ejemplo en el entorno de desarrollo
+  de este proyecto (la descarga real, `httpx.get` contra
+  `www.football-data.co.uk`, esta bloqueada por la politica de red de ese
+  contenedor). Usalo con `--source football_data_co_uk` en
+  `scripts/update_data.py` si tu entorno tiene acceso de red normal — te da
+  mas bookmakers para el calculo de vig que el mirror de GitHub.
 
 ## Understat — PENDIENTE, deshabilitada
 

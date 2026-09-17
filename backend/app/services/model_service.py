@@ -23,6 +23,26 @@ from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+MIN_HOLDOUT_MATCHES = 100  # una temporada en curso con pocos partidos jugados
+# no es un holdout fiable (demasiado ruido estadistico); se usa la ultima
+# temporada COMPLETA en su lugar y la temporada en curso se deja dentro del
+# train (son datos reales validos, solo no sirven para evaluar).
+
+
+def _pick_holdout_season(table) -> str | None:
+    finished = table.dropna(subset=["home_goals", "away_goals"])
+    if finished.empty:
+        return None
+    counts = finished.sort_values("date")["season_label"].value_counts()
+    seasons_in_order = list(dict.fromkeys(finished.sort_values("date")["season_label"]))
+    if len(seasons_in_order) < 2:
+        return None
+
+    for candidate in reversed(seasons_in_order):
+        if counts[candidate] >= MIN_HOLDOUT_MATCHES:
+            return candidate
+    return seasons_in_order[-1]
+
 
 def train_competition_models(db: Session, competition_code: str) -> dict:
     """Entrena baseline + Dixon-Coles + clasificador ML para una competicion,
@@ -42,8 +62,7 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
 
     table = build_match_feature_table(matches)
 
-    seasons = list(dict.fromkeys(table.sort_values("date")["season_label"]))
-    holdout_season = seasons[-1] if len(seasons) > 1 else None
+    holdout_season = _pick_holdout_season(table)
     if holdout_season:
         train_table = table[table["season_label"] != holdout_season]
         eval_table = table[table["season_label"] == holdout_season]

@@ -22,6 +22,7 @@ KNOWN_ALIASES: dict[str, str] = {
     "man city": "Manchester City",
     "newcastle": "Newcastle United",
     "nott'm forest": "Nottingham Forest",
+    "nottm forest": "Nottingham Forest",
     "wolves": "Wolverhampton Wanderers",
     "spurs": "Tottenham Hotspur",
     "tottenham": "Tottenham Hotspur",
