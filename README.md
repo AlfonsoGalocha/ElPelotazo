@@ -36,13 +36,12 @@ Ver `docs/architecture.md` para el detalle de cada capa.
   tarjetas y corners), detalle de partido con pestanhas por familia de
   mercado y explicacion de factores.
 
-## Arrancar en 4 comandos (SQLite, sin Docker)
+## Arrancar (SQLite, sin Docker)
 
 ```bash
+cp .env.example .env                    # IMPORTANTE: edita .env, no .env.example (ver nota abajo)
 python3.10 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
-python scripts/update_data.py           # resultados historicos reales
-python scripts/update_fixtures.py       # calendario real de la temporada en curso
-python scripts/train_models.py
+football-edge refresh                   # datos + fixtures + cuotas + entrenamiento + predicciones, todo en uno
 uvicorn backend.app.main:app --reload
 ```
 
@@ -55,6 +54,24 @@ cd frontend && npm install && npm run dev
 Abre `http://localhost:3000` para ver el dashboard, o `http://localhost:8000/docs`
 para la API interactiva (Swagger). Ver `docs/development.md` para el flujo
 completo (incluyendo Docker Compose con Postgres).
+
+**Sobre `.env`**: la app solo lee un fichero llamado exactamente `.env` en la
+raiz del repo (`backend/app/config/settings.py`). Editar `.env.example`
+directamente NO tiene ningun efecto — ni siquiera da un error, simplemente
+usa los valores por defecto en silencio (lo que hace parecer "roto" algo
+que en realidad nunca se cargo). Copia siempre el fichero primero:
+`cp .env.example .env`, y edita ese `.env`.
+
+**Si el dashboard muestra partidos que no tienen sentido** (equipos que no
+juegan esta temporada en esa liga, partidos repetidos...): son casi
+seguro restos de pruebas de una fase anterior del desarrollo que quedaron
+en tu base de datos local (el `.db` de SQLite persiste entre ejecuciones
+aunque el codigo cambie). Limpialos una vez con:
+
+```bash
+football-edge reset-scheduled        # borra solo partidos "scheduled" (no toca el historico real)
+football-edge refresh --skip-historical
+```
 
 ## Datos reales
 

@@ -117,7 +117,16 @@ def best_predictions(
         premia la combinacion de AMBAS cosas: alta probabilidad del modelo
         Y una cuota mejor que la que el modelo considerarira "justa" (edge
         positivo real).
-            score = model_probability * max(edge, 0) * confidence * data_quality
+            score = model_probability^2 * max(edge, 0) * confidence * data_quality
+        El cuadrado de la probabilidad (en vez de la probabilidad sin mas)
+        es a proposito: sin el, una jugada mediocre (ej. 55% a cuota 3.0,
+        edge~22 puntos) puede acabar puntuando MAS que una jugada solida
+        tipo la del ejemplo del usuario (80% a cuota 1.30-1.40, edge~10
+        puntos) solo por tener un edge en puntos porcentuales mayor -
+        justo lo contrario de "que el modelo alto vaya junto a la cuota
+        alta". Elevar al cuadrado castiga mas la probabilidad baja y deja
+        las dos jugadas del ejemplo en un orden de magnitud comparable,
+        en vez de que el edge en bruto domine el ranking.
         Ejemplo del usuario ("80% a cuota 1.30/1.40 es top"): fair_odds a
         80% ~= 1.25, asi que pagar 1.30-1.40 es edge positivo real sobre
         una probabilidad ya alta -> puntua alto. Un 98% a cuota 1.02 (edge
@@ -147,7 +156,7 @@ def best_predictions(
 
     def score(p: Prediction) -> float:
         if p.market_odds is not None and p.edge is not None:
-            return p.model_probability * max(p.edge, 0.0) * p.confidence * p.data_quality
+            return (p.model_probability**2) * max(p.edge, 0.0) * p.confidence * p.data_quality
         conviction = abs(p.model_probability - 0.5) * 2.0
         return conviction * p.confidence * p.data_quality
 

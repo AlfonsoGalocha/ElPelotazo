@@ -22,6 +22,7 @@ from backend.app.config.settings import REPO_ROOT
 from backend.app.db.database import init_db, session_scope
 from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
+from backend.app.db.models.modeling import Prediction
 from backend.app.features.goals import build_match_feature_table
 from backend.app.ingestion.football_data.fixtures_provider import OpenFootballFixturesProvider
 from backend.app.ingestion.football_data.history_dataset import ClubFootballMatchDataProvider
@@ -110,9 +111,18 @@ def update_odds(competition: str = typer.Option(None)) -> None:
     init_db()
     provider = OddsApiProvider()
     if not provider.is_available():
+        env_path = REPO_ROOT / ".env"
         typer.echo("[update-odds] ODDS_API_KEY no configurada: sin cuotas de mercado para partidos futuros.")
-        typer.echo("[update-odds] Registrate gratis en https://the-odds-api.com y configura")
-        typer.echo("[update-odds] ODDS_API_ENABLED=true + ODDS_API_KEY=... en tu .env para activarlo.")
+        typer.echo(f"[update-odds] Fichero de configuracion esperado: {env_path}")
+        if not env_path.exists():
+            typer.echo(
+                "[update-odds] ESE FICHERO NO EXISTE. Si solo has editado '.env.example', "
+                "eso NO es suficiente: copialo primero con 'cp .env.example .env' y luego "
+                "edita el .env nuevo (no el .example)."
+            )
+        typer.echo("[update-odds] Registrate gratis en https://the-odds-api.com y en tu .env pon:")
+        typer.echo("[update-odds]   ODDS_API_ENABLED=true")
+        typer.echo("[update-odds]   ODDS_API_KEY=<tu-key>")
         return
 
     competitions = [competition] if competition else ALL_COMPETITIONS
@@ -189,6 +199,51 @@ def predict_upcoming(
             typer.echo(f"[predict-upcoming] {comp_code}: {comp_total} predicciones ({len(dates)} fechas)")
             total += comp_total
         typer.echo(f"[predict-upcoming] TOTAL: {total} predicciones generadas")
+
+
+@app.command()
+def reset_scheduled(competition: str = typer.Option(None)) -> None:
+    """Borra TODOS los partidos con status='scheduled' (y sus predicciones y
+    cuotas asociadas) para una o todas las competiciones. NO toca partidos
+    'finished' (el historico real usado para entrenar no se ve afectado).
+
+    Pensado como limpieza puntual si aparecen en el dashboard partidos que
+    no tienen sentido (equipos que ya no juegan en esa liga, fechas
+    antiguas, duplicados...): normalmente son restos de pruebas de una fase
+    anterior del desarrollo que quedaron guardados en la base de datos
+    local (el fichero SQLite persiste entre ejecuciones aunque el codigo
+    cambie). Tras limpiar, hay que volver a traer fixtures/cuotas/predicciones
+    reales:
+
+        football-edge reset-scheduled
+        football-edge refresh --skip-historical
+    """
+    init_db()
+    competitions = [competition] if competition else ALL_COMPETITIONS
+    with session_scope() as db:
+        total_matches = 0
+        total_predictions = 0
+        for comp_code in competitions:
+            comp = db.query(Competition).filter_by(code=comp_code).one_or_none()
+            if comp is None:
+                continue
+            scheduled = (
+                db.query(Match)
+                .filter(Match.competition_id == comp.id, Match.status == "scheduled")
+                .all()
+            )
+            for match in scheduled:
+                total_predictions += (
+                    db.query(Prediction).filter(Prediction.match_id == match.id).delete()
+                )
+                db.delete(match)  # cascade borra match_statistics/match_odds (ver models/matches.py)
+            total_matches += len(scheduled)
+        db.commit()
+    typer.echo(
+        f"[reset-scheduled] Borrados {total_matches} partidos programados y "
+        f"{total_predictions} predicciones asociadas."
+    )
+    typer.echo("[reset-scheduled] Ejecuta ahora 'football-edge refresh --skip-historical' para regenerar todo.")
 
 
 @app.command()

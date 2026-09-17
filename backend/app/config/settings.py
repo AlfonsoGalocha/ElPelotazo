@@ -15,7 +15,16 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # Ruta ABSOLUTA a proposito (no ".env" relativo): pydantic-settings
+    # resuelve una ruta relativa contra el cwd del proceso que arranca la
+    # app, no contra la raiz del repo. Si uvicorn/la CLI se lanzan desde
+    # otro directorio, un ".env" relativo se "encuentra" (o no) de forma
+    # silenciosa y sin ningun error -> variables como ODDS_API_KEY parecen
+    # configuradas pero nunca se cargan. Con ruta absoluta, siempre es el
+    # `.env` de la raiz del proyecto, se lance como se lance.
+    model_config = SettingsConfigDict(
+        env_file=str(REPO_ROOT / ".env"), env_file_encoding="utf-8", extra="ignore"
+    )
 
     app_env: str = "development"
     log_level: str = "INFO"

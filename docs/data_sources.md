@@ -113,8 +113,13 @@ modelo sigue funcionando, simplemente no hay con que compararlo.
 Activacion (gratis, sin tarjeta):
 1. Registrate en https://the-odds-api.com/#get-access (plan free = 500
    requests/mes).
-2. En `.env`: `ODDS_API_ENABLED=true` y `ODDS_API_KEY=<tu-key>`.
-3. `football-edge update-odds` (o `refresh`).
+2. Si aun no tienes `.env` (solo `.env.example`): `cp .env.example .env`.
+   La app SOLO lee `.env` — editar `.env.example` directamente no tiene
+   ningun efecto, y no da ningun error avisando de ello.
+3. En ese `.env`: `ODDS_API_ENABLED=true` y `ODDS_API_KEY=<tu-key>`.
+4. `football-edge update-odds` (o `refresh`, que ya lo incluye). Si sigue
+   sin coger la key, el propio comando te dice la ruta exacta de `.env`
+   que esta leyendo, para descartar ese problema.
 
 **Nota de honestidad**: este adapter se escribio siguiendo la documentacion
 publica de The Odds API, pero el entorno de desarrollo tiene el egress de

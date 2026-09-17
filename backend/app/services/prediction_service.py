@@ -93,6 +93,21 @@ def generate_predictions_for_competition(
             target_matches, artifact["cards_model"], artifact["corners_model"]
         )
 
+    # Sin esto, cada `predict`/`predict-upcoming`/`refresh` que se ejecuta
+    # sobre los MISMOS partidos programados (algo normal: es el flujo pensado
+    # para refrescar el dashboard varias veces al dia) va ACUMULANDO filas
+    # nuevas en vez de sustituir las anteriores, porque `Prediction` nunca
+    # tenia una clave unica por (match, market). El sintoma visible es un
+    # mismo partido apareciendo duplicado (a veces triplicado) en "Las 5
+    # mejores predicciones" o en el detalle de partido. Como estos partidos
+    # aun no se han jugado, no hay ninguna razon para conservar la
+    # prediccion vieja: se borra y se sustituye siempre por la mas reciente.
+    target_match_ids = target_matches["match_id"].tolist()
+    if target_match_ids:
+        db.query(Prediction).filter(Prediction.match_id.in_(target_match_ids)).delete(
+            synchronize_session=False
+        )
+
     predictions = []
     for output in outputs:
         line, selection = _market_line_and_selection(output.market)

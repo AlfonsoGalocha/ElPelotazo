@@ -152,3 +152,30 @@ def test_get_nonexistent_match_returns_404():
     client = TestClient(app)
     response = client.get("/matches/999999")
     assert response.status_code == 404
+
+
+def test_regenerating_predictions_does_not_duplicate_rows(seeded_competition_code):
+    """Regresion: `generate_predictions_for_competition` insertaba SIEMPRE
+    filas nuevas sin borrar las anteriores. Como el flujo pensado (`refresh`,
+    `predict-upcoming`) se ejecuta repetidamente sobre los MISMOS partidos
+    programados para refrescar el dashboard, esto acumulaba duplicados
+    (un mismo partido apareciendo 2-3 veces en "Las 5 mejores predicciones").
+    Regenerar sobre los mismos partidos debe SUSTITUIR, no acumular.
+    """
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
+    with session_scope() as db:
+        first_run = generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+        assert len(first_run) == TOTAL_MVP_MARKETS
+
+    with session_scope() as db:
+        second_run = generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+        assert len(second_run) == TOTAL_MVP_MARKETS
+        match_id = second_run[0].match_id
+
+    client = TestClient(app)
+    response = client.get(f"/matches/{match_id}/predictions")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == TOTAL_MVP_MARKETS
+    markets = [p["market"] for p in body]
+    assert len(markets) == len(set(markets))
