@@ -18,6 +18,10 @@ from backend.app.models.goals.dixon_coles import DixonColesModel
 from backend.app.models.goals.ml_classifier import MarketClassifierModel
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS, label_for_market
 from backend.app.prediction.probability import market_probabilities
+from backend.app.prediction.secondary_markets import (
+    TotalCountPoissonModel,
+    label_for_secondary_market,
+)
 from backend.app.services.match_service import load_matches_dataframe
 from backend.app.utils.logging import get_logger
 
@@ -104,6 +108,27 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
                 market_metrics["ensemble"] = {"weight_statistical": weight, "log_loss": ensemble_loss}
         metrics["markets"][market_key] = market_metrics
 
+    # Tarjetas y corners (seccion 18/19 del roadmap): un unico Poisson sobre
+    # el TOTAL del partido por familia de estadistica. Se entrenan y evaluan
+    # igual que los mercados de goles, y se empaquetan en el MISMO artefacto
+    # (una unica ejecucion de entrenamiento por competicion cubre las 3
+    # familias) para no multiplicar side idle ModelVersions casi identicos.
+    secondary_models: dict[str, TotalCountPoissonModel] = {}
+    for stat_family in ("cards", "corners"):
+        model = TotalCountPoissonModel(stat_family).fit(train_table)
+        secondary_models[stat_family] = model
+
+        if len(eval_finished) > 0:
+            probs = model.predict_market_probabilities(eval_finished)
+            for market_key, p in probs.items():
+                y_true = label_for_secondary_market(eval_finished, market_key).to_numpy()
+                metrics["markets"][market_key] = {
+                    "poisson_total": {
+                        "brier_score": brier_score(y_true, p),
+                        "log_loss": log_loss_score(y_true, p),
+                    }
+                }
+
     version = dt.datetime.utcnow().isoformat()
     artifact_dir = settings.model_artifacts_path / competition_code
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -114,6 +139,8 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
             "dixon_coles": dixon_coles,
             "ml_classifier": ml_classifier,
             "ensemble_weights": ensemble_weights,
+            "cards_model": secondary_models["cards"],
+            "corners_model": secondary_models["corners"],
         },
         artifact_path,
     )

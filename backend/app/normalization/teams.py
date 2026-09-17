@@ -9,6 +9,7 @@ una normalizacion basica (fallback) cuando no hay mapping explicito.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from sqlalchemy.orm import Session
 
@@ -49,11 +50,127 @@ KNOWN_ALIASES: dict[str, str] = {
     "paris sg": "Paris Saint-Germain",
     "psg": "Paris Saint-Germain",
     "st etienne": "Saint-Etienne",
+    # --- Alias del fixture provider (openfootball/football.json), nombres
+    # oficiales completos -> nombre canonico corto ya usado por el dataset
+    # historico (football-data.co.uk). Critico: si esto falla, el partido
+    # arranca sin historial (cold start) en vez de usar las stats reales
+    # ya ingeridas para ese equipo.
+    # La Liga
+    "athletic club": "Athletic Bilbao",
+    "ca osasuna": "Osasuna",
+    "club atletico de madrid": "Atletico Madrid",
+    "deportivo alaves": "Deportivo Alaves",
+    "elche cf": "Elche",
+    "fc barcelona": "Barcelona",
+    "getafe cf": "Getafe",
+    "levante ud": "Levante",
+    "malaga cf": "Malaga",
+    "rc celta de vigo": "Celta Vigo",
+    "rc deportivo la coruna": "La Coruna",
+    "rcd espanyol de barcelona": "Espanyol",
+    "rayo vallecano de madrid": "Rayo Vallecano",
+    "real betis balompie": "Real Betis",
+    "real madrid cf": "Real Madrid",
+    "real racing club de santander": "Santander",
+    "real sociedad de futbol": "Real Sociedad",
+    "sevilla fc": "Sevilla",
+    "valencia cf": "Valencia",
+    "villarreal cf": "Villarreal",
+    "rcd mallorca": "Mallorca",
+    "real oviedo": "Oviedo",
+    "girona fc": "Girona",
+    # Premier League
+    "afc bournemouth": "Bournemouth",
+    "arsenal fc": "Arsenal",
+    "aston villa fc": "Aston Villa",
+    "brentford fc": "Brentford",
+    "brighton & hove albion fc": "Brighton",
+    "chelsea fc": "Chelsea",
+    "coventry city fc": "Coventry",
+    "crystal palace fc": "Crystal Palace",
+    "everton fc": "Everton",
+    "fulham fc": "Fulham",
+    "hull city afc": "Hull",
+    "ipswich town fc": "Ipswich",
+    "leeds united fc": "Leeds",
+    "liverpool fc": "Liverpool",
+    "manchester city fc": "Manchester City",
+    "manchester united fc": "Manchester United",
+    "newcastle united fc": "Newcastle United",
+    "nottingham forest fc": "Nottingham Forest",
+    "sunderland afc": "Sunderland",
+    "tottenham hotspur fc": "Tottenham Hotspur",
+    "west ham united fc": "West Ham",
+    "wolverhampton wanderers fc": "Wolverhampton Wanderers",
+    "burnley fc": "Burnley",
+    # Bundesliga
+    "1. fc koln": "FC Koln",
+    "1. fc union berlin": "Union Berlin",
+    "1. fsv mainz 05": "Mainz",
+    "bayer 04 leverkusen": "Bayer Leverkusen",
+    "borussia monchengladbach": "Borussia Monchengladbach",
+    "fc augsburg": "Augsburg",
+    "fc bayern munchen": "Bayern Munich",
+    "fc schalke 04": "Schalke 04",
+    "hamburger sv": "Hamburg",
+    "sc freiburg": "Freiburg",
+    "sc paderborn 07": "Paderborn",
+    "sv 07 elversberg": "Elversberg",
+    "sv werder bremen": "Werder Bremen",
+    "tsg 1899 hoffenheim": "Hoffenheim",
+    "vfb stuttgart": "Stuttgart",
+    "vfl wolfsburg": "Wolfsburg",
+    "1. fc heidenheim 1846": "Heidenheim",
+    "fc st. pauli": "St Pauli",
+    # Serie A
+    "ac monza": "Monza",
+    "acf fiorentina": "Fiorentina",
+    "as roma": "Roma",
+    "atalanta bc": "Atalanta",
+    "bologna fc 1909": "Bologna",
+    "cagliari calcio": "Cagliari",
+    "como 1907": "Como",
+    "fc internazionale milano": "Inter Milan",
+    "frosinone calcio": "Frosinone",
+    "genoa cfc": "Genoa",
+    "juventus fc": "Juventus",
+    "parma calcio 1913": "Parma",
+    "ss lazio": "Lazio",
+    "ssc napoli": "Napoli",
+    "torino fc": "Torino",
+    "us lecce": "Lecce",
+    "us sassuolo calcio": "Sassuolo",
+    "udinese calcio": "Udinese",
+    "venezia fc": "Venezia",
+    "hellas verona fc": "Verona",
+    "ac pisa 1909": "Pisa",
+    "us cremonese": "Cremonese",
+    # Ligue 1
+    "aj auxerre": "Auxerre",
+    "as monaco fc": "Monaco",
+    "angers sco": "Angers",
+    "es troyes ac": "Troyes",
+    "fc lorient": "Lorient",
+    "le havre ac": "Le Havre",
+    "le mans fc": "Le Mans",
+    "lille osc": "Lille",
+    "ogc nice": "Nice",
+    "olympique lyonnais": "Lyon",
+    "olympique de marseille": "Marseille",
+    "paris saint-germain fc": "Paris Saint-Germain",
+    "rc strasbourg alsace": "Strasbourg",
+    "racing club de lens": "Lens",
+    "stade brestois 29": "Brest",
+    "stade rennais fc 1901": "Rennes",
+    "toulouse fc": "Toulouse",
+    "fc nantes": "Nantes",
+    "fc metz": "Metz",
 }
 
 
 def _normalize_key(name: str) -> str:
     key = name.strip().lower()
+    key = unicodedata.normalize("NFKD", key).encode("ascii", "ignore").decode("ascii")
     key = re.sub(r"\s+", " ", key)
     return key
 

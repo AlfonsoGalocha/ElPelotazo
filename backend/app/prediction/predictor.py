@@ -21,6 +21,10 @@ from backend.app.prediction.explanation import explain_logistic_pipeline, explai
 from backend.app.prediction.fair_odds import fair_odds
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS
 from backend.app.prediction.probability import market_probabilities
+from backend.app.prediction.secondary_markets import (
+    SECONDARY_MARKET_DEFINITIONS,
+    TotalCountPoissonModel,
+)
 
 KEY_FEATURES_FOR_QUALITY = [
     "home_goals_for_avg_last5", "away_goals_for_avg_last5",
@@ -117,4 +121,53 @@ def predict_markets_for_table(
                     explanation=explanation,
                 )
             )
+    return outputs
+
+
+def predict_secondary_markets_for_table(
+    table: pd.DataFrame,
+    cards_model: TotalCountPoissonModel,
+    corners_model: TotalCountPoissonModel,
+) -> list[MarketPredictionOutput]:
+    """Mercados de tarjetas/corners (seccion 18/19). Sin mercado/edge: no hay
+    cuotas reales de estos mercados en las fuentes de datos usadas (ver
+    docs/data_sources.md), asi que `market_probability`/`edge` quedan `None`
+    explicitamente en vez de inventar un valor.
+    """
+    outputs: list[MarketPredictionOutput] = []
+    for model in (cards_model, corners_model):
+        probs_by_market = model.predict_market_probabilities(table)
+        for market_key, probs in probs_by_market.items():
+            spec = SECONDARY_MARKET_DEFINITIONS[market_key]
+            for i, (_, row) in enumerate(table.iterrows()):
+                data_quality = compute_data_quality(row, KEY_FEATURES_FOR_QUALITY)
+                n_prior_avg = np.nanmean(
+                    [row.get("home_goals_for_n_prior", np.nan), row.get("away_goals_for_n_prior", np.nan)]
+                )
+                sample_size_score = float(np.clip((n_prior_avg or 0) / 10.0, 0.0, 1.0))
+                confidence = confidence_score(
+                    ConfidenceInputs(
+                        calibration_error=None,
+                        sample_size_score=sample_size_score,
+                        model_agreement=None,
+                        data_quality=data_quality,
+                    )
+                )
+                explanation = explain_logistic_pipeline(model.pipeline_, model.feature_cols_, row)
+                outputs.append(
+                    MarketPredictionOutput(
+                        match_id=int(row["match_id"]),
+                        market=market_key,
+                        model_probability=float(probs[i]),
+                        fair_odds=float(fair_odds(probs[i])),
+                        market_probability=None,
+                        market_odds=None,
+                        vig_removed=None,
+                        edge=None,
+                        expected_value=None,
+                        confidence=confidence,
+                        data_quality=data_quality,
+                        explanation=explanation,
+                    )
+                )
     return outputs

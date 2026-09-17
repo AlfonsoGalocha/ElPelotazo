@@ -22,6 +22,7 @@ from backend.app.config.settings import REPO_ROOT
 from backend.app.db.database import init_db, session_scope
 from backend.app.db.models.core import Competition
 from backend.app.features.goals import build_match_feature_table
+from backend.app.ingestion.football_data.fixtures_provider import OpenFootballFixturesProvider
 from backend.app.ingestion.football_data.history_dataset import ClubFootballMatchDataProvider
 from backend.app.ingestion.football_data.provider import (
     COMPETITION_DIV_CODES,
@@ -32,6 +33,7 @@ from backend.app.services.data_service import ingest_matches
 from backend.app.services.match_service import load_market_odds_column, load_matches_dataframe
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import generate_predictions_for_competition
+from backend.app.utils.dates import season_label as season_label_from_date
 from backend.app.utils.logging import get_logger
 
 app = typer.Typer(help="Football Edge Detector CLI")
@@ -68,6 +70,27 @@ def update(
                     typer.echo(f"[update] {comp} {s}: {n} partidos")
                 except Exception as exc:  # noqa: BLE001
                     typer.echo(f"[update] {comp} {s}: ERROR {exc}")
+
+
+@app.command()
+def update_fixtures(competition: str = typer.Option(None)) -> None:
+    """Descarga el CALENDARIO real de la temporada en curso (partidos aun no
+    jugados, con fecha real) via openfootball/football.json. Complementa
+    `update` (que solo trae partidos YA jugados): sin esto, no hay ningun
+    partido futuro sobre el que generar predicciones "de hoy".
+    """
+    init_db()
+    competitions = [competition] if competition else ALL_COMPETITIONS
+    season_label = season_label_from_date(dt.date.today())
+    provider = OpenFootballFixturesProvider()
+
+    with session_scope() as db:
+        for comp in competitions:
+            try:
+                n = ingest_matches(db, provider, comp, season_label)
+                typer.echo(f"[update-fixtures] {comp} {season_label}: {n} partidos programados")
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(f"[update-fixtures] {comp} {season_label}: ERROR {exc}")
 
 
 @app.command()

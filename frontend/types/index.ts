@@ -57,4 +57,27 @@ export const MARKET_DISPLAY_NAMES: Record<string, string> = {
   under_2_5: "Under 2.5 Goals",
   over_3_5: "Over 3.5 Goals",
   btts: "Both Teams To Score",
+  cards_over_3_5: "Over 3.5 Cards",
+  cards_over_4_5: "Over 4.5 Cards",
+  cards_over_5_5: "Over 5.5 Cards",
+  cards_under_4_5: "Under 4.5 Cards",
+  corners_over_8_5: "Over 8.5 Corners",
+  corners_over_9_5: "Over 9.5 Corners",
+  corners_over_10_5: "Over 10.5 Corners",
+  corners_under_9_5: "Under 9.5 Corners",
 };
+
+export const GOALS_MARKETS = ["over_1_5", "over_2_5", "under_2_5", "over_3_5", "btts"];
+export const CARDS_MARKETS = ["cards_over_3_5", "cards_over_4_5", "cards_over_5_5", "cards_under_4_5"];
+export const CORNERS_MARKETS = [
+  "corners_over_8_5",
+  "corners_over_9_5",
+  "corners_over_10_5",
+  "corners_under_9_5",
+];
+
+export function marketFamily(market: string): "goals" | "cards" | "corners" {
+  if (market.startsWith("cards_")) return "cards";
+  if (market.startsWith("corners_")) return "corners";
+  return "goals";
+}

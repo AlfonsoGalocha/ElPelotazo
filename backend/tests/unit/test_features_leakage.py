@@ -10,7 +10,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backend.app.features.goals import RAW_MATCH_DAY_STAT_COLUMNS, build_match_feature_table, feature_columns
+from backend.app.features.form import FORM_STATS
+from backend.app.features.goals import (
+    RAW_MATCH_DAY_STAT_COLUMNS,
+    build_match_feature_table,
+    feature_columns,
+)
 from backend.tests.fixtures.synthetic import generate_synthetic_matches
 
 
@@ -102,6 +107,18 @@ def test_feature_columns_excludes_raw_same_match_statistics():
     leaking_columns = cols & RAW_MATCH_DAY_STAT_COLUMNS
     assert not leaking_columns, f"Columnas con leakage severo en feature_columns(): {leaking_columns}"
 
+    # Bug hermano detectado despues (mismo tipo, distinto origen): las
+    # columnas SIN VENTANA que vienen de team_long ("home_shots_for",
+    # "away_corners_for", "home_yellow_cards_against", etc. — la estadistica
+    # CRUDA de ESE partido, no una media movil) tambien son leakage severo,
+    # y NO estan en RAW_MATCH_DAY_STAT_COLUMNS (que solo cubre los nombres
+    # nativos de `matches`, no los derivados por team_long). Se comprueban
+    # aqui explicitamente para que este bug concreto no pueda reaparecer.
+    unwindowed_raw_names = {f"{prefix}_{stat}" for prefix in ("home", "away") for stat in FORM_STATS}
+    leaking_unwindowed = cols & unwindowed_raw_names
+    assert not leaking_unwindowed, f"Leakage severo (stats sin ventana de team_long): {leaking_unwindowed}"
+
     # Las versiones rolling (legitimas) si deben seguir presentes.
     assert "home_shots_for_avg_last5" in cols
     assert "home_xg_for_avg_last5" in cols
+    assert "home_yellow_cards_for_avg_last5" in cols

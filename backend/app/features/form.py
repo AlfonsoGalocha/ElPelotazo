@@ -8,7 +8,9 @@ from backend.app.features.base import WINDOWS, rolling_prior_mean, sample_size_p
 
 FORM_STATS = ["goals_for", "goals_against", "shots_for", "shots_against",
               "shots_on_target_for", "shots_on_target_against", "corners_for",
-              "corners_against", "xg_for", "xg_against"]
+              "corners_against", "xg_for", "xg_against",
+              "yellow_cards_for", "yellow_cards_against",
+              "red_cards_for", "red_cards_against", "fouls_for", "fouls_against"]
 
 
 def compute_form_features(team_long: pd.DataFrame) -> pd.DataFrame:

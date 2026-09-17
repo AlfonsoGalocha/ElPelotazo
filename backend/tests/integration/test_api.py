@@ -10,10 +10,14 @@ from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.main import app
+from backend.app.prediction.market_labels import MARKET_DEFINITIONS
+from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
 from backend.app.services.data_service import ingest_matches
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import generate_predictions_for_competition
 from backend.tests.fixtures.synthetic import generate_synthetic_matches
+
+TOTAL_MVP_MARKETS = len(MARKET_DEFINITIONS) + len(SECONDARY_MARKET_DEFINITIONS)
 
 
 class _FakeProvider(DataProvider):
@@ -80,16 +84,17 @@ def seeded_competition_code():
                 provider_id="future-fixture-1",
                 competition_id=comp.id,
                 season_id=season.id,
-                kickoff_utc=dt.datetime.combine(dt.date.today(), dt.time(20, 0)),
+                kickoff_utc=dt.datetime.utcnow() + dt.timedelta(days=1),
                 home_team_id=1,
                 away_team_id=2,
                 status="scheduled",
             )
         )
 
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
     with session_scope() as db:
-        predictions = generate_predictions_for_competition(db, competition_code, dt.date.today())
-        assert len(predictions) == 5  # 5 mercados del MVP
+        predictions = generate_predictions_for_competition(db, competition_code, fixture_date)
+        assert len(predictions) == TOTAL_MVP_MARKETS  # goles + tarjetas + corners
 
     return competition_code
 
@@ -114,9 +119,9 @@ def test_predictions_today_returns_all_five_markets(seeded_competition_code):
     response = client.get("/predictions/today")
     assert response.status_code == 200
     body = response.json()
-    assert len(body) >= 5
+    assert len(body) >= TOTAL_MVP_MARKETS
     markets = {p["market"] for p in body}
-    assert markets == {"over_1_5", "over_2_5", "under_2_5", "over_3_5", "btts"}
+    assert markets == set(MARKET_DEFINITIONS) | set(SECONDARY_MARKET_DEFINITIONS)
 
     for prediction in body:
         assert 0.0 <= prediction["model_probability"] <= 1.0
@@ -133,7 +138,7 @@ def test_match_predictions_endpoint(seeded_competition_code):
 
     response = client.get(f"/matches/{match_id}/predictions")
     assert response.status_code == 200
-    assert len(response.json()) == 5
+    assert len(response.json()) == TOTAL_MVP_MARKETS
 
 
 def test_models_endpoint_lists_trained_model(seeded_competition_code):

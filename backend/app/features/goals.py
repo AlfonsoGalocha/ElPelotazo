@@ -14,7 +14,7 @@ from __future__ import annotations
 import pandas as pd
 
 from backend.app.features.base import build_team_match_long
-from backend.app.features.form import compute_form_features
+from backend.app.features.form import FORM_STATS, compute_form_features
 from backend.app.features.home_away import compute_home_away_split_features
 from backend.app.features.rest import compute_rest_days
 from backend.app.features.strength import compute_strength_features
@@ -48,10 +48,19 @@ def build_match_feature_table(matches: pd.DataFrame) -> pd.DataFrame:
         matches[["match_id", "date", "home_team_id", "away_team_id", "home_goals", "away_goals"]]
     )
 
+    # IMPORTANTE anti-leakage: `FORM_STATS` (goals_for, shots_for, corners_for,
+    # yellow_cards_for, ...) son los nombres SIN ventana en team_long, es
+    # decir, la estadistica CRUDA de ESE partido (conocida solo despues del
+    # pitido final). Se excluyen todas aqui, no solo goals_for/against: solo
+    # las derivadas via rolling con shift(1) (p.ej. "shots_for_avg_last5")
+    # son features legitimas para predecir el propio partido. Se conservan
+    # en `team_long` unicamente porque hacen falta para calcular, en OTROS
+    # partidos futuros de ese equipo, esas mismas medias moviles.
+    raw_stat_columns = set(FORM_STATS)
     feature_cols = [c for c in team_long.columns if c not in {
         "match_id", "team_id", "opponent_id", "date", "is_home",
         "competition_id", "season_id", "matchday", "referee_id",
-        "goals_for", "goals_against",
+        *raw_stat_columns,
     } and not c.endswith("_n_prior")]
     # nos quedamos tambien con *_n_prior para calcular data quality despues
     n_prior_cols = [c for c in team_long.columns if c.endswith("_n_prior")]

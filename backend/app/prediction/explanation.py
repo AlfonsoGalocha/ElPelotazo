@@ -44,11 +44,15 @@ def display_name_for(feature_name: str) -> str:
 
 
 def explain_logistic_pipeline(pipeline, feature_cols: list[str], row: pd.Series, top_n: int = 5) -> list[dict]:
-    imputer, scaler, classifier = pipeline.named_steps.values()
+    """Funciona tanto con LogisticRegression (coef_ shape (1, n_features))
+    como con PoissonRegressor (coef_ shape (n_features,)) — ambos exponen
+    coeficientes lineales sobre las features estandarizadas, asi que la
+    contribucion (coef * valor_estandarizado) se interpreta igual."""
+    imputer, scaler, estimator = pipeline.named_steps.values()
     raw_values = row[feature_cols].to_numpy(dtype=float).reshape(1, -1)
     imputed = imputer.transform(raw_values)
     scaled = scaler.transform(imputed)[0]
-    coefs = classifier.coef_[0]
+    coefs = np.asarray(estimator.coef_).reshape(-1)
 
     contributions = scaled * coefs
     order = np.argsort(-np.abs(contributions))[:top_n]

@@ -11,7 +11,11 @@ from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import ModelVersion, Prediction
 from backend.app.features.goals import build_match_feature_table
 from backend.app.market.odds import best_available_quote
-from backend.app.prediction.predictor import predict_markets_for_table
+from backend.app.prediction.predictor import (
+    predict_markets_for_table,
+    predict_secondary_markets_for_table,
+)
+from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
 from backend.app.services.match_service import load_matches_dataframe
 from backend.app.services.model_service import load_model_artifact
 from backend.app.utils.logging import get_logger
@@ -26,6 +30,14 @@ MARKET_TO_ODDS_LOOKUP = {
     "over_3_5": ("over_under_goals", 3.5, "over"),
     "btts": ("btts", None, "yes"),
 }
+
+
+def _market_line_and_selection(market_key: str) -> tuple[float | None, str]:
+    if market_key in MARKET_TO_ODDS_LOOKUP:
+        _, line, selection = MARKET_TO_ODDS_LOOKUP[market_key]
+        return line, selection
+    spec = SECONDARY_MARKET_DEFINITIONS[market_key]
+    return spec.line, spec.kind
 
 
 def generate_predictions_for_competition(
@@ -76,14 +88,19 @@ def generate_predictions_for_competition(
         ensemble_weights=artifact.get("ensemble_weights"),
         market_quotes=market_quotes,
     )
+    if "cards_model" in artifact and "corners_model" in artifact:
+        outputs += predict_secondary_markets_for_table(
+            target_matches, artifact["cards_model"], artifact["corners_model"]
+        )
 
     predictions = []
     for output in outputs:
+        line, selection = _market_line_and_selection(output.market)
         prediction = Prediction(
             match_id=output.match_id,
             market=output.market,
-            line=MARKET_TO_ODDS_LOOKUP[output.market][1],
-            selection=MARKET_TO_ODDS_LOOKUP[output.market][2],
+            line=line,
+            selection=selection,
             model_version_id=model_versions.id,
             model_probability=output.model_probability,
             market_probability=output.market_probability,
@@ -94,7 +111,7 @@ def generate_predictions_for_competition(
             confidence=output.confidence,
             data_quality=output.data_quality,
             explanation={"factors": output.explanation},
-            features_used={"feature_names": artifact["ml_classifier"].feature_cols_},
+            features_used={"feature_names": [f["feature"] for f in output.explanation]},
         )
         db.add(prediction)
         predictions.append(prediction)

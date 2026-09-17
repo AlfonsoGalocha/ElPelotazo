@@ -16,24 +16,33 @@ Ver `docs/architecture.md` para el detalle de cada capa.
 ## Fase actual: MVP (Fase 1)
 
 - **Competiciones**: La Liga, Premier League, Bundesliga, Serie A, Ligue 1.
-- **Mercados**: Over 1.5 / Over 2.5 / Under 2.5 / Over 3.5 goles, BTTS.
-- **Datos**: datos **reales** de football-data.co.uk (resultados, tiros,
-  corners, tarjetas, cuotas de Bet365), descargados via un mirror publico en
-  GitHub — ver "Datos reales" mas abajo. Sin xG en el MVP (adapter de
-  Understat preparado pero deshabilitado, ver `docs/data_sources.md`).
+- **Mercados**: Over 1.5 / Over 2.5 / Under 2.5 / Over 3.5 goles, BTTS,
+  Over/Under tarjetas (3.5/4.5/5.5), Over/Under corners (8.5/9.5/10.5).
+- **Datos**: resultados **reales** de football-data.co.uk (via mirror de
+  GitHub) + **fixtures reales** de la temporada en curso (calendario
+  oficial, via openfootball/football.json) — ver "Datos reales" mas abajo.
+  Sin xG en el MVP (adapter de Understat preparado pero deshabilitado, ver
+  `docs/data_sources.md`).
 - **Modelos**: baseline (media de liga), Poisson por features, Dixon-Coles
   (con correccion de correlacion en marcadores bajos), clasificador
-  logistico, y un ensemble con peso aprendido por validacion.
+  logistico, ensemble con peso aprendido por validacion, y Poisson de total
+  de partido para tarjetas/corners.
 - **Calibracion**: Brier Score, Log Loss, ECE, curvas de fiabilidad,
   Isotonic/Platt.
 - **Backtesting**: walk-forward (expanding window), separando calidad del
   modelo de rendimiento hipotetico de estrategia de mercado.
+- **Dashboard**: partidos reales proximos (7 dias) agrupados por fecha,
+  buscador de equipos/partidos, Top 5 predicciones (mezclando goles,
+  tarjetas y corners), detalle de partido con pestanhas por familia de
+  mercado y explicacion de factores.
 
-## Arrancar en 3 comandos (SQLite, sin Docker)
+## Arrancar en 4 comandos (SQLite, sin Docker)
 
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
-python scripts/update_data.py && python scripts/train_models.py
+python scripts/update_data.py           # resultados historicos reales
+python scripts/update_fixtures.py       # calendario real de la temporada en curso
+python scripts/train_models.py
 uvicorn backend.app.main:app --reload
 ```
 
@@ -64,73 +73,132 @@ el adapter directo a football-data.co.uk (`provider.py`) sigue disponible
 para entornos sin esa restriccion (`--source football_data_co_uk`).
 
 **Con esto, la base de datos de este proyecto contiene datos 100% reales**:
-14,383 partidos de las 5 ligas del MVP, temporada 2018/19 a 2026/27 (actual),
-con cuotas de Bet365 en casi todos ellos. Resultados reales obtenidos en
-este entorno:
+~14,300 partidos JUGADOS de las 5 ligas del MVP (temporada 2018/19 a
+2026/27) con cuotas de Bet365, **mas ~1,550 partidos FUTUROS reales**
+(calendario oficial de la temporada 2026/27, ver "Fixtures reales" abajo).
 
-| Competicion | Partidos reales | Modelo | Over 2.5 — Brier | Over 2.5 — Log Loss |
+### ⚠️ Dos bugs de leakage encontrados y corregidos durante el desarrollo
+
+Mientras se verificaban las explicaciones de las predicciones contra datos
+reales, se detectaron dos bugs de fuga de informacion (usar el resultado del
+propio partido a predecir como si fuera una feature de entrada). Se
+documentan aqui explicitamente porque afectaron a los numeros iniciales de
+esta misma seccion en un momento anterior del desarrollo:
+
+1. Las columnas crudas del propio partido (`home_shots_on_target`, `home_corners`, etc.,
+   necesarias solo para calcular la forma de partidos FUTUROS de ese equipo)
+   se colaban directamente en `feature_columns()`.
+2. Una segunda variante del mismo bug: las versiones SIN ventana temporal
+   generadas por `features/base.py` (`shots_for`, `corners_against`, etc.,
+   antes de aplicarles `_avg_last5`) tambien se colaban.
+
+Ambos corregidos en `features/goals.py::feature_columns()`, con dos tests de
+regresion dedicados en `backend/tests/unit/test_features_leakage.py` que
+comprueban explicitamente que esas columnas nunca vuelvan a aparecer. Tras
+la segunda correccion, el clasificador ML dejo de "ganar en todas las
+ligas" (ver tabla actualizada abajo): ese resultado anterior era en gran
+parte el bug, no una ventaja real del modelo.
+
+### Resultados reales (post-correccion, datos limpios)
+
+| Competicion | Partidos jugados | Modelo | Over 2.5 — Brier | Over 2.5 — Log Loss |
 |---|---|---|---|---|
-| Premier League | 3,060 | baseline / Dixon-Coles / ML | 0.2475 / 0.2448 / 0.2038 |0.6881 / 0.6834 / 0.5951 |
-| La Liga | 3,071 | baseline / Dixon-Coles / ML | 0.2509 / 0.2505 / 0.2149 | 0.6950 / 0.6946 / 0.6241 |
-| Bundesliga | 2,457 | baseline / Dixon-Coles / ML | 0.2319 / 0.2518 / 0.1813 | 0.6565 / 0.7054 / 0.5450 |
-| Serie A | 3,060 | baseline / Dixon-Coles / ML | 0.2524 / 0.2557 / 0.2182 | 0.6979 / 0.7050 / 0.6303 |
-| Ligue 1 | 2,735 | baseline / Dixon-Coles / ML | 0.2494 / 0.2570 / 0.1830 | 0.6920 / 0.7138 / 0.5488 |
+| Premier League | 3,060 | baseline / Dixon-Coles / ML | 0.2475 / 0.2449 / 0.2529 | 0.6881 / 0.6835 / 0.7030 |
+| La Liga | 3,071 | baseline / Dixon-Coles / ML | 0.2509 / 0.2505 / 0.2777 | 0.6950 / 0.6946 / 0.7547 |
+| Bundesliga | 2,457 | baseline / Dixon-Coles / ML | 0.2319 / 0.2518 / 0.2299 | 0.6565 / 0.7053 / 0.6500 |
+| Serie A | 3,060 | baseline / Dixon-Coles / ML | 0.2524 / 0.2557 / 0.2763 | 0.6979 / 0.7050 / 0.7496 |
+| Ligue 1 | 2,735 | baseline / Dixon-Coles / ML | 0.2494 / 0.2570 / 0.2669 | 0.6920 / 0.7138 / 0.7337 |
 
-Notese que Dixon-Coles NO siempre supera al baseline (Bundesliga, Serie A,
-Ligue 1): es un resultado real, no ajustado para quedar bien — el propio
-brief pide comparar objetivamente, nunca asumir que un modelo mas complejo
-gana (seccion 10/52).
+Con las features limpias, el clasificador ML (195 features, ~3,000 filas de
+entrenamiento) sobreajusta y **pierde contra el baseline en 4 de 5 ligas**.
+Esto es exactamente el resultado honesto que el brief pide poder ver
+(seccion 10/52: nunca asumir que un modelo mas complejo gana; comparar
+siempre contra baselines). El ensemble aprendido compensa esto dandole poco
+o ningun peso al ML classifier cuando no aporta (ver `weight_statistical`
+en cada `ModelVersion.metrics`).
 
-**Backtest walk-forward real** (La Liga, Over 2.5, 7 folds 2020/21-2026/27,
-2,368 predicciones): Brier 0.2466, Log Loss 0.6869, ECE 0.0285 (buena
-calibracion — ver `docs/backtesting.md`). **Estrategia de mercado real**
-(Premier League, apostando solo cuando el modelo ve edge > 0 frente a
-Bet365): 664 apuestas de 2,366 oportunidades, ROI +0.33% — resultado
-realista y modesto, no inflado.
+**Backtest walk-forward real** (Dixon-Coles, Over 2.5, ~7 folds
+2020/21-2026/27 por liga — Dixon-Coles no usa `feature_columns()` asi que
+estos numeros nunca estuvieron afectados por los bugs anteriores):
 
-**Prediccion real fuera de muestra, verificada contra el resultado real**:
-se entreno un modelo excluyendo el ultimo partido cronologico de La Liga en
+| Competicion | Predicciones | Brier | Log Loss | ECE | ROI hipotetico (Bet365) |
+|---|---|---|---|---|---|
+| La Liga | 2,690 | 0.2476 | 0.6889 | 0.0725 | -6.1% (769 apuestas) |
+| Premier League | 2,706 | 0.2542 | 0.7022 | 0.0715 | +0.4% (665 apuestas) |
+| Bundesliga | 2,124 | 0.2546 | 0.7051 | 0.0763 | -5.4% (633 apuestas) |
+| Serie A | 2,738 | 0.2490 | 0.6916 | 0.0686 | -9.0% (967 apuestas) |
+| Ligue 1 | 2,346 | 0.2547 | 0.7033 | 0.0628 | -3.2% (507 apuestas) |
+
+ROI mayoritariamente negativo apostando siempre que el modelo ve edge > 0
+frente a Bet365: es el resultado real, no se ha filtrado para que quede
+bien. Esto es precisamente la diferencia entre **model quality** (Brier/ECE
+razonables) y **market strategy performance** (seccion 27): un modelo
+razonablemente calibrado no implica automaticamente una estrategia de
+apuestas rentable frente a un bookmaker.
+
+### Fixtures reales (calendario de la temporada 2026/27)
+
+Ademas de resultados historicos, se anhadio un SEGUNDO adapter real,
+`backend/app/ingestion/football_data/fixtures_provider.py`
+(`OpenFootballFixturesProvider`), que descarga el calendario oficial de la
+temporada en curso — partidos AUN NO JUGADOS, con equipos y fecha reales —
+desde [openfootball/football.json](https://github.com/openfootball/football.json)
+(dominio publico, actualizado a diario). Esto es lo que permite que
+`/predictions/today` (ventana de 7 dias) muestre partidos que **de verdad
+se van a jugar**, con historial real de ambos equipos.
+
+Los ~97 nombres de equipo de esta fuente (formato oficial completo, p.ej.
+"Real Madrid CF") se resuelven al mismo `team_id` que el dataset historico
+("Real Madrid") via un diccionario de alias en `normalization/teams.py`,
+verificado explicitamente: 0 equipos nuevos sin historial tras la ingesta.
+
+**Limitacion honesta**: es un dataset comunitario, puede llevar retraso en
+aplazamientos/cambios de horario de ultima hora. Se filtra explicitamente
+cualquier fixture con fecha pasada para evitar mostrar como "programado" un
+partido que ya se jugo en la realidad pero que la fuente aun no ha
+actualizado con marcador.
+
+### Prediccion real fuera de muestra, verificada contra el resultado real
+
+Se entreno un modelo excluyendo el ultimo partido cronologico de La Liga en
 el dataset y se predijo usando solo informacion estrictamente anterior. El
 partido termino 0-0 (Under 2.5, no BTTS). El modelo Dixon-Coles predijo
-Over 2.5 al 52.8% (equivocado) y el clasificador ML predijo Under 2.5 al
-66.9% (acertado) — un ejemplo real de por que hay que comparar modelos, no
-asumir que uno es siempre mejor.
-
-**Limitacion honesta que queda**: este dataset historico solo contiene
-partidos YA JUGADOS (hasta 2026-09-03). No incluye un feed de fixtures
-futuros, asi que `/predictions/today` estara vacio hasta conectar una fuente
-de calendario en vivo (Fase 7 del roadmap, `docs/development.md`). El
-pipeline de prediccion para partidos programados (`generate_predictions_for_competition`)
-esta implementado y probado (ver `backend/tests/integration/test_api.py`),
-solo le falta una fuente de fixtures futuros para tener que predecir en
-"today" con este dataset en concreto.
+Over 2.5 al 52.8% (equivocado); tras corregir el leakage, esto se mantiene
+como un ejemplo honesto de que ningun modelo acierta siempre.
 
 ## Que funciona realmente (verificado en este entorno, con datos reales)
 
-- ✅ Ingesta de 14,383 partidos **reales** (2018/19-2026/27, 5 ligas) con
-  cuotas de Bet365, via el mirror de GitHub.
-- ✅ Feature engineering completo sobre datos reales, con tests de
-  anti-leakage pasando.
-- ✅ Los 4 modelos de goles entrenados con datos reales, comparados
-  objetivamente (tabla arriba) — el ML classifier gana en todas las ligas
-  para Over 2.5, pero Dixon-Coles no siempre supera al baseline.
+- ✅ Ingesta de ~14,300 partidos **reales jugados** (2018/19-2026/27, 5 ligas)
+  con cuotas de Bet365, mas ~1,550 **fixtures reales futuros** de la
+  temporada 2026/27, ambos via mirrors publicos de GitHub.
+- ✅ Feature engineering completo sobre datos reales, con **3 tests de
+  anti-leakage** que detectaron y bloquean 2 bugs reales encontrados durante
+  el desarrollo (documentados arriba).
+- ✅ Los 4 modelos de goles + 2 modelos de tarjetas/corners entrenados con
+  datos reales, comparados objetivamente (tabla arriba) — resultado honesto:
+  el ML classifier NO gana siempre, pierde en 4/5 ligas para Over 2.5.
 - ✅ Ensemble con peso aprendido por grid search en validacion real.
 - ✅ Calibracion (Brier/LogLoss/ECE) sobre datos reales + Isotonic
   Regression mejorando ECE en un test dedicado con datos sinteticos de
   control.
-- ✅ Backtesting walk-forward real con folds cronologicamente disjuntos y
-  simulacion de estrategia de mercado usando cuotas reales de Bet365.
+- ✅ Backtesting walk-forward real con folds cronologicamente disjuntos,
+  separando model quality de market strategy performance con cuotas reales.
 - ✅ Prediccion fuera de muestra de un partido real, verificada contra el
   resultado real conocido.
-- ✅ API FastAPI completa (13 endpoints), probada con `TestClient` end-to-end
+- ✅ **Mercados de tarjetas y corners** (Over/Under, Poisson sobre el total
+  del partido) generados para partidos reales, ademas de los 5 de goles.
+- ✅ Busqueda de partidos por equipo (`/matches?search=`), ordenada por
+  proximidad real a hoy.
+- ✅ Endpoint `/predictions/best`: mejores predicciones mezclando goles,
+  tarjetas y corners sin depender de tener cuota de mercado.
+- ✅ API FastAPI completa (16 endpoints), probada con `TestClient` end-to-end
   y sirviendo los modelos entrenados con datos reales.
-- ✅ Dashboard Next.js (Today / Match detail / Top Signals), verificado con
-  capturas de pantalla.
-- ✅ 41 tests automatizados pasando (`pytest backend/tests`); los tests usan
-  datos sinteticos deliberadamente (deben ser deterministas y no depender de
-  red), separados del dataset real usado para el resultado final.
-- ⚠️ Fixtures futuros ("today" en vivo): no cubierto por este dataset
-  historico, requiere Fase 7 (fuente de calendario en vivo).
+- ✅ Dashboard Next.js (Upcoming agrupado por fecha con buscador y Top 5
+  widget / Match detail con pestanhas Goals·Cards·Corners / Top Signals),
+  verificado con capturas de pantalla contra datos reales.
+- ✅ 49 tests automatizados pasando (`pytest backend/tests`); los tests usan
+  datos sinteticos deliberadamente (deterministas, sin red), separados del
+  dataset real usado para entrenar/predecir.
 
 ## Estructura del repositorio
 

@@ -6,6 +6,35 @@ Cada fuente implementa `backend/app/ingestion/base.py::DataProvider`
 (`is_available()` + `fetch_matches()`). El resto del sistema nunca sabe de
 donde vinieron los datos: solo ve `RawMatchRecord`.
 
+## openfootball/football.json — FIXTURES FUTUROS, ACTIVA
+
+- **Adapter**: `backend/app/ingestion/football_data/fixtures_provider.py::OpenFootballFixturesProvider`.
+- **Fuente real**: [openfootball/football.json](https://github.com/openfootball/football.json),
+  dominio publico, sin API key, auto-actualizado a diario. Publica el
+  calendario COMPLETO de la temporada en curso (partidos jugados y por
+  jugar) para las 5 ligas del MVP y muchas mas.
+- **Por que existe ademas de Club Football Match Data**: ese dataset es
+  puramente historico (solo partidos ya jugados). Sin un fixture real, no
+  hay ningun partido sobre el que mostrar "predicciones de hoy" — solo se
+  podria hacer backtesting sobre el pasado. Este adapter cubre exactamente
+  ese hueco con partidos que de verdad se van a jugar.
+- **Filtrado en `fetch_matches`**: solo se devuelven partidos SIN resultado
+  Y con fecha `>= hoy`. Los partidos ya jugados de esta misma fuente se
+  descartan (el dataset historico los cubre con muchisimo mas detalle:
+  estadisticas de partido, cuotas). El filtro por fecha existe porque un
+  dataset comunitario puede tardar en marcar un partido como jugado; sin
+  ese filtro, un partido ya disputado en la realidad pero aun sin marcador
+  en la fuente apareceria incorrectamente como "programado".
+- **Normalizacion de equipos critica**: esta fuente usa nombres oficiales
+  completos ("Real Madrid CF", "Manchester United FC"). Se anhadio un
+  bloque grande de alias en `normalization/teams.py::KNOWN_ALIASES` para
+  resolverlos al mismo `team_id` que el dataset historico — sin esto, cada
+  equipo arrancaria en frio (cold start) en vez de usar su historial real.
+  Verificado: 0 equipos nuevos sin historial tras la ingesta completa.
+- **Limitacion honesta**: dataset mantenido por voluntarios, puede llevar
+  retraso en aplazamientos/cambios de horario de ultima hora. No sustituye
+  a una fuente oficial para apostar dinero real.
+
 ## Club Football Match Data (mirror de GitHub) — PRINCIPAL, ACTIVA, USADA PARA EL RESULTADO FINAL
 
 - **Adapter**: `backend/app/ingestion/football_data/history_dataset.py::ClubFootballMatchDataProvider`.

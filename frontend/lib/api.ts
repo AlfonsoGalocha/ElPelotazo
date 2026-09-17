@@ -14,12 +14,18 @@ export function getCompetitions(): Promise<Competition[]> {
   return apiFetch<Competition[]>("/competitions");
 }
 
-export function getPredictionsToday(): Promise<Prediction[]> {
-  return apiFetch<Prediction[]>("/predictions/today");
+export function getUpcomingPredictions(days = 7): Promise<Prediction[]> {
+  return apiFetch<Prediction[]>(`/predictions/today?days=${days}`);
 }
 
 export function getTopSignals(limit = 20): Promise<Prediction[]> {
   return apiFetch<Prediction[]>(`/predictions/top-signals?limit=${limit}`);
+}
+
+export function getBestPredictions(limit = 5, marketFamily?: string): Promise<Prediction[]> {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (marketFamily) qs.set("market_family", marketFamily);
+  return apiFetch<Prediction[]>(`/predictions/best?${qs.toString()}`);
 }
 
 export function getMatch(matchId: number): Promise<Match> {
@@ -28,4 +34,8 @@ export function getMatch(matchId: number): Promise<Match> {
 
 export function getMatchPredictions(matchId: number): Promise<Prediction[]> {
   return apiFetch<Prediction[]>(`/matches/${matchId}/predictions`);
+}
+
+export function searchMatches(query: string): Promise<Match[]> {
+  return apiFetch<Match[]>(`/matches?search=${encodeURIComponent(query)}&status=scheduled`);
 }

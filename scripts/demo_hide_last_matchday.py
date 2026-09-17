@@ -33,7 +33,9 @@ from backend.app.db.models.core import Competition  # noqa: E402
 from backend.app.db.models.matches import Match  # noqa: E402
 from backend.app.ingestion.football_data.provider import COMPETITION_DIV_CODES  # noqa: E402
 from backend.app.services.model_service import train_competition_models  # noqa: E402
-from backend.app.services.prediction_service import generate_predictions_for_competition  # noqa: E402
+from backend.app.services.prediction_service import (
+    generate_predictions_for_competition,  # noqa: E402
+)
 from backend.app.utils.logging import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
