@@ -1,0 +1,71 @@
+[project]
+name = "football-edge-detector"
+version = "0.1.0"
+description = "Plataforma de analisis estadistico y deteccion de edges en mercados de futbol"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "scikit-learn>=1.5",
+    "joblib>=1.4",
+    "httpx>=0.27",
+    "tenacity>=8.5",
+    "structlog>=24.1",
+    "typer>=0.12",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.6",
+    "black>=24.8",
+    "mypy>=1.11",
+    "pre-commit>=3.8",
+]
+
+[project.scripts]
+football-edge = "backend.app.cli:app"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+# B008: Depends()/Query() en defaults es el idiom estandar de FastAPI, no un bug.
+ignore = ["B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"backend/tests/**" = ["E501"]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+check_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["."]

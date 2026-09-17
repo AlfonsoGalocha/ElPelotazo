@@ -1,0 +1,34 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+*.egg-info/
+build/
+dist/
+
+# datos y artefactos (regenerables via scripts/)
+data/raw/*
+data/processed/*
+data/external/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/external/.gitkeep
+models/trained/*
+models/artifacts/*
+!models/trained/.gitkeep
+!models/artifacts/.gitkeep
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+.DS_Store
+*.log
