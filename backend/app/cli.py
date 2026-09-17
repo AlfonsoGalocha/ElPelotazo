@@ -21,6 +21,7 @@ from backend.app.backtesting.reports import write_backtest_report
 from backend.app.config.settings import REPO_ROOT
 from backend.app.db.database import init_db, session_scope
 from backend.app.db.models.core import Competition
+from backend.app.db.models.matches import Match
 from backend.app.features.goals import build_match_feature_table
 from backend.app.ingestion.football_data.fixtures_provider import OpenFootballFixturesProvider
 from backend.app.ingestion.football_data.history_dataset import ClubFootballMatchDataProvider
@@ -112,6 +113,51 @@ def predict(competition: str, date: str = typer.Option(None)) -> None:
     with session_scope() as db:
         predictions = generate_predictions_for_competition(db, competition, target_date)
         typer.echo(f"[predict] {len(predictions)} predicciones generadas para {competition}")
+
+
+@app.command()
+def predict_upcoming(
+    days: int = typer.Option(10, help="Genera predicciones para partidos programados en los proximos N dias"),
+    competition: str = typer.Option(None),
+) -> None:
+    """Genera predicciones para TODOS los partidos programados (todas las
+    competiciones por defecto) dentro de una ventana de dias.
+
+    Es el comando que faltaba para no tener que llamar a `predict` fecha por
+    fecha y competicion por competicion: recorre cada (competicion, fecha
+    con partidos programados) y llama a `generate_predictions_for_competition`
+    para cada una. Requiere haber corrido antes `update-fixtures` y `train`.
+    """
+    init_db()
+    competitions = [competition] if competition else ALL_COMPETITIONS
+    horizon = dt.datetime.utcnow() + dt.timedelta(days=days)
+
+    with session_scope() as db:
+        total = 0
+        for comp_code in competitions:
+            comp = db.query(Competition).filter_by(code=comp_code).one_or_none()
+            if comp is None:
+                typer.echo(f"[predict-upcoming] {comp_code}: sin datos, ejecuta antes 'update'")
+                continue
+            dates = sorted(
+                {
+                    m.kickoff_utc.date()
+                    for m in db.query(Match).filter(
+                        Match.competition_id == comp.id,
+                        Match.status == "scheduled",
+                        Match.kickoff_utc <= horizon,
+                    )
+                }
+            )
+            if not dates:
+                typer.echo(f"[predict-upcoming] {comp_code}: sin partidos programados en {days} dias")
+                continue
+            comp_total = 0
+            for target_date in dates:
+                comp_total += len(generate_predictions_for_competition(db, comp_code, target_date))
+            typer.echo(f"[predict-upcoming] {comp_code}: {comp_total} predicciones ({len(dates)} fechas)")
+            total += comp_total
+        typer.echo(f"[predict-upcoming] TOTAL: {total} predicciones generadas")
 
 
 @app.command()
