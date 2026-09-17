@@ -161,6 +161,41 @@ def predict_upcoming(
 
 
 @app.command()
+def refresh(
+    days: int = typer.Option(10, help="Ventana de dias para fixtures/predicciones"),
+    competition: str = typer.Option(None),
+    skip_historical: bool = typer.Option(
+        False, help="Salta la descarga de resultados historicos (rapido si ya la corriste antes)"
+    ),
+) -> None:
+    """Un unico comando que deja el sistema listo para ver predicciones: hace
+    `update` + `update-fixtures` + `train` + `predict-upcoming` en secuencia.
+
+    Pensado para no tener que acordarse de encadenar 4 comandos a mano cada
+    vez que quieres refrescar el dashboard. Usa `--skip-historical` en
+    ejecuciones repetidas del mismo dia (los resultados ya jugados no
+    cambian cada pocas horas; los fixtures y las predicciones si conviene
+    refrescarlos a menudo).
+    """
+    typer.echo("=== [1/4] Resultados historicos ===")
+    if skip_historical:
+        typer.echo("(saltado por --skip-historical)")
+    else:
+        update(competition=competition, season=None, source="history_dataset")
+
+    typer.echo("=== [2/4] Fixtures reales (temporada en curso) ===")
+    update_fixtures(competition=competition)
+
+    typer.echo("=== [3/4] Entrenamiento de modelos ===")
+    train(competition=competition)
+
+    typer.echo("=== [4/4] Predicciones para partidos programados ===")
+    predict_upcoming(days=days, competition=competition)
+
+    typer.echo("\nListo. Arranca (o recarga) la API y el dashboard para verlo.")
+
+
+@app.command()
 def backtest(competition: str, market: str = "over_2_5", output: str | None = None) -> None:
     """Ejecuta un backtest walk-forward y escribe un JSON en data/processed."""
     init_db()
