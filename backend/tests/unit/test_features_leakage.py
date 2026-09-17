@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backend.app.features.goals import build_match_feature_table
+from backend.app.features.goals import RAW_MATCH_DAY_STAT_COLUMNS, build_match_feature_table, feature_columns
 from backend.tests.fixtures.synthetic import generate_synthetic_matches
 
 
@@ -84,3 +84,24 @@ def test_first_match_of_a_team_has_no_prior_form():
     prefix = "home" if is_home else "away"
     assert pd.isna(first_row[f"{prefix}_goals_for_avg_last5"])
     assert first_row[f"{prefix}_goals_for_n_prior"] == 0
+
+
+def test_feature_columns_excludes_raw_same_match_statistics():
+    """Bug real detectado y corregido: la tabla de features conserva las
+    columnas crudas home_shots/home_corners/home_xg/etc. del PROPIO partido
+    (necesarias para calcular la forma de partidos futuros via shift(1)),
+    pero `feature_columns()` NUNCA debe devolverlas: usar el resultado del
+    propio partido a predecir para predecirlo es leakage severo, no una
+    feature legitima. Solo las versiones `_avg_last*`/`_avg_season`
+    (calculadas con shift(1) sobre partidos ANTERIORES) son legitimas.
+    """
+    matches = generate_synthetic_matches(n_teams=6, n_seasons=2, seed=4)
+    table = build_match_feature_table(matches)
+    cols = set(feature_columns(table))
+
+    leaking_columns = cols & RAW_MATCH_DAY_STAT_COLUMNS
+    assert not leaking_columns, f"Columnas con leakage severo en feature_columns(): {leaking_columns}"
+
+    # Las versiones rolling (legitimas) si deben seguir presentes.
+    assert "home_shots_for_avg_last5" in cols
+    assert "home_xg_for_avg_last5" in cols

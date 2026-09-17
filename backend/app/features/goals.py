@@ -77,11 +77,34 @@ def build_match_feature_table(matches: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
+
+# Estadisticas crudas DEL PROPIO PARTIDO (conocidas solo DESPUES del pitido
+# final). `build_match_feature_table` las conserva en la tabla resultante
+# porque vienen del dataframe `matches` de entrada (necesarias para poder
+# calcular luego, en OTROS partidos, las features de forma via shift(1)).
+# Pero NUNCA deben usarse como feature de ESTE partido: usar
+# "home_shots_on_target" (el resultado real del partido a predecir) para
+# predecir el propio partido es leakage severo, no una feature legitima.
+# Las versiones legitimas son las derivadas via rolling con shift(1):
+# "home_shots_on_target_for_avg_last5", etc. (estas SI se conservan).
+RAW_MATCH_DAY_STAT_COLUMNS = {
+    "home_shots", "away_shots",
+    "home_shots_on_target", "away_shots_on_target",
+    "home_corners", "away_corners",
+    "home_fouls", "away_fouls",
+    "home_yellow_cards", "away_yellow_cards",
+    "home_red_cards", "away_red_cards",
+    "home_xg", "away_xg",
+}
+
+
 def feature_columns(table: pd.DataFrame) -> list[str]:
-    """Lista de columnas numericas de features (excluye ids/goles/metadatos)."""
+    """Lista de columnas numericas de features (excluye ids/goles/metadatos
+    Y las estadisticas crudas del propio partido, ver RAW_MATCH_DAY_STAT_COLUMNS)."""
     excluded = {
         "match_id", "provider", "provider_id", "competition_id", "season_id",
         "matchday", "date", "home_team_id", "away_team_id", "referee_id",
         "home_goals", "away_goals", "home_goals_ht", "away_goals_ht", "status",
+        *RAW_MATCH_DAY_STAT_COLUMNS,
     }
     return [c for c in table.columns if c not in excluded and table[c].dtype.kind in "fi"]
