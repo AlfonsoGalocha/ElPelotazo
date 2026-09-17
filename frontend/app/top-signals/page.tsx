@@ -7,23 +7,24 @@ export default async function TopSignalsPage() {
 
   return (
     <div>
-      <h1 className="mb-1 text-xl font-semibold text-slate-100">Top Signals</h1>
+      <h1 className="mb-1 text-xl font-semibold text-slate-100">Mejores señales</h1>
       <p className="mb-6 text-sm text-slate-500">
-        Ranking transparente: score = edge × confidence × data quality. Un edge grande de un modelo
-        poco calibrado o con pocos datos NO sube en este ranking (ver docs/modeling.md).
+        Ranking transparente: puntuación = edge × confianza × calidad de datos. Un edge grande de un
+        modelo poco calibrado o con pocos datos NO sube en este ranking (ver docs/modeling.md).
       </p>
 
       <div className="overflow-hidden rounded-lg border border-surface-border">
         <table className="w-full text-sm">
           <thead className="bg-surface-raised text-left text-[11px] uppercase text-slate-500">
             <tr>
-              <th className="px-3 py-2">Match</th>
-              <th className="px-3 py-2">Market</th>
-              <th className="px-3 py-2">Model</th>
-              <th className="px-3 py-2">Market</th>
+              <th className="px-3 py-2">Partido</th>
+              <th className="px-3 py-2">Mercado</th>
+              <th className="px-3 py-2">Modelo</th>
+              <th className="px-3 py-2">Mercado</th>
+              <th className="px-3 py-2">Cuota</th>
               <th className="px-3 py-2">Edge</th>
-              <th className="px-3 py-2">Fair Odds</th>
-              <th className="px-3 py-2">Data Quality</th>
+              <th className="px-3 py-2">Cuota justa</th>
+              <th className="px-3 py-2">Calidad de datos</th>
             </tr>
           </thead>
           <tbody>
@@ -37,6 +38,7 @@ export default async function TopSignalsPage() {
                 <td className="px-3 py-2">
                   {p.market_probability !== null ? `${(p.market_probability * 100).toFixed(1)}%` : "—"}
                 </td>
+                <td className="px-3 py-2">{p.market_odds !== null ? p.market_odds.toFixed(2) : "—"}</td>
                 <td className="px-3 py-2 text-edge-positive">
                   {p.edge !== null ? `+${(p.edge * 100).toFixed(1)} pp` : "—"}
                 </td>
@@ -49,7 +51,7 @@ export default async function TopSignalsPage() {
           </tbody>
         </table>
         {predictions.length === 0 && (
-          <div className="p-6 text-sm text-slate-500">No hay senhales con edge positivo todavia.</div>
+          <div className="p-6 text-sm text-slate-500">No hay señales con edge positivo todavía.</div>
         )}
       </div>
     </div>

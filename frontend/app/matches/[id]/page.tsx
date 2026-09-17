@@ -5,9 +5,9 @@ import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES } f
 import SignalBadge from "@/components/SignalBadge";
 
 const SECTIONS: { label: string; markets: string[] }[] = [
-  { label: "⚽ Goals", markets: GOALS_MARKETS },
-  { label: "🟨 Cards", markets: CARDS_MARKETS },
-  { label: "🚩 Corners", markets: CORNERS_MARKETS },
+  { label: "⚽ Goles", markets: GOALS_MARKETS },
+  { label: "🟨 Tarjetas", markets: CARDS_MARKETS },
+  { label: "🚩 Córners", markets: CORNERS_MARKETS },
 ];
 
 function PredictionTable({ predictions }: { predictions: Prediction[] }) {
@@ -16,12 +16,13 @@ function PredictionTable({ predictions }: { predictions: Prediction[] }) {
       <table className="w-full text-sm">
         <thead className="bg-surface-raised text-left text-[11px] uppercase text-slate-500">
           <tr>
-            <th className="px-3 py-2">Market</th>
-            <th className="px-3 py-2">Model</th>
-            <th className="px-3 py-2">Market</th>
+            <th className="px-3 py-2">Mercado</th>
+            <th className="px-3 py-2">Modelo</th>
+            <th className="px-3 py-2">Mercado</th>
+            <th className="px-3 py-2">Cuota</th>
             <th className="px-3 py-2">Edge</th>
-            <th className="px-3 py-2">Fair Odds</th>
-            <th className="px-3 py-2">Signal</th>
+            <th className="px-3 py-2">Cuota justa</th>
+            <th className="px-3 py-2">Señal</th>
           </tr>
         </thead>
         <tbody>
@@ -32,6 +33,7 @@ function PredictionTable({ predictions }: { predictions: Prediction[] }) {
               <td className="px-3 py-2">
                 {p.market_probability !== null ? `${(p.market_probability * 100).toFixed(1)}%` : "—"}
               </td>
+              <td className="px-3 py-2">{p.market_odds !== null ? p.market_odds.toFixed(2) : "—"}</td>
               <td className="px-3 py-2">{p.edge !== null ? `${(p.edge * 100).toFixed(1)} pp` : "—"}</td>
               <td className="px-3 py-2">{p.fair_odds.toFixed(2)}</td>
               <td className="px-3 py-2">
@@ -49,7 +51,7 @@ function ExplanationCard({ prediction }: { prediction: Prediction }) {
   return (
     <div className="rounded-lg border border-surface-border bg-surface-raised p-4">
       <div className="mb-2 text-xs uppercase tracking-wide text-slate-500">
-        Explanation — {MARKET_DISPLAY_NAMES[prediction.market] ?? prediction.market} (
+        Explicación — {MARKET_DISPLAY_NAMES[prediction.market] ?? prediction.market} (
         {(prediction.model_probability * 100).toFixed(1)}%)
       </div>
       <ol className="flex flex-col gap-2 text-sm text-slate-300">
@@ -100,7 +102,7 @@ export default async function MatchDetailPage({ params }: { params: { id: string
 
       {predictions.length === 0 && (
         <div className="rounded-lg border border-surface-border bg-surface-raised p-6 text-sm text-slate-500">
-          Sin predicciones para este partido todavia.
+          Sin predicciones para este partido todavía.
         </div>
       )}
 

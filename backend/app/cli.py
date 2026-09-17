@@ -29,8 +29,9 @@ from backend.app.ingestion.football_data.provider import (
     COMPETITION_DIV_CODES,
     FootballDataCoUkProvider,
 )
+from backend.app.ingestion.odds.provider import OddsApiProvider
 from backend.app.models.goals.dixon_coles import DixonColesModel
-from backend.app.services.data_service import ingest_matches
+from backend.app.services.data_service import attach_odds_to_scheduled_matches, ingest_matches
 from backend.app.services.match_service import load_market_odds_column, load_matches_dataframe
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import generate_predictions_for_competition
@@ -92,6 +93,36 @@ def update_fixtures(competition: str = typer.Option(None)) -> None:
                 typer.echo(f"[update-fixtures] {comp} {season_label}: {n} partidos programados")
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-fixtures] {comp} {season_label}: ERROR {exc}")
+
+
+@app.command()
+def update_odds(competition: str = typer.Option(None)) -> None:
+    """Descarga cuotas REALES de partidos futuros (The Odds API) y las asocia
+    a los partidos ya programados (creados por `update-fixtures`).
+
+    Requiere ODDS_API_ENABLED=true y ODDS_API_KEY configurados en `.env`
+    (registro gratuito en https://the-odds-api.com, plan free = 500
+    requests/mes). Sin esto configurado, se salta sin error: el resto del
+    sistema sigue funcionando igual, simplemente sin `market_probability`
+    ni `edge` para partidos futuros (los partidos ya jugados si tienen
+    cuotas historicas via `update`).
+    """
+    init_db()
+    provider = OddsApiProvider()
+    if not provider.is_available():
+        typer.echo("[update-odds] ODDS_API_KEY no configurada: sin cuotas de mercado para partidos futuros.")
+        typer.echo("[update-odds] Registrate gratis en https://the-odds-api.com y configura")
+        typer.echo("[update-odds] ODDS_API_ENABLED=true + ODDS_API_KEY=... en tu .env para activarlo.")
+        return
+
+    competitions = [competition] if competition else ALL_COMPETITIONS
+    with session_scope() as db:
+        for comp in competitions:
+            try:
+                n = attach_odds_to_scheduled_matches(db, provider, comp)
+                typer.echo(f"[update-odds] {comp}: {n} partidos con cuotas de mercado actualizadas")
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(f"[update-odds] {comp}: ERROR {exc}")
 
 
 @app.command()
@@ -169,27 +200,34 @@ def refresh(
     ),
 ) -> None:
     """Un unico comando que deja el sistema listo para ver predicciones: hace
-    `update` + `update-fixtures` + `train` + `predict-upcoming` en secuencia.
+    `update` + `update-fixtures` + `update-odds` + `train` + `predict-upcoming`
+    en secuencia.
 
-    Pensado para no tener que acordarse de encadenar 4 comandos a mano cada
+    Pensado para no tener que acordarse de encadenar los comandos a mano cada
     vez que quieres refrescar el dashboard. Usa `--skip-historical` en
     ejecuciones repetidas del mismo dia (los resultados ya jugados no
-    cambian cada pocas horas; los fixtures y las predicciones si conviene
-    refrescarlos a menudo).
+    cambian cada pocas horas; los fixtures, las cuotas y las predicciones si
+    conviene refrescarlos a menudo). `update-odds` se ejecuta ANTES de
+    generar las predicciones para que estas ya incluyan `market_probability`
+    y `edge` cuando haya cuotas disponibles (requiere ODDS_API_KEY; si no
+    esta configurada, se salta sola sin romper el resto del pipeline).
     """
-    typer.echo("=== [1/4] Resultados historicos ===")
+    typer.echo("=== [1/5] Resultados historicos ===")
     if skip_historical:
         typer.echo("(saltado por --skip-historical)")
     else:
         update(competition=competition, season=None, source="history_dataset")
 
-    typer.echo("=== [2/4] Fixtures reales (temporada en curso) ===")
+    typer.echo("=== [2/5] Fixtures reales (temporada en curso) ===")
     update_fixtures(competition=competition)
 
-    typer.echo("=== [3/4] Entrenamiento de modelos ===")
+    typer.echo("=== [3/5] Cuotas de mercado reales (partidos futuros) ===")
+    update_odds(competition=competition)
+
+    typer.echo("=== [4/5] Entrenamiento de modelos ===")
     train(competition=competition)
 
-    typer.echo("=== [4/4] Predicciones para partidos programados ===")
+    typer.echo("=== [5/5] Predicciones para partidos programados ===")
     predict_upcoming(days=days, competition=competition)
 
     typer.echo("\nListo. Arranca (o recarga) la API y el dashboard para verlo.")

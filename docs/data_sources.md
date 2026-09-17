@@ -92,9 +92,36 @@ Plan gratuito de 100 requests/dia: inviable como fuente historica principal.
 Util a futuro para fixtures del dia / alineaciones. Requiere
 `API_FOOTBALL_KEY`.
 
-## The Odds API — PENDIENTE, deshabilitada
+## The Odds API — implementada, deshabilitada por defecto
 
-Para cuotas de partidos FUTUROS (no historicas). Requiere `ODDS_API_KEY`.
+Unica fuente de cuotas REALES para partidos FUTUROS del proyecto (los
+datasets historicos usados arriba solo traen cuotas de partidos ya
+jugados). Sin esto activado, las predicciones de partidos futuros
+muestran `market_probability`/`edge`/`expected_value` como `null` — el
+modelo sigue funcionando, simplemente no hay con que compararlo.
+
+- Adapter: `backend/app/ingestion/odds/provider.py` (`OddsApiProvider`).
+- Orquestacion: `backend/app/services/data_service.py::attach_odds_to_scheduled_matches`
+  (casa cuotas con partidos ya existentes por equipo normalizado + proximidad
+  de fecha; nunca crea partidos nuevos).
+- CLI: `football-edge update-odds` (o `football-edge refresh`, que ya lo
+  incluye antes de generar las predicciones).
+- Cobertura: 1X2 (`h2h`) y Over/Under de goles a 1.5/2.5/3.5 (`totals`).
+  BTTS no esta disponible en el plan usado, igual que en los datasets
+  historicos (queda `None` en ambos casos, nunca inventado).
+
+Activacion (gratis, sin tarjeta):
+1. Registrate en https://the-odds-api.com/#get-access (plan free = 500
+   requests/mes).
+2. En `.env`: `ODDS_API_ENABLED=true` y `ODDS_API_KEY=<tu-key>`.
+3. `football-edge update-odds` (o `refresh`).
+
+**Nota de honestidad**: este adapter se escribio siguiendo la documentacion
+publica de The Odds API, pero el entorno de desarrollo tiene el egress de
+red restringido a un allowlist que no incluye `the-odds-api.com`, asi que
+no se pudo verificar end-to-end contra la API real (solo contra los tests
+unitarios con respuestas simuladas). Si el formato de respuesta de la API
+ha cambiado, el parseo en `_parse_event()` puede necesitar un ajuste.
 
 ## Regla anti-"datos inventados"
 

@@ -6,8 +6,10 @@ import datetime as dt
 
 from sqlalchemy.orm import Session
 
+from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match, MatchOdds, MatchStatistics
 from backend.app.ingestion.base import DataProvider, RawMatchRecord
+from backend.app.ingestion.odds.provider import OddsApiProvider
 from backend.app.normalization.competitions import resolve_competition_id, resolve_season_id
 from backend.app.normalization.players import resolve_referee_id
 from backend.app.normalization.teams import resolve_team_id
@@ -108,3 +110,80 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
         )
     db.flush()
     return match
+
+
+MAX_KICKOFF_DRIFT = dt.timedelta(days=2)  # tolerancia entre la fecha del fixture
+# ingerido (openfootball) y la que reporta la API de cuotas (pueden diferir en
+# horas por huso horario, o en un dia si una fuente aun no reflejo un
+# aplazamiento) al intentar casar ambas por equipo+fecha.
+
+
+def attach_odds_to_scheduled_matches(db: Session, provider: OddsApiProvider, competition_code: str) -> int:
+    """Descarga cuotas REALES de partidos futuros y las asocia a los
+    `Match` ya existentes (creados por `update-fixtures`), casando por
+    equipo (normalizado al mismo team_id que el resto del sistema) y
+    proximidad de fecha. No crea partidos nuevos: si no hay un `Match`
+    programado que case, esa cuota se descarta (se loguea, no se inventa
+    un partido para colocarla).
+    """
+    if not provider.is_available():
+        logger.warning("ingestion.odds_api.unavailable", extra={"competition": competition_code})
+        return 0
+
+    competition = db.query(Competition).filter_by(code=competition_code).one_or_none()
+    if competition is None:
+        raise ValueError(f"Competicion no encontrada: {competition_code}")
+
+    snapshots = provider.fetch_odds(competition_code)
+    scheduled = (
+        db.query(Match)
+        .filter(Match.competition_id == competition.id, Match.status == "scheduled")
+        .all()
+    )
+
+    matched = 0
+    for snapshot in snapshots:
+        home_team_id = resolve_team_id(db, provider.name, snapshot.home_team_raw)
+        away_team_id = resolve_team_id(db, provider.name, snapshot.away_team_raw)
+
+        match = next(
+            (
+                m
+                for m in scheduled
+                if m.home_team_id == home_team_id
+                and m.away_team_id == away_team_id
+                and abs(m.kickoff_utc - snapshot.commence_time.replace(tzinfo=None)) <= MAX_KICKOFF_DRIFT
+            ),
+            None,
+        )
+        if match is None:
+            logger.info(
+                "ingestion.odds_api.no_match_found",
+                extra={"home": snapshot.home_team_raw, "away": snapshot.away_team_raw},
+            )
+            continue
+
+        for odds in snapshot.odds:
+            db.query(MatchOdds).filter_by(
+                match_id=match.id, bookmaker=odds.bookmaker, market=odds.market, line=odds.line, selection=odds.selection
+            ).delete()
+            db.add(
+                MatchOdds(
+                    match_id=match.id,
+                    bookmaker=odds.bookmaker,
+                    market=odds.market,
+                    line=odds.line,
+                    selection=odds.selection,
+                    price=odds.price,
+                    snapshot_type="live",
+                    recorded_at=dt.datetime.utcnow(),
+                )
+            )
+        matched += 1
+
+    db.commit()
+    logger.info(
+        "ingestion.odds_api.completed",
+        extra={"competition": competition_code, "fixtures_with_odds": len(snapshots), "matched": matched},
+    )
+    return matched

@@ -4,9 +4,9 @@ import { MARKET_DISPLAY_NAMES, marketFamily } from "@/types";
 import SignalBadge from "./SignalBadge";
 
 const FAMILY_LABELS: Record<string, string> = {
-  goals: "⚽ Goals",
-  cards: "🟨 Cards",
-  corners: "🚩 Corners",
+  goals: "⚽ Goles",
+  cards: "🟨 Tarjetas",
+  corners: "🚩 Córners",
 };
 
 export default async function BestPredictionsWidget() {
@@ -15,11 +15,14 @@ export default async function BestPredictionsWidget() {
   return (
     <div className="rounded-lg border border-surface-border bg-surface-raised p-4">
       <div className="mb-1 text-sm font-semibold uppercase tracking-wide text-slate-300">
-        Top 5 Predictions
+        Las 5 mejores predicciones
       </div>
       <p className="mb-3 text-xs text-slate-500">
-        Las predicciones con mayor conviccion del modelo (probabilidad alejada del 50%) x confidence x
-        data quality, mezclando goles, tarjetas y corners. No implica edge de mercado.
+        Mezclando goles, tarjetas y córners. Cuando hay cuota real de mercado, se prioriza
+        probabilidad alta del modelo <span className="text-slate-400">junto con</span> una cuota
+        mejor que la justa (edge real) — una probabilidad altísima a una cuota irrisoria (ej. 98% a
+        1.02) no puntúa alto. Sin cuota de mercado disponible, se usa la convicción del modelo
+        (probabilidad alejada del 50%) × confianza × calidad de datos.
       </p>
       <div className="flex flex-col gap-2">
         {predictions.map((p) => (
@@ -37,13 +40,16 @@ export default async function BestPredictionsWidget() {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {p.market_odds != null && (
+                <span className="text-xs text-slate-400">cuota {p.market_odds.toFixed(2)}</span>
+              )}
               <span className="font-semibold text-slate-100">{(p.model_probability * 100).toFixed(1)}%</span>
               <SignalBadge tier={p.signal_tier} />
             </div>
           </Link>
         ))}
         {predictions.length === 0 && (
-          <div className="text-sm text-slate-500">Sin predicciones todavia.</div>
+          <div className="text-sm text-slate-500">Sin predicciones todavía.</div>
         )}
       </div>
     </div>

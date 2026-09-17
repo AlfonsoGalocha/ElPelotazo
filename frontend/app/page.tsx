@@ -53,11 +53,11 @@ export default async function TodayPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="mb-1 text-xl font-semibold text-slate-100">Upcoming Matches</h1>
+        <h1 className="mb-1 text-xl font-semibold text-slate-100">Próximos partidos</h1>
         <p className="mb-4 text-sm text-slate-500">
-          Partidos programados en los proximos 7 dias. Probabilidad estimada, probabilidad de mercado
-          (cuando hay cuotas disponibles) y edge estadistico. Nunca es una certeza: revisa siempre
-          confidence y data quality.
+          Partidos programados en los próximos 7 días. Probabilidad estimada, probabilidad de mercado
+          (cuando hay cuotas reales disponibles) y edge estadístico. Nunca es una certeza: revisa siempre
+          la confianza y la calidad de los datos.
         </p>
       </div>
 
@@ -69,11 +69,10 @@ export default async function TodayPage() {
 
       {!error && grouped.size === 0 && (
         <div className="rounded border border-surface-border bg-surface-raised p-6 text-sm text-slate-400">
-          No hay partidos programados en los proximos 7 dias todavia. Ejecuta{" "}
-          <code className="rounded bg-black/40 px-1 py-0.5">python scripts/update_data.py</code>,{" "}
-          <code className="rounded bg-black/40 px-1 py-0.5">update_fixtures.py</code>,{" "}
-          <code className="rounded bg-black/40 px-1 py-0.5">train_models.py</code> y genera predicciones
-          con <code className="rounded bg-black/40 px-1 py-0.5">football-edge predict</code>.
+          No hay partidos programados en los próximos 7 días todavía. Ejecuta{" "}
+          <code className="rounded bg-black/40 px-1 py-0.5">football-edge refresh</code> (o{" "}
+          <code className="rounded bg-black/40 px-1 py-0.5">python scripts/refresh_all.py</code>) para
+          descargar datos, entrenar los modelos y generar las predicciones en un solo paso.
         </div>
       )}
 

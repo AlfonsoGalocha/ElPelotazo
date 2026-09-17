@@ -7,9 +7,9 @@ const STYLES: Record<SignalTier, string> = {
 };
 
 const LABELS: Record<SignalTier, string> = {
-  HIGH_DATA_SUPPORT: "HIGH DATA SUPPORT",
-  MEDIUM_DATA_SUPPORT: "MEDIUM DATA SUPPORT",
-  LOW_DATA_SUPPORT: "LOW DATA SUPPORT",
+  HIGH_DATA_SUPPORT: "DATOS ALTA CALIDAD",
+  MEDIUM_DATA_SUPPORT: "DATOS MEDIA CALIDAD",
+  LOW_DATA_SUPPORT: "DATOS BAJA CALIDAD",
 };
 
 export default function SignalBadge({ tier }: { tier: SignalTier }) {

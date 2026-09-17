@@ -52,19 +52,19 @@ export interface Prediction {
 }
 
 export const MARKET_DISPLAY_NAMES: Record<string, string> = {
-  over_1_5: "Over 1.5 Goals",
-  over_2_5: "Over 2.5 Goals",
-  under_2_5: "Under 2.5 Goals",
-  over_3_5: "Over 3.5 Goals",
-  btts: "Both Teams To Score",
-  cards_over_3_5: "Over 3.5 Cards",
-  cards_over_4_5: "Over 4.5 Cards",
-  cards_over_5_5: "Over 5.5 Cards",
-  cards_under_4_5: "Under 4.5 Cards",
-  corners_over_8_5: "Over 8.5 Corners",
-  corners_over_9_5: "Over 9.5 Corners",
-  corners_over_10_5: "Over 10.5 Corners",
-  corners_under_9_5: "Under 9.5 Corners",
+  over_1_5: "Más de 1.5 goles",
+  over_2_5: "Más de 2.5 goles",
+  under_2_5: "Menos de 2.5 goles",
+  over_3_5: "Más de 3.5 goles",
+  btts: "Ambos equipos marcan",
+  cards_over_3_5: "Más de 3.5 tarjetas",
+  cards_over_4_5: "Más de 4.5 tarjetas",
+  cards_over_5_5: "Más de 5.5 tarjetas",
+  cards_under_4_5: "Menos de 4.5 tarjetas",
+  corners_over_8_5: "Más de 8.5 córners",
+  corners_over_9_5: "Más de 9.5 córners",
+  corners_over_10_5: "Más de 10.5 córners",
+  corners_under_9_5: "Menos de 9.5 córners",
 };
 
 export const GOALS_MARKETS = ["over_1_5", "over_2_5", "under_2_5", "over_3_5", "btts"];

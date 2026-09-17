@@ -106,13 +106,30 @@ def best_predictions(
     datos usadas, ver docs/data_sources.md, asi que `/top-signals`, que
     exige edge > 0, las dejaria siempre fuera).
 
-    Ranking transparente y distinto del de `/top-signals`:
+    Ranking en dos modos, elegido automaticamente segun si HAY cuota real
+    de mercado para esa prediccion (partidos futuros con `market_odds`,
+    normalmente via The Odds API, ver docs/data_sources.md):
+
+    CON cuota de mercado (odds-aware, lo que pidio el usuario):
+        Una probabilidad muy alta no sirve de nada si la cuota es tan baja
+        que no hay con que ganar dinero (ej. 98% a cuota 1.02); al reves,
+        una cuota alta con probabilidad mediocre tampoco es fiable. Se
+        premia la combinacion de AMBAS cosas: alta probabilidad del modelo
+        Y una cuota mejor que la que el modelo considerarira "justa" (edge
+        positivo real).
+            score = model_probability * max(edge, 0) * confidence * data_quality
+        Ejemplo del usuario ("80% a cuota 1.30/1.40 es top"): fair_odds a
+        80% ~= 1.25, asi que pagar 1.30-1.40 es edge positivo real sobre
+        una probabilidad ya alta -> puntua alto. Un 98% a cuota 1.02 (edge
+        ~cero o negativo, cuota practicamente igual a la justa) puntua
+        cerca de cero pese a la probabilidad altisima.
+
+    SIN cuota de mercado (tarjetas/corners, o goles sin odds aun):
         conviction = |model_probability - 0.5| * 2      (0 = moneda al aire, 1 = certeza del modelo)
         score = conviction * confidence * data_quality
 
-    Sigue sin ser "la probabilidad es alta => es buena senhal": una
-    probabilidad extrema con confidence/data_quality bajos puntua bajo,
-    exactamente igual que en /top-signals.
+    En ambos modos, confidence y data_quality bajos siguen penalizando la
+    puntuacion: nunca es "la probabilidad es alta => es buena senhal".
     """
     query = db.query(Prediction).join(Match, Match.id == Prediction.match_id)
     if upcoming_only:
@@ -129,6 +146,8 @@ def best_predictions(
     candidates = query.all()
 
     def score(p: Prediction) -> float:
+        if p.market_odds is not None and p.edge is not None:
+            return p.model_probability * max(p.edge, 0.0) * p.confidence * p.data_quality
         conviction = abs(p.model_probability - 0.5) * 2.0
         return conviction * p.confidence * p.data_quality
 

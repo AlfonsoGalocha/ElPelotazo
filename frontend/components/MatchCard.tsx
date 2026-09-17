@@ -7,9 +7,9 @@ import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS } from "@/types";
 import PredictionRow from "./PredictionRow";
 
 const TABS: { key: "goals" | "cards" | "corners"; label: string; markets: string[] }[] = [
-  { key: "goals", label: "Goals", markets: GOALS_MARKETS },
-  { key: "cards", label: "Cards", markets: CARDS_MARKETS },
-  { key: "corners", label: "Corners", markets: CORNERS_MARKETS },
+  { key: "goals", label: "Goles", markets: GOALS_MARKETS },
+  { key: "cards", label: "Tarjetas", markets: CARDS_MARKETS },
+  { key: "corners", label: "Córners", markets: CORNERS_MARKETS },
 ];
 
 export default function MatchCard({ predictions }: { predictions: Prediction[] }) {
@@ -57,7 +57,7 @@ export default function MatchCard({ predictions }: { predictions: Prediction[] }
           <PredictionRow key={p.id} prediction={p} />
         ))}
         {visible.length === 0 && (
-          <div className="py-3 text-xs text-slate-500">Sin predicciones para esta categoria.</div>
+          <div className="py-3 text-xs text-slate-500">Sin predicciones para esta categoría.</div>
         )}
       </div>
     </div>
