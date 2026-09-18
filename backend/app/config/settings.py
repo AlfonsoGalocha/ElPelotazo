@@ -9,6 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from numpy import rint
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -42,6 +43,10 @@ class Settings(BaseSettings):
 
     model_artifacts_dir: str = "models/artifacts"
     random_seed: int = 42
+
+    print("REPO_ROOT:", REPO_ROOT)
+    print("ENV FILE:", REPO_ROOT / ".env")
+    print("ENV EXISTS:", (REPO_ROOT / ".env").exists())
 
     @property
     def model_artifacts_path(self) -> Path:
