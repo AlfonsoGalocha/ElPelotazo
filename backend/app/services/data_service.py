@@ -159,20 +159,35 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
     stats.home_red_cards = record.home_red_cards
     stats.away_red_cards = record.away_red_cards
 
-    db.query(MatchOdds).filter_by(match_id=match.id).delete()
-    for odds in record.odds:
-        db.add(
-            MatchOdds(
-                match_id=match.id,
-                bookmaker=odds.bookmaker,
-                market=odds.market,
-                line=odds.line,
-                selection=odds.selection,
-                price=odds.price,
-                snapshot_type=odds.snapshot_type,
-                recorded_at=match.kickoff_utc,
+    # SOLO se tocan las cuotas si esta fuente concreta las trae. Bug real
+    # detectado: `openfootball_fixtures` (el calendario) NUNCA trae cuotas
+    # (`record.odds` siempre `[]`) y `refresh` reingiere el calendario en
+    # CADA ejecucion (`update-fixtures` corre siempre, no solo con
+    # `--skip-historical`). Si el borrado fuera incondicional, cada
+    # `refresh` borraria las cuotas reales ya conseguidas por
+    # `attach_odds_to_scheduled_matches` en una ejecucion anterior, y solo
+    # sobrevivirian si el intento de re-casarlas con la API de cuotas
+    # (justo despues, en el mismo `refresh`) tenia exito para ESE partido
+    # exacto otra vez — cualquier fallo parcial (nombre que no casa esa
+    # vez, la API sin ese partido en la respuesta, limite de requests...)
+    # y la cuota desaparecia para siempre hasta el proximo acierto. Al
+    # exigir `record.odds` no vacio, una fuente que NUNCA trae cuotas
+    # simplemente nunca las toca, sean cuales sean.
+    if record.odds:
+        db.query(MatchOdds).filter_by(match_id=match.id).delete()
+        for odds in record.odds:
+            db.add(
+                MatchOdds(
+                    match_id=match.id,
+                    bookmaker=odds.bookmaker,
+                    market=odds.market,
+                    line=odds.line,
+                    selection=odds.selection,
+                    price=odds.price,
+                    snapshot_type=odds.snapshot_type,
+                    recorded_at=match.kickoff_utc,
+                )
             )
-        )
     db.flush()
     return match
 
