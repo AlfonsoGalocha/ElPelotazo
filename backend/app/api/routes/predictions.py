@@ -115,10 +115,19 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
     }
 
 
-def _base_signal_query(db: Session, market_family: str | None, upcoming_only: bool):
+def _base_signal_query(db: Session, market_family: str | None, upcoming_only: bool, days: int | None = 4):
+    """`days`: sin limite superior, "las mejores predicciones" puede mezclar
+    partidos de jornadas MUY distintas entre si (una de esta semana, otra
+    dentro de 3), lo que parece un error de datos aunque no lo sea (dos
+    partidos del mismo equipo en jornadas distintas es normal, pero
+    mostrarlos juntos sin fecha visible confunde). Por defecto se limita a
+    los proximos `days` dias — "las mejores predicciones DE AHORA", no
+    "de cualquier fecha futura". `None` quita el limite."""
     query = db.query(Prediction).join(Match, Match.id == Prediction.match_id)
     if upcoming_only:
         query = query.filter(Match.status == "scheduled").filter(Match.kickoff_utc >= dt.datetime.utcnow())
+        if days is not None:
+            query = query.filter(Match.kickoff_utc <= dt.datetime.utcnow() + dt.timedelta(days=days))
     if market_family:
         prefixes = {"cards": "cards_", "corners": "corners_"}
         if market_family == "goals":
@@ -135,16 +144,18 @@ def top_signals(
     limit: int = Query(20, ge=1, le=100),
     market_family: str | None = Query(None, description="'goals', 'cards' o 'corners'"),
     upcoming_only: bool = Query(True),
+    days: int = Query(4, ge=1, le=30, description="Ventana de dias hacia adelante"),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """"Mejores señales": ranking transparente que SOLO considera
-    predicciones con mercado real (ver prediction/ranking.py). Una
-    prediccion sin cuota de mercado, con cuota invalida, sin evidencia de
-    casas de apuestas suficiente, o con edge negativo/ausente NUNCA entra
-    aqui — puede existir (ver `/predictions/model-only`), pero no compite
-    en este ranking (seccion 2/7 de la revision de arquitectura).
+    predicciones con mercado real (ver prediction/ranking.py) dentro de los
+    proximos `days` dias. Una prediccion sin cuota de mercado, con cuota
+    invalida, sin evidencia de casas de apuestas suficiente, o con edge
+    negativo/ausente NUNCA entra aqui — puede existir (ver
+    `/predictions/model-only`), pero no compite en este ranking (seccion
+    2/7 de la revision de arquitectura).
     """
-    candidates = _base_signal_query(db, market_family, upcoming_only).all()
+    candidates = _base_signal_query(db, market_family, upcoming_only, days).all()
     included, excluded = rank_signals(candidates)
     if excluded:
         logger.info(
@@ -162,9 +173,13 @@ def best_predictions(
         None, description="'goals', 'cards' o 'corners'; omitir para mezclar todas"
     ),
     upcoming_only: bool = Query(True),
+    days: int = Query(4, ge=1, le=30, description="Ventana de dias hacia adelante"),
     db: Session = Depends(get_db),
 ) -> list[dict]:
-    """"Las 5 mejores predicciones" (widget de portada). Mismo criterio que
+    """"Las 5 mejores predicciones" (widget de portada), dentro de los
+    proximos `days` dias — nunca "cualquier fecha futura": mezclar
+    partidos de jornadas muy distintas entre si (sin fecha visible en el
+    widget) parece un error de datos aunque no lo sea. Mismo criterio que
     `/top-signals` (solo mercado valido, mismo scoring), con un `limit` mas
     pequenho pensado para un resumen. Ver prediction/ranking.py para el
     filtro de calidad y la formula de puntuacion documentados.
@@ -173,7 +188,7 @@ def best_predictions(
     NUNCA aparecen aqui: usa `/predictions/model-only` para mostrarlas por
     separado, etiquetadas explicitamente como "sin mercado".
     """
-    candidates = _base_signal_query(db, market_family, upcoming_only).all()
+    candidates = _base_signal_query(db, market_family, upcoming_only, days).all()
     included, _ = rank_signals(candidates)
     return [serialize_prediction(s.prediction) for s in included[:limit]]
 
@@ -182,12 +197,13 @@ def best_predictions(
 def best_predictions_debug(
     market_family: str | None = Query(None),
     upcoming_only: bool = Query(True),
+    days: int = Query(4, ge=1, le=30),
     db: Session = Depends(get_db),
 ) -> dict:
     """Observabilidad (seccion 13): por cada prediccion candidata, si entro
     al ranking o no y por que. Pensado para depurar "por que esta senhal no
     aparece" sin tener que adivinar leyendo logs."""
-    candidates = _base_signal_query(db, market_family, upcoming_only).all()
+    candidates = _base_signal_query(db, market_family, upcoming_only, days).all()
     included, excluded = rank_signals(candidates)
     return {
         "included": [
@@ -226,6 +242,7 @@ def model_only_predictions(
     limit: int = Query(20, ge=1, le=100),
     market_family: str | None = Query(None),
     upcoming_only: bool = Query(True),
+    days: int = Query(4, ge=1, le=30),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """Predicciones del modelo SIN mercado disponible (tarjetas/corners
@@ -234,7 +251,7 @@ def model_only_predictions(
     (seccion 2 de la revision: separar "prediccion del modelo" de "senhal
     con mercado"). El cliente debe etiquetarlas claramente como
     "Predicción del modelo — sin mercado"."""
-    candidates = _base_signal_query(db, market_family, upcoming_only).all()
+    candidates = _base_signal_query(db, market_family, upcoming_only, days).all()
     without_market = [p for p in candidates if p.market_odds is None or p.market_probability is None]
     without_market.sort(key=lambda p: abs(p.model_probability - 0.5), reverse=True)
     return [serialize_prediction(p) for p in without_market[:limit]]

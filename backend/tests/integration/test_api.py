@@ -279,6 +279,54 @@ def test_top_signals_only_includes_predictions_with_valid_market(seeded_competit
         assert not prediction["market"].startswith("corners_")
 
 
+def test_top_signals_default_window_excludes_far_future_matches(seeded_competition_code):
+    """Sin limite de dias, "las mejores predicciones" podia mezclar un
+    partido de esta semana con otro de dentro de 3, sin fecha visible en
+    el widget -- parece un error de datos (el mismo equipo "dos veces en
+    la misma jornada") aunque no lo sea. Por defecto solo debe mirar los
+    proximos dias; con una ventana mas amplia (`days`), el partido lejano
+    aparece."""
+    far_kickoff = dt.datetime.utcnow() + dt.timedelta(days=10)
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        far_match = Match(
+            provider="integration_test_manual",
+            provider_id="future-fixture-far",
+            competition_id=comp.id,
+            season_id=db.query(Match).filter_by(competition_id=comp.id).first().season_id,
+            kickoff_utc=far_kickoff,
+            home_team_id=3,
+            away_team_id=4,
+            status="scheduled",
+        )
+        db.add(far_match)
+        db.flush()
+        far_match_id = far_match.id
+
+        snapshot = FixtureOddsSnapshot(
+            home_team_raw="IntegrationTeam3",
+            away_team_raw="IntegrationTeam4",
+            commence_time=far_kickoff.replace(tzinfo=dt.timezone.utc),
+            odds=[
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+            ],
+        )
+        attach_odds_to_scheduled_matches(db, _FakeOddsProvider([snapshot]), seeded_competition_code)
+
+    with session_scope() as db:
+        generate_predictions_for_competition(db, seeded_competition_code, far_kickoff.date())
+
+    client = TestClient(app)
+    default_response = client.get("/predictions/top-signals", params={"limit": 100})
+    default_match_ids = {p["match"]["id"] for p in default_response.json()}
+    assert far_match_id not in default_match_ids
+
+    wide_response = client.get("/predictions/top-signals", params={"limit": 100, "days": 15})
+    wide_match_ids = {p["match"]["id"] for p in wide_response.json()}
+    assert far_match_id in wide_match_ids
+
+
 def test_model_only_endpoint_returns_predictions_without_market(seeded_competition_code):
     """Las predicciones de tarjetas/corners (sin mercado en las fuentes de
     datos usadas) deben poder consultarse por separado, etiquetadas como

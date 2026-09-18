@@ -18,7 +18,8 @@ export default async function BestPredictionsWidget() {
         Las 5 mejores predicciones
       </div>
       <p className="mb-3 text-xs text-slate-500">
-        Solo predicciones con mercado real (cuota, probabilidad de mercado y edge válidos —{" "}
+        De los próximos 4 días, solo predicciones con mercado real (cuota, probabilidad de mercado y
+        edge válidos —{" "}
         <Link href="/#sin-mercado" className="underline hover:text-slate-300">
           ver aparte
         </Link>{" "}
@@ -36,6 +37,13 @@ export default async function BestPredictionsWidget() {
             <div>
               <div className="text-slate-200">
                 {p.match.home_team.canonical_name} vs {p.match.away_team.canonical_name}
+                <span className="ml-2 text-xs text-slate-500">
+                  {new Date(p.match.kickoff_utc).toLocaleDateString("es-ES", {
+                    weekday: "short",
+                    day: "2-digit",
+                    month: "short",
+                  })}
+                </span>
               </div>
               <div className="text-xs text-slate-500">
                 {FAMILY_LABELS[marketFamily(p.market)]} · {MARKET_DISPLAY_NAMES[p.market] ?? p.market}
