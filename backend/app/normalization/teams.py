@@ -175,6 +175,24 @@ def _normalize_key(name: str) -> str:
     return key
 
 
+def _fuzzy_key(name: str) -> str:
+    """Normalizacion mas agresiva que `_normalize_key`, solo para el
+    fallback de `resolve_team_id`: quita acentos Y toda la puntuacion/
+    espacios, no solo colapsa espacios. Pensada para casar variantes de
+    escritura de una fuente NUEVA (p.ej. una casa de apuestas) contra un
+    Team ya existente sin necesitar un alias explicito para cada detalle
+    menor: "Atletico Madrid" == "Atlético Madrid", "Paris Saint-Germain"
+    == "Paris Saint Germain", "AFC Bournemouth" == "Bournemouth AFC", etc.
+    No sustituye a KNOWN_ALIASES (que sigue siendo la fuente de verdad para
+    abreviaturas tipo "Utd"/"Sociedad"), solo evita crear un Team DUPLICADO
+    cuando la unica diferencia es tildes/puntuacion/orden de una palabra
+    generica de club ("fc", "cf", "afc", "sc"...).
+    """
+    key = _normalize_key(name)
+    key = re.sub(r"[^a-z0-9]+", "", key)
+    return key
+
+
 def canonical_name_for(raw_name: str) -> str:
     """Aplica alias conocidos; si no hay alias, usa el propio nombre (title case)."""
     key = _normalize_key(raw_name)
@@ -188,6 +206,14 @@ def resolve_team_id(db: Session, source: str, raw_name: str) -> int:
     2. Si no existe, resuelve el nombre canonico via alias/heuristica y
        busca/crea el Team correspondiente, guardando el mapping para que
        futuras ingestas de la misma fuente sean directas (sin re-resolver).
+
+    Antes de crear un Team nuevo se intenta ademas un match "fuzzy" (sin
+    tildes ni puntuacion) contra los Team ya existentes: sin esto, una
+    fuente nueva (p.ej. una casa de apuestas) que escriba un nombre ya
+    conocido con una tilde o un guion distinto ("Atlético Madrid" en vez
+    de "Atletico Madrid") crearia un Team FANTASMA con un team_id distinto
+    al que usa el resto del sistema, y esa cuota nunca casaria con ningun
+    partido programado aunque el equipo sea exactamente el mismo.
     """
     mapping = (
         db.query(TeamNameMapping)
@@ -199,6 +225,14 @@ def resolve_team_id(db: Session, source: str, raw_name: str) -> int:
 
     canonical = canonical_name_for(raw_name)
     team = db.query(Team).filter_by(canonical_name=canonical).one_or_none()
+
+    if team is None:
+        fuzzy_target = _fuzzy_key(canonical)
+        for candidate in db.query(Team).all():
+            if _fuzzy_key(candidate.canonical_name) == fuzzy_target:
+                team = candidate
+                break
+
     if team is None:
         team = Team(canonical_name=canonical)
         db.add(team)

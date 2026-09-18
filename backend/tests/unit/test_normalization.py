@@ -22,3 +22,18 @@ def test_resolve_team_id_maps_different_aliases_to_same_team(db_session):
     id_alias_1 = resolve_team_id(db_session, "football_data_co_uk", "Man United")
     id_alias_2 = resolve_team_id(db_session, "another_source", "Manchester United")
     assert id_alias_1 == id_alias_2
+
+
+def test_resolve_team_id_fuzzy_matches_accents_and_punctuation_from_new_source(db_session):
+    """Regresion: una fuente NUEVA (p.ej. una casa de apuestas) que escriba
+    un equipo ya conocido con tilde/guion/orden distinto no debe crear un
+    Team fantasma con un id distinto - si no, esa cuota nunca casaria con
+    el partido programado del mismo equipo aunque sea literalmente el
+    mismo club."""
+    id_original = resolve_team_id(db_session, "football_data_co_uk", "Atletico Madrid")
+    id_accented = resolve_team_id(db_session, "the_odds_api", "Atlético Madrid")
+    assert id_original == id_accented
+
+    id_hyphenated = resolve_team_id(db_session, "football_data_co_uk", "Paris SG")
+    id_spaced = resolve_team_id(db_session, "the_odds_api", "Paris Saint Germain")
+    assert id_hyphenated == id_spaced
