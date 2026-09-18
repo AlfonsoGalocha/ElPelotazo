@@ -111,7 +111,19 @@ class ApiFootballOddsProvider:
                 response.text[:500],
             )
         response.raise_for_status()
-        return response.json().get("response", [])
+        payload = response.json()
+
+        # CRITICO: API-Football (api-sports.io) devuelve HTTP 200 incluso
+        # cuando hay un error de parametros/plan -- el error real viene
+        # DENTRO del JSON (clave "errors": {...} o [...]), no en el codigo
+        # HTTP. Sin esto, un error real ("esta temporada requiere un plan
+        # de pago", "parametro invalido"...) se traga en silencio y solo se
+        # ve "0 partidos consultados", indistinguible de "no hay partidos
+        # en esas fechas".
+        errors = payload.get("errors")
+        if errors:
+            logger.warning("ingestion.api_football.api_errors: path=%s params=%s errors=%s", path, params, errors)
+        return payload.get("response", [])
 
     def fetch_secondary_odds(
         self, competition_code: str, season_year: int, date_from: dt.date, date_to: dt.date

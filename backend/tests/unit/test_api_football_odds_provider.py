@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import httpx
+
 from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
 
 
@@ -60,3 +62,52 @@ def test_league_ids_cover_all_five_mvp_leagues():
 
     assert set(LEAGUE_IDS) == {"laliga", "premier_league", "bundesliga", "serie_a", "ligue_1"}
     assert all(isinstance(v, int) for v in LEAGUE_IDS.values())
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict, status_code: int = 200):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = str(payload)
+
+    def json(self) -> dict:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("error", request=None, response=self)
+
+
+class _FakeHttpClient:
+    def __init__(self, payload: dict):
+        self._payload = payload
+        self.last_call: tuple[str, dict] | None = None
+
+    def get(self, url: str, params: dict, headers: dict) -> _FakeResponse:
+        self.last_call = (url, params)
+        return _FakeResponse(self._payload)
+
+
+def test_get_logs_api_errors_even_with_http_200(caplog):
+    """Bug real detectado: API-Football devuelve HTTP 200 incluso cuando
+    hay un error de parametros/plan -- el error real viene dentro del
+    JSON ("errors"), nunca en el codigo HTTP. Sin comprobar esa clave, un
+    error real se tragaba en silencio y solo se veia "0 partidos
+    consultados", indistinguible de "no hay partidos en esas fechas"."""
+    fake_client = _FakeHttpClient(
+        {"response": [], "errors": {"season": "This season is only available in the pro plan"}}
+    )
+    provider = ApiFootballOddsProvider(http_client=fake_client)
+    with caplog.at_level("WARNING"):
+        result = provider._get("/fixtures", {"league": 140, "season": 2026})
+    assert result == []
+    assert any("pro plan" in record.getMessage() for record in caplog.records)
+
+
+def test_get_returns_response_without_warning_when_no_errors(caplog):
+    fake_client = _FakeHttpClient({"response": [{"fixture": {"id": 1}}], "errors": []})
+    provider = ApiFootballOddsProvider(http_client=fake_client)
+    with caplog.at_level("WARNING"):
+        result = provider._get("/fixtures", {"league": 140, "season": 2026})
+    assert result == [{"fixture": {"id": 1}}]
+    assert not any("api_errors" in record.getMessage() for record in caplog.records)
