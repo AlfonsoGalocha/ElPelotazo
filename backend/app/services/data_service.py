@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
@@ -118,17 +119,34 @@ MAX_KICKOFF_DRIFT = dt.timedelta(days=2)  # tolerancia entre la fecha del fixtur
 # aplazamiento) al intentar casar ambas por equipo+fecha.
 
 
-def attach_odds_to_scheduled_matches(db: Session, provider: OddsApiProvider, competition_code: str) -> int:
+@dataclass
+class OddsAttachResult:
+    """Resultado detallado de `attach_odds_to_scheduled_matches`, pensado
+    para poder diagnosticar en la terminal (no solo en logs que pueden pasar
+    desapercibidos) POR QUE no se encontraron cuotas si es el caso: cuenta
+    distinto "la API no devolvio partidos para esta liga ahora mismo" de
+    "la API devolvio partidos pero ninguno caso por nombre de equipo/fecha".
+    """
+
+    fixtures_fetched: int
+    matched: int
+    matched_match_ids: list[int]
+    unmatched_examples: list[tuple[str, str]]  # (home_raw, away_raw), maximo 5
+
+
+def attach_odds_to_scheduled_matches(
+    db: Session, provider: OddsApiProvider, competition_code: str
+) -> OddsAttachResult:
     """Descarga cuotas REALES de partidos futuros y las asocia a los
     `Match` ya existentes (creados por `update-fixtures`), casando por
     equipo (normalizado al mismo team_id que el resto del sistema) y
     proximidad de fecha. No crea partidos nuevos: si no hay un `Match`
-    programado que case, esa cuota se descarta (se loguea, no se inventa
-    un partido para colocarla).
+    programado que case, esa cuota se descarta (se devuelve como ejemplo
+    en `unmatched_examples`, nunca se inventa un partido para colocarla).
     """
     if not provider.is_available():
         logger.warning("ingestion.odds_api.unavailable", extra={"competition": competition_code})
-        return 0
+        return OddsAttachResult(fixtures_fetched=0, matched=0, matched_match_ids=[], unmatched_examples=[])
 
     competition = db.query(Competition).filter_by(code=competition_code).one_or_none()
     if competition is None:
@@ -141,7 +159,8 @@ def attach_odds_to_scheduled_matches(db: Session, provider: OddsApiProvider, com
         .all()
     )
 
-    matched = 0
+    matched_match_ids: list[int] = []
+    unmatched_examples: list[tuple[str, str]] = []
     for snapshot in snapshots:
         home_team_id = resolve_team_id(db, provider.name, snapshot.home_team_raw)
         away_team_id = resolve_team_id(db, provider.name, snapshot.away_team_raw)
@@ -158,9 +177,12 @@ def attach_odds_to_scheduled_matches(db: Session, provider: OddsApiProvider, com
         )
         if match is None:
             logger.info(
-                "ingestion.odds_api.no_match_found",
-                extra={"home": snapshot.home_team_raw, "away": snapshot.away_team_raw},
+                "ingestion.odds_api.no_match_found: home=%s away=%s",
+                snapshot.home_team_raw,
+                snapshot.away_team_raw,
             )
+            if len(unmatched_examples) < 5:
+                unmatched_examples.append((snapshot.home_team_raw, snapshot.away_team_raw))
             continue
 
         for odds in snapshot.odds:
@@ -179,11 +201,18 @@ def attach_odds_to_scheduled_matches(db: Session, provider: OddsApiProvider, com
                     recorded_at=dt.datetime.utcnow(),
                 )
             )
-        matched += 1
+        matched_match_ids.append(match.id)
 
     db.commit()
     logger.info(
-        "ingestion.odds_api.completed",
-        extra={"competition": competition_code, "fixtures_with_odds": len(snapshots), "matched": matched},
+        "ingestion.odds_api.completed: competition=%s fixtures_fetched=%d matched=%d",
+        competition_code,
+        len(snapshots),
+        len(matched_match_ids),
     )
-    return matched
+    return OddsAttachResult(
+        fixtures_fetched=len(snapshots),
+        matched=len(matched_match_ids),
+        matched_match_ids=matched_match_ids,
+        unmatched_examples=unmatched_examples,
+    )

@@ -9,10 +9,11 @@ from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
+from backend.app.ingestion.odds.provider import FixtureOddsSnapshot
 from backend.app.main import app
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS
 from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
-from backend.app.services.data_service import ingest_matches
+from backend.app.services.data_service import attach_odds_to_scheduled_matches, ingest_matches
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import generate_predictions_for_competition
 from backend.tests.fixtures.synthetic import generate_synthetic_matches
@@ -179,3 +180,80 @@ def test_regenerating_predictions_does_not_duplicate_rows(seeded_competition_cod
     assert len(body) == TOTAL_MVP_MARKETS
     markets = [p["market"] for p in body]
     assert len(markets) == len(set(markets))
+
+
+class _FakeOddsProvider:
+    """Nunca se probo `OddsApiProvider` real contra ninguna cuota simulada
+    (ni siquiera con un mock): este test cubre el flujo completo
+    attach -> regenerar predicciones sin depender de la red real."""
+
+    name = "the_odds_api"
+
+    def __init__(self, snapshots: list[FixtureOddsSnapshot]):
+        self._snapshots = snapshots
+
+    def is_available(self) -> bool:
+        return True
+
+    def fetch_odds(self, competition_code: str) -> list[FixtureOddsSnapshot]:
+        return self._snapshots
+
+
+def test_attach_odds_matches_by_team_and_refreshes_predictions(seeded_competition_code):
+    """El equipo 1 vs equipo 2 del partido futuro sembrado por
+    `seeded_competition_code` se llama, por normalizacion sin alias,
+    "IntegrationTeam1"/"IntegrationTeam2" (ver `_FakeProvider` arriba). Si
+    una fuente de cuotas devuelve exactamente esos mismos nombres, debe
+    casar y las predicciones de ese partido deben pasar a tener
+    market_probability/market_odds/edge no nulos."""
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        match = (
+            db.query(Match)
+            .filter(Match.competition_id == comp.id, Match.status == "scheduled")
+            .one()
+        )
+        snapshot = FixtureOddsSnapshot(
+            home_team_raw="IntegrationTeam1",
+            away_team_raw="IntegrationTeam2",
+            commence_time=match.kickoff_utc.replace(tzinfo=dt.timezone.utc),
+            odds=[
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+            ],
+        )
+        provider = _FakeOddsProvider([snapshot])
+        result = attach_odds_to_scheduled_matches(db, provider, seeded_competition_code)
+        assert result.fixtures_fetched == 1
+        assert result.matched == 1
+        assert result.matched_match_ids == [match.id]
+        assert result.unmatched_examples == []
+
+    with session_scope() as db:
+        predictions = generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+        by_market = {p.market: p for p in predictions}
+        over_2_5 = by_market["over_2_5"]
+        assert over_2_5.market_odds is not None
+        assert over_2_5.market_probability is not None
+        assert over_2_5.edge is not None
+        assert over_2_5.expected_value is not None
+
+
+def test_attach_odds_reports_unmatched_examples_for_unknown_teams(seeded_competition_code):
+    """Si la fuente de cuotas devuelve nombres de equipo que no casan con
+    ningun partido programado (nombre distinto, fecha demasiado lejana...),
+    no debe fallar en silencio: `unmatched_examples` debe exponer el par
+    (local, visitante) exacto que no caso, para poder diagnosticar."""
+    with session_scope() as db:
+        snapshot = FixtureOddsSnapshot(
+            home_team_raw="Equipo Que No Existe",
+            away_team_raw="Otro Equipo Fantasma",
+            commence_time=dt.datetime.utcnow().replace(tzinfo=dt.timezone.utc) + dt.timedelta(days=1),
+            odds=[RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90)],
+        )
+        provider = _FakeOddsProvider([snapshot])
+        result = attach_odds_to_scheduled_matches(db, provider, seeded_competition_code)
+        assert result.fixtures_fetched == 1
+        assert result.matched == 0
+        assert result.unmatched_examples == [("Equipo Que No Existe", "Otro Equipo Fantasma")]

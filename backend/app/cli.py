@@ -129,10 +129,56 @@ def update_odds(competition: str = typer.Option(None)) -> None:
     with session_scope() as db:
         for comp in competitions:
             try:
-                n = attach_odds_to_scheduled_matches(db, provider, comp)
-                typer.echo(f"[update-odds] {comp}: {n} partidos con cuotas de mercado actualizadas")
+                result = attach_odds_to_scheduled_matches(db, provider, comp)
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-odds] {comp}: ERROR {exc}")
+                continue
+
+            typer.echo(
+                f"[update-odds] {comp}: la API devolvio {result.fixtures_fetched} partidos futuros, "
+                f"{result.matched} casaron con partidos ya programados en nuestra BD."
+            )
+            if result.fixtures_fetched == 0:
+                typer.echo(
+                    f"[update-odds] {comp}: la API no tiene ahora mismo ningun partido futuro para "
+                    "esta liga (puede que no haya jornada en los proximos dias, o que el plan "
+                    "gratuito tenga cobertura limitada para esta competicion)."
+                )
+            elif result.matched == 0:
+                typer.echo(
+                    f"[update-odds] {comp}: la API SI devolvio partidos pero NINGUNO caso por "
+                    "nombre de equipo o fecha. Ejemplos de partidos de la API sin casar "
+                    "(nombre_local, nombre_visitante):"
+                )
+                for home, away in result.unmatched_examples:
+                    typer.echo(f"[update-odds]   - '{home}' vs '{away}'")
+                typer.echo(
+                    "[update-odds]   Si esos nombres no coinciden con los que usa el resto del "
+                    "sistema, hay que anadir un alias en backend/app/normalization/teams.py."
+                )
+
+            # Sin esto, las cuotas quedan guardadas en MatchOdds pero las
+            # Prediction ya generadas (o las que se generen mas tarde sin
+            # volver a tocar este comando) seguirian sin `market_probability`/
+            # `edge`: una Prediction es una foto fija en el tiempo, no se
+            # recalcula sola cuando llegan cuotas nuevas. Se regeneran aqui
+            # mismo las predicciones de los partidos que SI consiguieron
+            # cuota, para que un unico comando deje todo consistente sin
+            # tener que acordarse de correr `predict`/`predict-upcoming`
+            # despues a mano.
+            if result.matched_match_ids:
+                dates = sorted(
+                    {
+                        m.kickoff_utc.date()
+                        for m in db.query(Match).filter(Match.id.in_(result.matched_match_ids))
+                    }
+                )
+                regenerated = 0
+                for target_date in dates:
+                    regenerated += len(generate_predictions_for_competition(db, comp, target_date))
+                typer.echo(
+                    f"[update-odds] {comp}: {regenerated} predicciones regeneradas con las cuotas nuevas."
+                )
 
 
 @app.command()
