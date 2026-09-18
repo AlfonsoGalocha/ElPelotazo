@@ -144,11 +144,15 @@ def predict_secondary_markets_for_table(
     table: pd.DataFrame,
     cards_model: TotalCountPoissonModel,
     corners_model: TotalCountPoissonModel,
+    market_quotes: dict[tuple[int, str], dict] | None = None,
 ) -> list[MarketPredictionOutput]:
-    """Mercados de tarjetas/corners (seccion 18/19). Sin mercado/edge: no hay
-    cuotas reales de estos mercados en las fuentes de datos usadas (ver
-    docs/data_sources.md), asi que `market_probability`/`edge` quedan `None`
-    explicitamente en vez de inventar un valor.
+    """Mercados de tarjetas/corners (seccion 18/19). `market_quotes`: igual
+    forma que en `predict_markets_for_table` — opcional, porque las fuentes
+    principales de datos no traen estas cuotas (The Odds API no las
+    ofrece, ver docs/data_sources.md); si se proveen (p.ej. via
+    API-Football), se usan igual que en goles. Sin ellas,
+    `market_probability`/`edge` quedan `None` explicitamente en vez de
+    inventar un valor.
     """
     outputs: list[MarketPredictionOutput] = []
     for model in (cards_model, corners_model):
@@ -156,6 +160,11 @@ def predict_secondary_markets_for_table(
         for market_key, probs in probs_by_market.items():
             spec = SECONDARY_MARKET_DEFINITIONS[market_key]
             for i, (_, row) in enumerate(table.iterrows()):
+                quote = (market_quotes or {}).get((row["match_id"], market_key))
+                market_probability = quote["market_probability"] if quote else None
+                market_odds = quote["market_odds"] if quote else None
+                bookmakers_used = quote.get("bookmakers_used") if quote else None
+
                 data_quality = compute_data_quality(row, KEY_FEATURES_FOR_QUALITY)
                 n_prior_avg = np.nanmean(
                     [row.get("home_goals_for_n_prior", np.nan), row.get("away_goals_for_n_prior", np.nan)]
@@ -167,6 +176,7 @@ def predict_secondary_markets_for_table(
                         sample_size_score=sample_size_score,
                         model_agreement=None,
                         data_quality=data_quality,
+                        bookmakers_used=bookmakers_used,
                     )
                 )
                 explanation = explain_logistic_pipeline(model.pipeline_, model.feature_cols_, row)
@@ -176,14 +186,23 @@ def predict_secondary_markets_for_table(
                         market=market_key,
                         model_probability=float(probs[i]),
                         fair_odds=float(fair_odds(probs[i])),
-                        market_probability=None,
-                        market_odds=None,
-                        vig_removed=None,
-                        edge=None,
-                        expected_value=None,
+                        market_probability=market_probability,
+                        market_odds=market_odds,
+                        vig_removed=quote.get("market_probability_source", "").endswith("no_vig")
+                        if quote
+                        else None,
+                        edge=compute_edge(float(probs[i]), market_probability),
+                        expected_value=compute_expected_value(float(probs[i]), market_odds),
                         confidence=confidence,
                         data_quality=data_quality,
                         explanation=explanation,
+                        market_probability_source=quote.get("market_probability_source") if quote else None,
+                        bookmakers_count=quote.get("bookmakers_count") if quote else None,
+                        bookmakers_used=bookmakers_used,
+                        market_odds_min=quote.get("market_odds_min") if quote else None,
+                        market_odds_max=quote.get("market_odds_max") if quote else None,
+                        market_odds_median=quote.get("market_odds_median") if quote else None,
+                        market_odds_average=quote.get("market_odds_average") if quote else None,
                     )
                 )
     return outputs

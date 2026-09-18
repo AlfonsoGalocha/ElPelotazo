@@ -26,13 +26,12 @@ respuesta ha cambiado, avisa y se ajusta.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
 
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from backend.app.config.settings import get_settings
-from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
+from backend.app.ingestion.base import DataProvider, FixtureOddsSnapshot, RawMatchRecord, RawOddsRecord
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -57,17 +56,6 @@ COMPETITION_TO_SPORT_KEY: dict[str, str] = {
 
 # Lineas de goles que nos interesan (las que usan los mercados del MVP).
 RELEVANT_TOTAL_LINES = {1.5, 2.5, 3.5}
-
-
-@dataclass
-class FixtureOddsSnapshot:
-    """Cuotas de un partido FUTURO concreto, listas para casar contra un
-    `Match` ya existente en la BD (no crea partidos nuevos, solo cuotas)."""
-
-    home_team_raw: str
-    away_team_raw: str
-    commence_time: dt.datetime
-    odds: list[RawOddsRecord]
 
 
 class OddsApiProvider(DataProvider):

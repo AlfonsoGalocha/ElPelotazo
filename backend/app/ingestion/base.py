@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
@@ -52,6 +53,20 @@ class RawOddsRecord:
     selection: str
     price: float
     snapshot_type: str = "closing"
+
+
+@dataclass
+class FixtureOddsSnapshot:
+    """Cuotas de un partido FUTURO concreto, listas para casar contra un
+    `Match` ya existente en la BD (no crea partidos nuevos, solo cuotas).
+    Compartido por cualquier adapter de cuotas en vivo (The Odds API,
+    API-Football...): la logica de casar equipo+fecha y de agregar
+    consenso multi-casa es identica sea cual sea la fuente."""
+
+    home_team_raw: str
+    away_team_raw: str
+    commence_time: dt.datetime
+    odds: list[RawOddsRecord]
 
 
 class DataProvider(ABC):

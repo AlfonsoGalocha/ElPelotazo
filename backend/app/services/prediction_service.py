@@ -31,6 +31,16 @@ MARKET_TO_ODDS_LOOKUP = {
     "btts": ("btts", None, "yes"),
 }
 
+# Tarjetas/corners: The Odds API no las ofrece (ver docs/data_sources.md),
+# pero API-Football si puede traerlas (ver ingestion/api_football/odds_provider.py)
+# guardadas bajo "cards_total"/"corners_total" en MatchOdds. Se combina con
+# el lookup de goles para que el mismo bucle de mas abajo construya el
+# consenso de mercado de TODOS los mercados sin duplicar logica.
+SECONDARY_MARKET_TO_ODDS_LOOKUP = {
+    key: (f"{spec.stat_family}_total", spec.line, spec.kind) for key, spec in SECONDARY_MARKET_DEFINITIONS.items()
+}
+ALL_MARKET_TO_ODDS_LOOKUP = {**MARKET_TO_ODDS_LOOKUP, **SECONDARY_MARKET_TO_ODDS_LOOKUP}
+
 
 def _market_line_and_selection(market_key: str) -> tuple[float | None, str]:
     if market_key in MARKET_TO_ODDS_LOOKUP:
@@ -72,7 +82,7 @@ def generate_predictions_for_competition(
     }
     market_quotes = {}
     for match_id, odds_rows in match_odds_rows.items():
-        for market_key, (market, line, selection) in MARKET_TO_ODDS_LOOKUP.items():
+        for market_key, (market, line, selection) in ALL_MARKET_TO_ODDS_LOOKUP.items():
             consensus = compute_market_consensus(odds_rows, market, line, selection)
             if consensus.market_probability is None:
                 continue
@@ -106,7 +116,7 @@ def generate_predictions_for_competition(
     )
     if "cards_model" in artifact and "corners_model" in artifact:
         outputs += predict_secondary_markets_for_table(
-            target_matches, artifact["cards_model"], artifact["corners_model"]
+            target_matches, artifact["cards_model"], artifact["corners_model"], market_quotes=market_quotes
         )
 
     # Sin esto, cada `predict`/`predict-upcoming`/`refresh` que se ejecuta

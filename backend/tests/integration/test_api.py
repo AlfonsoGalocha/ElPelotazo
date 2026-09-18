@@ -13,7 +13,11 @@ from backend.app.ingestion.odds.provider import FixtureOddsSnapshot
 from backend.app.main import app
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS
 from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
-from backend.app.services.data_service import attach_odds_to_scheduled_matches, ingest_matches
+from backend.app.services.data_service import (
+    attach_odds_to_scheduled_matches,
+    attach_secondary_odds_to_scheduled_matches,
+    ingest_matches,
+)
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import generate_predictions_for_competition
 from backend.tests.fixtures.synthetic import generate_synthetic_matches
@@ -325,6 +329,66 @@ def test_top_signals_default_window_excludes_far_future_matches(seeded_competiti
     wide_response = client.get("/predictions/top-signals", params={"limit": 100, "days": 15})
     wide_match_ids = {p["match"]["id"] for p in wide_response.json()}
     assert far_match_id in wide_match_ids
+
+
+class _FakeApiFootballProvider:
+    """Nunca se probo `ApiFootballOddsProvider` real contra la API (red
+    restringida): este test cubre el flujo completo attach -> regenerar
+    predicciones para tarjetas/corners con un proveedor simulado."""
+
+    name = "api_football"
+
+    def __init__(self, snapshots: list[FixtureOddsSnapshot]):
+        self._snapshots = snapshots
+
+    def is_available(self) -> bool:
+        return True
+
+    def fetch_secondary_odds(self, competition_code, season_year, date_from, date_to):
+        return self._snapshots
+
+
+def test_attach_secondary_odds_gives_cards_and_corners_a_real_market(seeded_competition_code):
+    """Tarjetas/corners no tienen mercado en The Odds API (ver
+    docs/data_sources.md), pero SI pueden tenerlo via API-Football. Tras
+    casar cuotas reales para 'cards_total'/'corners_total', las
+    predicciones de esos mercados deben dejar de ser "sin mercado"."""
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        match = (
+            db.query(Match)
+            .filter(Match.competition_id == comp.id, Match.provider_id == "future-fixture-1")
+            .one()
+        )
+        snapshot = FixtureOddsSnapshot(
+            home_team_raw="IntegrationTeam1",
+            away_team_raw="IntegrationTeam2",
+            commence_time=match.kickoff_utc.replace(tzinfo=dt.timezone.utc),
+            odds=[
+                RawOddsRecord("bet365", "cards_total", 3.5, "over", 1.90),
+                RawOddsRecord("bet365", "cards_total", 3.5, "under", 1.95),
+                RawOddsRecord("bet365", "corners_total", 8.5, "over", 1.85),
+                RawOddsRecord("bet365", "corners_total", 8.5, "under", 2.00),
+            ],
+        )
+        provider = _FakeApiFootballProvider([snapshot])
+        result = attach_secondary_odds_to_scheduled_matches(
+            db, provider, seeded_competition_code, 2025, fixture_date, fixture_date
+        )
+        assert result.matched == 1
+
+    with session_scope() as db:
+        predictions = generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+        by_market = {p.market: p for p in predictions}
+        cards_over = by_market["cards_over_3_5"]
+        assert cards_over.market_odds is not None
+        assert cards_over.market_probability is not None
+        assert cards_over.edge is not None
+
+        corners_over = by_market["corners_over_8_5"]
+        assert corners_over.market_odds is not None
+        assert corners_over.market_probability is not None
 
 
 def test_model_only_endpoint_returns_predictions_without_market(seeded_competition_code):

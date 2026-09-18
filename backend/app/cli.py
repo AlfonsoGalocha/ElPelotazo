@@ -20,10 +20,11 @@ from backend.app.backtesting.engine import run_walk_forward_backtest, summarize_
 from backend.app.backtesting.reports import write_backtest_report
 from backend.app.config.settings import REPO_ROOT
 from backend.app.db.database import init_db, session_scope
-from backend.app.db.models.core import Competition
+from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
 from backend.app.features.goals import build_match_feature_table
+from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
 from backend.app.ingestion.football_data.fixtures_provider import OpenFootballFixturesProvider
 from backend.app.ingestion.football_data.history_dataset import ClubFootballMatchDataProvider
 from backend.app.ingestion.football_data.provider import (
@@ -32,10 +33,15 @@ from backend.app.ingestion.football_data.provider import (
 )
 from backend.app.ingestion.odds.provider import OddsApiProvider
 from backend.app.models.goals.dixon_coles import DixonColesModel
-from backend.app.services.data_service import attach_odds_to_scheduled_matches, ingest_matches
+from backend.app.services.data_service import (
+    attach_odds_to_scheduled_matches,
+    attach_secondary_odds_to_scheduled_matches,
+    ingest_matches,
+)
 from backend.app.services.match_service import load_market_odds_column, load_matches_dataframe
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import generate_predictions_for_competition
+from backend.app.services.round_service import get_current_round
 from backend.app.utils.dates import season_label as season_label_from_date
 from backend.app.utils.logging import get_logger
 
@@ -182,6 +188,77 @@ def update_odds(competition: str = typer.Option(None)) -> None:
 
 
 @app.command()
+def update_secondary_odds(competition: str = typer.Option(None)) -> None:
+    """Descarga cuotas REALES de tarjetas/corners (API-Football) para los
+    partidos de la JORNADA ACTUAL de cada competicion (nunca la temporada
+    completa: el plan gratuito de API-Football son 100 requests/dia, y
+    consultar toda la temporada lo agotaria de inmediato).
+
+    Requiere API_FOOTBALL_ENABLED=true y API_FOOTBALL_KEY en `.env`
+    (registro en https://www.api-football.com o via RapidAPI — en ese caso
+    pon ademas API_FOOTBALL_USE_RAPIDAPI=true). Sin esto configurado, se
+    salta sin error: tarjetas/corners siguen funcionando igual que hasta
+    ahora, solo como "prediccion del modelo — sin mercado".
+
+    IMPORTANTE: The Odds API (`update-odds`) NO cubre estos mercados en
+    ningun plan (ver docs/data_sources.md) — por eso hace falta esta
+    fuente aparte. Sin verificar end-to-end contra la API real desde este
+    entorno (red restringida); si el matching de mercados falla, el propio
+    comando imprime los nombres de mercado reales que SI vio, para
+    ajustarlo en un vistazo.
+    """
+    init_db()
+    provider = ApiFootballOddsProvider()
+    if not provider.is_available():
+        typer.echo(
+            "[update-secondary-odds] API_FOOTBALL_KEY no configurada: sin cuotas de tarjetas/corners."
+        )
+        typer.echo(
+            "[update-secondary-odds] Registrate en https://www.api-football.com (o via RapidAPI) y en tu .env pon:"
+        )
+        typer.echo("[update-secondary-odds]   API_FOOTBALL_ENABLED=true")
+        typer.echo("[update-secondary-odds]   API_FOOTBALL_KEY=<tu-key>")
+        typer.echo("[update-secondary-odds]   API_FOOTBALL_USE_RAPIDAPI=true  # solo si tu key es de RapidAPI")
+        return
+
+    competitions = [competition] if competition else ALL_COMPETITIONS
+    with session_scope() as db:
+        for comp in competitions:
+            round_info = get_current_round(db, comp)
+            if round_info is None or not round_info.match_ids:
+                typer.echo(f"[update-secondary-odds] {comp}: sin partidos programados, se salta.")
+                continue
+
+            season = db.query(Season).filter_by(id=round_info.season_id).one()
+            season_year = int(season.label.split("/")[0])
+            window_start = (round_info.round_start or dt.datetime.utcnow()).date()
+            window_end = (round_info.round_end or dt.datetime.utcnow()).date()
+
+            try:
+                result = attach_secondary_odds_to_scheduled_matches(
+                    db, provider, comp, season_year, window_start, window_end
+                )
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(f"[update-secondary-odds] {comp}: ERROR {exc}")
+                continue
+
+            typer.echo(
+                f"[update-secondary-odds] {comp}: {result.fixtures_fetched} partidos consultados, "
+                f"{result.matched} con cuotas de tarjetas/corners casadas."
+            )
+            if result.matched_match_ids:
+                dates = sorted(
+                    {m.kickoff_utc.date() for m in db.query(Match).filter(Match.id.in_(result.matched_match_ids))}
+                )
+                regenerated = 0
+                for target_date in dates:
+                    regenerated += len(generate_predictions_for_competition(db, comp, target_date))
+                typer.echo(
+                    f"[update-secondary-odds] {comp}: {regenerated} predicciones regeneradas con las cuotas nuevas."
+                )
+
+
+@app.command()
 def train(competition: str = typer.Option(None)) -> None:
     """Entrena baseline + Dixon-Coles + ML classifier + ensemble por competicion."""
     init_db()
@@ -301,34 +378,38 @@ def refresh(
     ),
 ) -> None:
     """Un unico comando que deja el sistema listo para ver predicciones: hace
-    `update` + `update-fixtures` + `update-odds` + `train` + `predict-upcoming`
-    en secuencia.
+    `update` + `update-fixtures` + `update-odds` + `update-secondary-odds` +
+    `train` + `predict-upcoming` en secuencia.
 
     Pensado para no tener que acordarse de encadenar los comandos a mano cada
     vez que quieres refrescar el dashboard. Usa `--skip-historical` en
     ejecuciones repetidas del mismo dia (los resultados ya jugados no
     cambian cada pocas horas; los fixtures, las cuotas y las predicciones si
-    conviene refrescarlos a menudo). `update-odds` se ejecuta ANTES de
+    conviene refrescarlos a menudo). Las cuotas se descargan ANTES de
     generar las predicciones para que estas ya incluyan `market_probability`
-    y `edge` cuando haya cuotas disponibles (requiere ODDS_API_KEY; si no
-    esta configurada, se salta sola sin romper el resto del pipeline).
+    y `edge` cuando haya cuotas disponibles (requieren ODDS_API_KEY /
+    API_FOOTBALL_KEY respectivamente; si no estan configuradas, cada paso
+    se salta solo sin romper el resto del pipeline).
     """
-    typer.echo("=== [1/5] Resultados historicos ===")
+    typer.echo("=== [1/6] Resultados historicos ===")
     if skip_historical:
         typer.echo("(saltado por --skip-historical)")
     else:
         update(competition=competition, season=None, source="history_dataset")
 
-    typer.echo("=== [2/5] Fixtures reales (temporada en curso) ===")
+    typer.echo("=== [2/6] Fixtures reales (temporada en curso) ===")
     update_fixtures(competition=competition)
 
-    typer.echo("=== [3/5] Cuotas de mercado reales (partidos futuros) ===")
+    typer.echo("=== [3/6] Cuotas de mercado reales: goles/1X2 (The Odds API) ===")
     update_odds(competition=competition)
 
-    typer.echo("=== [4/5] Entrenamiento de modelos ===")
+    typer.echo("=== [4/6] Cuotas de mercado reales: tarjetas/corners (API-Football) ===")
+    update_secondary_odds(competition=competition)
+
+    typer.echo("=== [5/6] Entrenamiento de modelos ===")
     train(competition=competition)
 
-    typer.echo("=== [5/5] Predicciones para partidos programados ===")
+    typer.echo("=== [6/6] Predicciones para partidos programados ===")
     predict_upcoming(days=days, competition=competition)
 
     typer.echo("\nListo. Arranca (o recarga) la API y el dashboard para verlo.")

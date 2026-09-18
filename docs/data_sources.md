@@ -86,11 +86,50 @@ oficial). Fragil ante cambios de maquetacion. `UNDERSTAT_ENABLED=false`.
 Estadisticas muy completas via tablas HTML, pero sin API y con rate limits
 estrictos (recomendado <=1 request/3s). `FBREF_ENABLED=false`.
 
-## API-Football — PENDIENTE, deshabilitada
+## API-Football — cuotas de tarjetas/corners implementadas, deshabilitada por defecto; fixtures/alineaciones PENDIENTE
 
-Plan gratuito de 100 requests/dia: inviable como fuente historica principal.
-Util a futuro para fixtures del dia / alineaciones. Requiere
-`API_FOOTBALL_KEY`.
+El adapter de FIXTURES/alineaciones (`backend/app/ingestion/api_football/provider.py`)
+sigue sin implementar (plan gratuito de 100 requests/dia, inviable como
+fuente historica principal; openfootball ya cubre el calendario futuro, ver
+mas arriba). Lo que SI esta implementado es un adapter de CUOTAS de
+tarjetas/corners, porque The Odds API no ofrece esos mercados en ningun
+plan (ver seccion de abajo).
+
+- Adapter: `backend/app/ingestion/api_football/odds_provider.py`
+  (`ApiFootballOddsProvider`).
+- Orquestacion: `backend/app/services/data_service.py::attach_secondary_odds_to_scheduled_matches`.
+- CLI: `football-edge update-secondary-odds` (o `football-edge refresh`,
+  que ya lo incluye).
+- Solo pide cuotas para la JORNADA ACTUAL de cada liga (nunca la
+  temporada completa: el plan gratuito son 100 requests/dia, y una
+  temporada entera lo agotaria de inmediato). 1 request de fixtures +
+  1 request de odds por partido de esa jornada (~10 partidos/liga).
+- Busca mercados de tarjetas/corners por SUBCADENA en el nombre ("card"/
+  "corner", insensible a mayusculas) y parsea "Over/Under N" por regex
+  generico, en vez de asumir un nombre/formato exacto: si el nombre real
+  difiere ligeramente, sigue funcionando. Si tras procesar una liga
+  entera no se encuentra nada parecido a tarjetas/corners, se loguea con
+  nivel WARNING la lista completa de nombres de mercado vistos, para
+  ajustar el matching en un vistazo en vez de fallar en silencio.
+
+Activacion:
+1. Registrate en https://www.api-football.com/ (o via RapidAPI:
+   https://rapidapi.com/api-sports/api/api-football).
+2. En tu `.env`: `API_FOOTBALL_ENABLED=true` y `API_FOOTBALL_KEY=<tu-key>`.
+   Si la key es de RapidAPI (no directamente de api-football.com), anhade
+   tambien `API_FOOTBALL_USE_RAPIDAPI=true` (cambia el host/cabeceras de
+   autenticacion, son los mismos datos).
+3. `football-edge update-secondary-odds` (o `refresh`, que ya lo incluye).
+
+**Nota de honestidad**: igual que con The Odds API, este adapter se
+escribio siguiendo la documentacion publica de API-Football pero NO se
+pudo verificar end-to-end contra la API real (mismo entorno con el
+egress de red restringido). Los IDs de liga (`LEAGUE_IDS`) y la
+estructura general de `/fixtures` y `/odds` son los documentados
+publicamente, pero el nombre EXACTO de los mercados de tarjetas/corners
+puede variar; el matching por subcadena y el log de diagnostico (arriba)
+existen precisamente para que un desajuste se corrija en minutos en vez
+de investigarse a ciegas.
 
 ## The Odds API — implementada, deshabilitada por defecto
 
@@ -109,16 +148,14 @@ modelo sigue funcionando, simplemente no hay con que compararlo.
 - Cobertura: 1X2 (`h2h`) y Over/Under de goles a 1.5/2.5/3.5 (`totals`).
   BTTS no esta disponible en el plan usado, igual que en los datasets
   historicos (queda `None` en ambos casos, nunca inventado).
-- **Tarjetas y corners NUNCA tienen cuota real, en ningun plan de The Odds
-  API**: no es un bug ni una limitacion temporal, es que esos mercados
-  sencillamente no existen en su catalogo de mercados para futbol (que se
-  limita a resultado y totales de goles). Conseguir cuotas reales de
-  tarjetas/corners requeriria una fuente DISTINTA (proveedores mas
-  especializados, normalmente de pago, o scraping directo de una casa de
-  apuestas concreta) — no una configuracion distinta de este mismo
-  adapter. Por eso estos mercados son siempre "prediccion del modelo — sin
-  mercado" (`/predictions/model-only`) y nunca compiten en el ranking de
-  "mejores señales".
+- **Tarjetas y corners NUNCA tienen cuota real con este adapter, en ningun
+  plan de The Odds API**: no es un bug ni una limitacion temporal, es que
+  esos mercados sencillamente no existen en su catalogo de mercados para
+  futbol (que se limita a resultado y totales de goles). Para esos
+  mercados hace falta la fuente API-Football descrita mas abajo; sin
+  ella, quedan siempre como "prediccion del modelo — sin mercado"
+  (`/predictions/model-only`) y no compiten en el ranking de "mejores
+  señales".
 
 Activacion (gratis, sin tarjeta):
 1. Registrate en https://the-odds-api.com/#get-access (plan free = 500

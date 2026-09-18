@@ -98,7 +98,10 @@ puntuar por encima de una jugada solida de alta probabilidad (p.ej. 80% a
 cuota 1.35) solo por el tamanho bruto del edge. `/predictions/best` y
 `/predictions/top-signals` ("Mejores señales") usan este mismo scoring;
 `/predictions/model-only` expone, sin competir en el ranking, las
-predicciones sin mercado (tarjetas/corners, o goles sin cuota todavia).
+predicciones sin mercado (goles sin cuota todavia, o tarjetas/corners si
+API-Football no esta configurado — ver docs/data_sources.md, con esa
+fuente activa tarjetas/corners tambien pueden tener mercado real y
+competir con normalidad).
 
 ## Jornada actual (`services/round_service.py`)
 

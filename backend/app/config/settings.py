@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     fbref_enabled: bool = False
     api_football_enabled: bool = False
     api_football_key: str | None = None
+    # api-football.com emite keys para su propio host directamente
+    # ("v3.football.api-sports.io", header x-apisports-key) o, si te
+    # registras via RapidAPI, para un host distinto con otras cabeceras
+    # ("api-football-v1.p.rapidapi.com", headers X-RapidAPI-Key/-Host).
+    # Ambas son la MISMA API/datos, solo cambia como se autentica: por eso
+    # este flag en vez de asumir uno de los dos.
+    api_football_use_rapidapi: bool = False
     odds_api_enabled: bool = False
     odds_api_key: str | None = None
 
