@@ -11,6 +11,7 @@ from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import ModelVersion, Prediction
 from backend.app.features.goals import build_match_feature_table
 from backend.app.market.consensus import compute_market_consensus
+from backend.app.prediction.market_labels import DOUBLE_CHANCE_COMPONENTS
 from backend.app.prediction.predictor import (
     predict_markets_for_table,
     predict_secondary_markets_for_table,
@@ -36,6 +37,27 @@ MARKET_TO_ODDS_LOOKUP = {
     "home_win": ("match_result", None, "home"),
     "draw": ("match_result", None, "draw"),
     "away_win": ("match_result", None, "away"),
+    # Doble oportunidad: ningun proveedor actual la trae como mercado
+    # propio, por eso este lookup nunca encuentra filas reales en
+    # MatchOdds para "double_chance" -- la cuota real se DERIVA sumando
+    # los dos componentes de h2h (ver _add_derived_double_chance_quotes
+    # mas abajo), que se ejecuta DESPUES de este lookup y solo rellena el
+    # hueco si no hay ya una cuota real para este market_key (si algun dia
+    # se integra una fuente que sí trae "double_chance" como mercado
+    # propio, esa cuota real tiene prioridad sobre la derivada).
+    "double_chance_1x": ("double_chance", None, "1x"),
+    "double_chance_x2": ("double_chance", None, "x2"),
+    "double_chance_12": ("double_chance", None, "12"),
+    # Goles de un equipo: NINGUNA fuente actual trae esta cuota (ver
+    # market_labels.py) -- este lookup nunca encontrara filas en
+    # MatchOdds para "home_team_total_goals"/"away_team_total_goals" hoy,
+    # asi que market_probability queda siempre None (nunca se inventa),
+    # pero deja el mercado listo para cuando se integre una fuente que si
+    # la traiga, sin tocar mas codigo que este diccionario.
+    "home_team_over_0_5": ("home_team_total_goals", 0.5, "over"),
+    "home_team_over_1_5": ("home_team_total_goals", 1.5, "over"),
+    "away_team_over_0_5": ("away_team_total_goals", 0.5, "over"),
+    "away_team_over_1_5": ("away_team_total_goals", 1.5, "over"),
 }
 
 # Tarjetas/corners: The Odds API no las ofrece (ver docs/data_sources.md),
@@ -55,6 +77,50 @@ def _market_line_and_selection(market_key: str) -> tuple[float | None, str]:
         return line, selection
     spec = SECONDARY_MARKET_DEFINITIONS[market_key]
     return spec.line, spec.kind
+
+
+def _add_derived_double_chance_quotes(market_quotes: dict, match_ids) -> None:
+    """Doble oportunidad NUNCA depende de que una casa concreta ofrezca
+    ese mercado exacto (a diferencia de btts/alternate_totals, que si):
+    su cuota de mercado se DERIVA sumando las probabilidades sin vig ya
+    calculadas para sus dos componentes de h2h (ver
+    market_labels.py::DOUBLE_CHANCE_COMPONENTS) -- los 3 resultados de
+    1X2 son mutuamente excluyentes, asi que la probabilidad de "1 o X" es
+    exactamente P(1) + P(X) sin necesidad de ninguna cuota adicional.
+    Solo rellena el hueco si el mercado NO tiene ya una cuota real (por si
+    algun dia una fuente trae "double_chance" como mercado propio, esa
+    cuota real prevalece sobre la derivada).
+
+    Honestidad: `market_odds` resultante es un precio JUSTO derivado del
+    consenso (1 / probabilidad), no una cuota realmente ofrecida por
+    ninguna casa -- una casa real cobraria su propio margen sobre doble
+    oportunidad, normalmente menor que en 1X2 pero no cero. Se marca con
+    `market_probability_source="derived_double_chance"` para que quede
+    claro en la UI/logs que no es una cuota observada.
+    """
+    for match_id in match_ids:
+        for dc_key, (component_a, component_b) in DOUBLE_CHANCE_COMPONENTS.items():
+            if (match_id, dc_key) in market_quotes:
+                continue  # cuota real ya presente, no se sobreescribe
+            quote_a = market_quotes.get((match_id, component_a))
+            quote_b = market_quotes.get((match_id, component_b))
+            if quote_a is None or quote_b is None:
+                continue
+            probability = min(quote_a["market_probability"] + quote_b["market_probability"], 1.0)
+            if probability <= 0:
+                continue
+            market_quotes[(match_id, dc_key)] = {
+                "market_probability": probability,
+                "market_odds": 1.0 / probability,
+                "vig_removed": quote_a["vig_removed"] and quote_b["vig_removed"],
+                "market_probability_source": "derived_double_chance",
+                "bookmakers_count": min(quote_a["bookmakers_count"], quote_b["bookmakers_count"]),
+                "bookmakers_used": min(quote_a["bookmakers_used"], quote_b["bookmakers_used"]),
+                "market_odds_min": None,
+                "market_odds_max": None,
+                "market_odds_median": None,
+                "market_odds_average": None,
+            }
 
 
 def generate_predictions_for_competition(
@@ -113,6 +179,8 @@ def generate_predictions_for_competition(
                     market_key,
                     consensus.outliers_removed,
                 )
+
+    _add_derived_double_chance_quotes(market_quotes, match_odds_rows.keys())
 
     outputs = predict_markets_for_table(
         target_matches,

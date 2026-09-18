@@ -168,6 +168,25 @@ modelo sigue funcionando, simplemente no hay con que compararlo.
   plan free) lo permite. `alternate_totals`/`btts` via este endpoint por
   evento AUN NO estan verificados end-to-end; `h2h`/`totals` via el
   endpoint masivo si.
+- **Doble oportunidad (1X, X2, 12)**: NINGUN proveedor la trae como
+  mercado propio, pero su cuota SIEMPRE existe si existe h2h (a
+  diferencia de btts/alternate_totals, que dependen de que una casa
+  concreta ofrezca justo ese mercado exacto): se DERIVA sumando las
+  probabilidades sin vig ya calculadas para sus dos componentes de h2h
+  (los 3 resultados de 1X2 son mutuamente excluyentes, asi que
+  P(1 o X) = P(1) + P(X) exactamente). Ver
+  `services/prediction_service.py::_add_derived_double_chance_quotes`.
+  El `market_odds` resultante es un precio JUSTO derivado del consenso
+  (1 / probabilidad), no una cuota realmente ofrecida por ninguna casa —
+  se marca con `market_probability_source="derived_double_chance"` para
+  que quede claro que no es una cuota observada (una casa real cobraria
+  su propio margen sobre este mercado, normalmente menor que en 1X2 pero
+  no cero).
+- **Goles de un equipo** (`home_team_over_0_5`/`1_5`, `away_team_over_0_5`/`1_5`):
+  el modelo ya los calcula (mismo score_matrix que el resto), pero NINGUNA
+  fuente actual trae esta cuota de mercado, asi que quedan siempre como
+  "prediccion del modelo — sin mercado" (`/predictions/model-only`) hasta
+  que se integre una fuente que si la traiga.
 - **Tarjetas y corners quedan aparcados (decision del usuario, 2026-09-18)**:
   la unica fuente viable para esos mercados (API-Football) exige plan de
   pago para acceder a la temporada en curso — el plan Free solo cubre
