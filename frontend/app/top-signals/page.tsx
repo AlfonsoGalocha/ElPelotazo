@@ -22,8 +22,10 @@ export default async function TopSignalsPage({
               month: "short",
             })}.`
           : "De los próximos 4 días."}{" "}
-        Solo predicciones con mercado real y válido (cuota &gt; 1.0, edge no
-        negativo, al menos una casa de apuestas respaldando el consenso).{" "}
+        Solo predicciones con mercado real y válido (cuota &gt; 1.0 y &le; 6.0, edge no
+        negativo, al menos una casa de apuestas respaldando el consenso) — un edge grande en un
+        resultado muy improbable (cuota justa 8, mercado a 15) no es una predicción práctica para
+        destacar, aunque matemáticamente haya diferencia.{" "}
         {sortBy === "edge"
           ? "Ordenado por edge de mayor a menor."
           : "Puntuación = probabilidad²× edge × confianza × calidad de datos — una cuota irrisoria (ej. 1.02) con edge casi nulo no sube aquí aunque la probabilidad del modelo sea altísima. La confianza ya incluye cuántas casas respaldan la cuota: un consenso de una única casa pesa menos que el de 5+."}

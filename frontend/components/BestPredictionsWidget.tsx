@@ -25,7 +25,8 @@ export default async function BestPredictionsWidget() {
         </Link>{" "}
         las que no tienen mercado todavía). Se prioriza probabilidad alta del modelo{" "}
         <span className="text-slate-400">junto con</span> una cuota mejor que la justa (edge real):
-        una probabilidad altísima a una cuota irrisoria (ej. 98% a 1.02) no puntúa alto.
+        una probabilidad altísima a una cuota irrisoria (ej. 98% a 1.02) no puntúa alto, y un edge
+        grande en un resultado muy improbable (cuota &gt; 6.0) directamente no entra.
       </p>
       <div className="flex flex-col gap-2">
         {predictions.map((p) => (

@@ -27,6 +27,7 @@ from backend.app.db.models.modeling import Prediction
 class ExclusionReason(str, Enum):
     NO_MARKET = "sin_mercado"  # no hay market_probability/market_odds en absoluto
     INVALID_ODDS = "cuota_invalida"  # cuota <= 1.0 o por debajo del minimo configurado
+    ODDS_TOO_HIGH = "cuota_demasiado_alta"  # cuota por encima del maximo configurado (ver max_signal_odds)
     INVALID_EDGE = "edge_invalido"  # edge ausente o por debajo del minimo configurado
     INSUFFICIENT_BOOKMAKERS = "pocas_casas"  # menos casas que el minimo configurado
     LOW_DATA_QUALITY = "calidad_datos_baja"  # data_quality por debajo del minimo configurado
@@ -55,6 +56,16 @@ def evaluate_quality_gate(
         return ExclusionReason.NO_MARKET
     if prediction.market_odds <= 1.0 or prediction.market_odds < settings.min_signal_odds:
         return ExclusionReason.INVALID_ODDS
+    if settings.max_signal_odds is not None and prediction.market_odds > settings.max_signal_odds:
+        # Un "edge" grande en un resultado muy improbable (p.ej. modelo ~12%
+        # / cuota justa 8, mercado ofrece cuota 15) es matematicamente un
+        # edge real, pero no es una PREDICCION util para destacar: sigue
+        # siendo mas probable que falle que que acierte. Se descarta ANTES
+        # del scoring (no basta con que el cuadrado de la probabilidad lo
+        # penalice en el ranking): si un dia hay pocas senhales candidatas,
+        # un tiro muy largo como este podria colarse igualmente en el top-N
+        # por pura falta de competencia, aunque su score absoluto sea bajo.
+        return ExclusionReason.ODDS_TOO_HIGH
     if prediction.edge is None or prediction.edge < settings.min_edge_pp:
         return ExclusionReason.INVALID_EDGE
     if (prediction.bookmakers_used or 0) < settings.min_bookmakers:

@@ -84,9 +84,10 @@ realidad es ruido de datos, no una oportunidad real.
 ## Ranking de senhales (`prediction/ranking.py`)
 
 Dos fases separadas: un filtro DURO configurable (`MIN_SIGNAL_ODDS`,
-`MIN_EDGE_PP`, `MIN_BOOKMAKERS`, `MIN_DATA_QUALITY` en `Settings`, nunca
-hardcodeados en el frontend) que descarta predicciones sin mercado valido
-o con datos insuficientes, y un SCORING transparente entre las que pasan:
+`MIN_EDGE_PP`, `MIN_BOOKMAKERS`, `MIN_DATA_QUALITY`, `MAX_SIGNAL_ODDS` en
+`Settings`, nunca hardcodeados en el frontend) que descarta predicciones
+sin mercado valido o con datos insuficientes, y un SCORING transparente
+entre las que pasan:
 
 ```
 score = model_probability^2 * max(edge, 0) * confidence * data_quality
@@ -102,6 +103,19 @@ predicciones sin mercado (goles sin cuota todavia, o tarjetas/corners si
 API-Football no esta configurado — ver docs/data_sources.md, con esa
 fuente activa tarjetas/corners tambien pueden tener mercado real y
 competir con normalidad).
+
+**`MAX_SIGNAL_ODDS` (2026-09-18, feedback real de usuario)**: unica
+excepcion deliberada a "el filtro duro no juzga calidad de la senhal, solo
+que los datos sean validos". Un edge grande en un resultado muy
+improbable (p.ej. modelo ve ~12% de probabilidad, cuota justa 8, el
+mercado ofrece 15) es matematicamente un edge real, pero no es una
+prediccion practica para destacar: sigue siendo mas probable que falle
+que que acierte, y el `model_probability^2` del scoring no basta por si
+solo para dejarlo fuera del top-N si un dia hay pocas senhales
+candidatas (compite igual por "hueco" en la lista aunque su score
+absoluto sea bajo). Por defecto `6.0` (cuotas por encima implican
+probabilidad implicita < ~17%) — ajustable a tu propio criterio de
+riesgo, o `None` para desactivarlo.
 
 ## Jornada actual (`services/round_service.py`)
 

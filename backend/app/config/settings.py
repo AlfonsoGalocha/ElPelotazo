@@ -68,6 +68,18 @@ class Settings(BaseSettings):
     min_edge_pp: float = 0.0  # exige edge NO negativo (el modelo no puede ir peor que el mercado)
     min_bookmakers: int = 1  # al menos una casa real respaldando la cuota (nunca 0 = "sin mercado")
     min_data_quality: float = 0.0  # sin filtro adicional por defecto; confidence ya lo pondera
+    # UNICA excepcion deliberada a "el filtro duro no juzga calidad": un
+    # "edge" grande en un resultado muy improbable (p.ej. modelo ~12% /
+    # cuota justa 8, mercado ofrece 15) es matematicamente un edge real,
+    # pero no es una prediccion util para destacar en "Mejores señales" --
+    # sigue siendo mas probable que falle que que acierte, y el cuadrado
+    # de la probabilidad en el scoring no basta para que quede fuera del
+    # top-N si un dia hay pocas senhales candidatas (feedback real de
+    # usuario, 2026-09-18). 6.0 es un valor de partida razonable (cuotas
+    # por encima implican probabilidad implicita < ~17%), no un limite
+    # universal -- ajustalo segun tu propio criterio de riesgo. `None`
+    # desactiva el filtro por completo.
+    max_signal_odds: float | None = 6.0
 
     @property
     def model_artifacts_path(self) -> Path:

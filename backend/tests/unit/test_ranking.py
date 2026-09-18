@@ -39,6 +39,21 @@ def test_prediction_with_invalid_odds_is_excluded():
     assert evaluate_quality_gate(prediction) == ExclusionReason.INVALID_ODDS
 
 
+def test_prediction_with_odds_above_max_is_excluded():
+    """Feedback real de usuario: un edge grande en un resultado muy
+    improbable (modelo ~12%, cuota justa 8, mercado ofrece 15) es
+    matematicamente un edge real pero no una prediccion practica para
+    destacar -- sigue siendo mas probable que falle que que acierte."""
+    prediction = _prediction(model_probability=0.125, market_probability=0.0667, market_odds=15.0, edge=0.058)
+    assert evaluate_quality_gate(prediction) == ExclusionReason.ODDS_TOO_HIGH
+
+
+def test_max_signal_odds_is_configurable_and_can_be_disabled():
+    prediction = _prediction(market_odds=15.0)
+    assert evaluate_quality_gate(prediction, Settings(max_signal_odds=20.0)) is None
+    assert evaluate_quality_gate(prediction, Settings(max_signal_odds=None)) is None
+
+
 def test_prediction_with_negative_edge_is_excluded():
     prediction = _prediction(edge=-0.05)
     assert evaluate_quality_gate(prediction) == ExclusionReason.INVALID_EDGE
