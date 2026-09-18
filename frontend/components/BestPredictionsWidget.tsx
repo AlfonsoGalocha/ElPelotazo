@@ -18,11 +18,13 @@ export default async function BestPredictionsWidget() {
         Las 5 mejores predicciones
       </div>
       <p className="mb-3 text-xs text-slate-500">
-        Mezclando goles, tarjetas y córners. Cuando hay cuota real de mercado, se prioriza
-        probabilidad alta del modelo <span className="text-slate-400">junto con</span> una cuota
-        mejor que la justa (edge real) — una probabilidad altísima a una cuota irrisoria (ej. 98% a
-        1.02) no puntúa alto. Sin cuota de mercado disponible, se usa la convicción del modelo
-        (probabilidad alejada del 50%) × confianza × calidad de datos.
+        Solo predicciones con mercado real (cuota, probabilidad de mercado y edge válidos —{" "}
+        <Link href="/#sin-mercado" className="underline hover:text-slate-300">
+          ver aparte
+        </Link>{" "}
+        las que no tienen mercado todavía). Se prioriza probabilidad alta del modelo{" "}
+        <span className="text-slate-400">junto con</span> una cuota mejor que la justa (edge real):
+        una probabilidad altísima a una cuota irrisoria (ej. 98% a 1.02) no puntúa alto.
       </p>
       <div className="flex flex-col gap-2">
         {predictions.map((p) => (
@@ -37,6 +39,9 @@ export default async function BestPredictionsWidget() {
               </div>
               <div className="text-xs text-slate-500">
                 {FAMILY_LABELS[marketFamily(p.market)]} · {MARKET_DISPLAY_NAMES[p.market] ?? p.market}
+                {p.bookmakers_used != null && (
+                  <span> · {p.bookmakers_used} {p.bookmakers_used === 1 ? "casa" : "casas"}</span>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -49,7 +54,10 @@ export default async function BestPredictionsWidget() {
           </Link>
         ))}
         {predictions.length === 0 && (
-          <div className="text-sm text-slate-500">Sin predicciones todavía.</div>
+          <div className="text-sm text-slate-500">
+            Sin señales con mercado válido todavía. Ejecuta{" "}
+            <code className="rounded bg-black/40 px-1 py-0.5">football-edge update-odds</code>.
+          </div>
         )}
       </div>
     </div>

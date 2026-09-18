@@ -30,5 +30,18 @@ class MatchOut(BaseModel):
     status: str
     home_goals: int | None
     away_goals: int | None
+    matchday: int | None = None
 
     model_config = {"from_attributes": True}
+
+
+class RoundOut(BaseModel):
+    """Jornada actual de una competicion (ver services/round_service.py)."""
+
+    competition_code: str
+    round: int | None
+    round_start: dt.datetime | None
+    round_end: dt.datetime | None
+    next_round: int | None
+    is_fallback: bool
+    match_ids: list[int]

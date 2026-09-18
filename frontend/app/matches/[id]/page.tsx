@@ -20,6 +20,7 @@ function PredictionTable({ predictions }: { predictions: Prediction[] }) {
             <th className="px-3 py-2">Modelo</th>
             <th className="px-3 py-2">Mercado</th>
             <th className="px-3 py-2">Cuota</th>
+            <th className="px-3 py-2">Casas</th>
             <th className="px-3 py-2">Edge</th>
             <th className="px-3 py-2">Cuota justa</th>
             <th className="px-3 py-2">Señal</th>
@@ -28,12 +29,16 @@ function PredictionTable({ predictions }: { predictions: Prediction[] }) {
         <tbody>
           {predictions.map((p) => (
             <tr key={p.id} className="border-t border-surface-border">
-              <td className="px-3 py-2 text-slate-200">{MARKET_DISPLAY_NAMES[p.market] ?? p.market}</td>
+              <td className="px-3 py-2 text-slate-200">
+                {MARKET_DISPLAY_NAMES[p.market] ?? p.market}
+                {!p.has_market && <span className="ml-2 text-[10px] text-slate-500">sin mercado</span>}
+              </td>
               <td className="px-3 py-2">{(p.model_probability * 100).toFixed(1)}%</td>
               <td className="px-3 py-2">
                 {p.market_probability !== null ? `${(p.market_probability * 100).toFixed(1)}%` : "—"}
               </td>
               <td className="px-3 py-2">{p.market_odds !== null ? p.market_odds.toFixed(2) : "—"}</td>
+              <td className="px-3 py-2 text-slate-400">{p.bookmakers_used ?? "—"}</td>
               <td className="px-3 py-2">{p.edge !== null ? `${(p.edge * 100).toFixed(1)} pp` : "—"}</td>
               <td className="px-3 py-2">{p.fair_odds.toFixed(2)}</td>
               <td className="px-3 py-2">
@@ -89,7 +94,10 @@ export default async function MatchDetailPage({ params }: { params: { id: string
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <div className="text-xs uppercase tracking-wide text-slate-500">{match.competition.name}</div>
+        <div className="text-xs uppercase tracking-wide text-slate-500">
+          {match.competition.name}
+          {match.matchday != null && ` · Jornada ${match.matchday}`}
+        </div>
         <h1 className="text-2xl font-semibold text-slate-100">
           {match.home_team.canonical_name} <span className="text-slate-500">vs</span>{" "}
           {match.away_team.canonical_name}

@@ -257,3 +257,121 @@ def test_attach_odds_reports_unmatched_examples_for_unknown_teams(seeded_competi
         assert result.fixtures_fetched == 1
         assert result.matched == 0
         assert result.unmatched_examples == [("Equipo Que No Existe", "Otro Equipo Fantasma")]
+
+
+def test_top_signals_only_includes_predictions_with_valid_market(seeded_competition_code):
+    """Se apoya en `test_attach_odds_matches_by_team_and_refreshes_predictions`
+    (mismo modulo, misma competicion de prueba): tras esa prueba, el
+    partido futuro tiene cuota SOLO para over_2_5 (goles), nunca para
+    tarjetas/corners. `/predictions/top-signals` ("Mejores señales") NUNCA
+    debe devolver una prediccion sin mercado, sea cual sea su probabilidad."""
+    client = TestClient(app)
+    response = client.get("/predictions/top-signals", params={"limit": 100})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) > 0
+    for prediction in body:
+        assert prediction["has_market"] is True
+        assert prediction["market_odds"] is not None
+        assert prediction["market_probability"] is not None
+        assert prediction["edge"] is not None and prediction["edge"] >= 0
+        assert not prediction["market"].startswith("cards_")
+        assert not prediction["market"].startswith("corners_")
+
+
+def test_model_only_endpoint_returns_predictions_without_market(seeded_competition_code):
+    """Las predicciones de tarjetas/corners (sin mercado en las fuentes de
+    datos usadas) deben poder consultarse por separado, etiquetadas como
+    sin mercado, en vez de simplemente desaparecer."""
+    client = TestClient(app)
+    response = client.get("/predictions/model-only", params={"limit": 100})
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) > 0
+    for prediction in body:
+        assert prediction["has_market"] is False
+        assert prediction["market_odds"] is None
+    markets = {p["market"] for p in body}
+    assert any(m.startswith("cards_") or m.startswith("corners_") for m in markets)
+
+
+def test_best_predictions_debug_explains_exclusions(seeded_competition_code):
+    """Observabilidad (seccion 13): tiene que poder saberse POR QUE una
+    prediccion no entro al ranking, no solo que no esta."""
+    client = TestClient(app)
+    response = client.get("/predictions/best/debug")
+    assert response.status_code == 200
+    body = response.json()
+    assert "included" in body and "excluded" in body
+    assert len(body["excluded"]) > 0
+    for excluded in body["excluded"]:
+        assert excluded["reason"] in {
+            "sin_mercado",
+            "cuota_invalida",
+            "edge_invalido",
+            "pocas_casas",
+            "calidad_datos_baja",
+        }
+
+
+def test_current_round_endpoint_reports_round_metadata():
+    competition_code = "current_round_api_test"
+    with session_scope() as db:
+        from backend.app.normalization.competitions import COMPETITIONS
+        from backend.app.normalization.competitions import resolve_competition_id, resolve_season_id
+        from backend.app.db.models.core import Team
+
+        COMPETITIONS.setdefault(competition_code, ("Current Round API Test", "Testland"))
+        competition_id = resolve_competition_id(db, competition_code)
+        season_id = resolve_season_id(db, competition_id, "2025/26")
+        home = Team(canonical_name="RoundApiHome")
+        away = Team(canonical_name="RoundApiAway")
+        db.add_all([home, away])
+        db.flush()
+        db.add(
+            Match(
+                provider="test",
+                provider_id="round-api-1",
+                competition_id=competition_id,
+                season_id=season_id,
+                kickoff_utc=dt.datetime.utcnow() + dt.timedelta(days=2),
+                home_team_id=home.id,
+                away_team_id=away.id,
+                status="scheduled",
+                matchday=7,
+            )
+        )
+
+    client = TestClient(app)
+    response = client.get(f"/competitions/{competition_code}/current-round")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["round"] == 7
+    assert body["is_fallback"] is False
+    assert len(body["match_ids"]) == 1
+
+
+def test_current_round_endpoint_404_for_unknown_competition():
+    client = TestClient(app)
+    response = client.get("/competitions/does_not_exist_at_all/current-round")
+    assert response.status_code == 404
+
+
+def test_predictions_current_round_endpoint_serializes_correctly(seeded_competition_code):
+    """Regresion: la primera version de este endpoint no declaraba
+    `response_model`, asi que FastAPI intentaba serializar el objeto ORM
+    `Match` anidado dentro de cada prediccion tal cual (no via Pydantic),
+    lo que rompia con `PydanticSerializationError: Unable to serialize
+    unknown type` en cuanto habia al menos un partido. Sin este test,
+    ninguno de los tests anteriores lo detectaba porque llaman a
+    `get_current_round`/`generate_predictions_for_competition` directamente
+    en Python, nunca a traves de la capa HTTP real."""
+    client = TestClient(app)
+    response = client.get(f"/predictions/current-round?competition_code={seeded_competition_code}")
+    assert response.status_code == 200
+    body = response.json()
+    assert "round" in body and "predictions" in body
+    assert len(body["predictions"]) > 0
+    for prediction in body["predictions"]:
+        assert isinstance(prediction["match"], dict)
+        assert "home_team" in prediction["match"]

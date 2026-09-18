@@ -43,6 +43,18 @@ class Settings(BaseSettings):
     model_artifacts_dir: str = "models/artifacts"
     random_seed: int = 42
 
+    # --- Filtro de calidad para ranking de senhales (prediction/ranking.py) ---
+    # Deliberadamente permisivos por defecto (seccion 7 de la revision de
+    # arquitectura: "no hardcodear un umbral agresivo sin estudiar antes su
+    # efecto"). El filtro DURO solo descarta datos invalidos o sin
+    # evidencia real; degradar una senhal de baja calidad (cuota 1.02, poco
+    # edge, pocas casas) es trabajo del SCORING de ranking, no de este
+    # filtro. Ajustables sin tocar codigo.
+    min_signal_odds: float = 1.01  # cualquier cuota > 1.0 es "valida"; el scoring penaliza las bajas
+    min_edge_pp: float = 0.0  # exige edge NO negativo (el modelo no puede ir peor que el mercado)
+    min_bookmakers: int = 1  # al menos una casa real respaldando la cuota (nunca 0 = "sin mercado")
+    min_data_quality: float = 0.0  # sin filtro adicional por defecto; confidence ya lo pondera
+
     @property
     def model_artifacts_path(self) -> Path:
         path = REPO_ROOT / self.model_artifacts_dir

@@ -15,6 +15,13 @@ confiar en la probabilidad reportada, construida a partir de:
 - model_agreement: 1 - |p_estadistico - p_ml| cuando hay ensemble; si solo
   hay un modelo, se usa un valor neutro (0.5) en vez de inventarse acuerdo.
 - data_quality: score de prediction/data_quality.py.
+- market_coverage: cuantas casas de apuestas respaldan `market_probability`
+  (ver market/consensus.py). Una cuota de una UNICA casa es mucho menos
+  fiable como "el mercado" que un consenso de 5+ casas independientes; sin
+  este componente, confidence no distinguia estos dos casos. Si el mercado
+  no tiene cuota (tarjetas/corners, o goles sin odds todavia), se usa un
+  valor neutro (0.5): la ausencia de mercado no es, en si misma, un motivo
+  para desconfiar del modelo estadistico.
 
 Los pesos estan documentados aqui explicitamente (no ocultos) y son un
 punto de partida razonable; se recomienda re-calibrarlos con backtesting
@@ -28,11 +35,31 @@ from dataclasses import dataclass
 import numpy as np
 
 WEIGHTS = {
-    "calibration_quality": 0.35,
-    "sample_size": 0.20,
-    "model_agreement": 0.20,
-    "data_quality": 0.25,
+    "calibration_quality": 0.30,
+    "sample_size": 0.15,
+    "model_agreement": 0.15,
+    "data_quality": 0.20,
+    "market_coverage": 0.20,
 }
+
+
+def market_coverage_score(bookmakers_used: int | None) -> float:
+    """Cuantas casas independientes respaldan el consenso de mercado.
+
+    Escala documentada, no arbitraria: 0/None (sin mercado) no penaliza al
+    modelo estadistico; 1 sola casa es la situacion menos fiable con datos
+    (podria ser un error de tipeo o una casa poco liquida); 5+ casas de
+    acuerdo es la evidencia mas fuerte posible de consenso real.
+    """
+    if bookmakers_used is None or bookmakers_used <= 0:
+        return 0.5
+    if bookmakers_used == 1:
+        return 0.4
+    if bookmakers_used == 2:
+        return 0.6
+    if bookmakers_used <= 4:
+        return 0.8
+    return 1.0
 
 
 @dataclass
@@ -41,6 +68,7 @@ class ConfidenceInputs:
     sample_size_score: float
     model_agreement: float | None
     data_quality: float
+    bookmakers_used: int | None = None
 
 
 def confidence_score(inputs: ConfidenceInputs) -> float:
@@ -50,12 +78,14 @@ def confidence_score(inputs: ConfidenceInputs) -> float:
         else 0.5
     )
     model_agreement = inputs.model_agreement if inputs.model_agreement is not None else 0.5
+    market_coverage = market_coverage_score(inputs.bookmakers_used)
 
     score = (
         WEIGHTS["calibration_quality"] * calibration_quality
         + WEIGHTS["sample_size"] * inputs.sample_size_score
         + WEIGHTS["model_agreement"] * model_agreement
         + WEIGHTS["data_quality"] * inputs.data_quality
+        + WEIGHTS["market_coverage"] * market_coverage
     )
     return float(np.clip(score, 0.0, 1.0))
 

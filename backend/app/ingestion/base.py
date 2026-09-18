@@ -26,6 +26,7 @@ class RawMatchRecord:
     home_goals_ht: int | None = None
     away_goals_ht: int | None = None
     referee_raw: str | None = None
+    matchday: int | None = None  # jornada, cuando la fuente la provee (ver fixtures_provider.py)
 
     home_shots: int | None = None
     away_shots: int | None = None

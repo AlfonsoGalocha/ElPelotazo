@@ -62,6 +62,20 @@ class Prediction(Base):
     explanation: Mapped[dict] = mapped_column(JSON)
     features_used: Mapped[dict] = mapped_column(JSON)
 
+    # Evidencia de mercado (revision seccion 5/6): de cuantas casas viene
+    # `market_probability`/`market_odds` y como se calcularon, para no
+    # tratar una unica cuota aislada como "el mercado". Ver
+    # backend/app/market/consensus.py. Todas nullable: predicciones sin
+    # mercado (tarjetas/corners, o goles sin odds aun) no tienen nada de
+    # esto, nunca se inventa un valor.
+    market_probability_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    bookmakers_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bookmakers_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    market_odds_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_odds_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_odds_median: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_odds_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     model_version: Mapped[ModelVersion] = relationship(back_populates="predictions")
     result: Mapped[PredictionResult | None] = relationship(
         back_populates="prediction", uselist=False, cascade="all, delete-orphan"

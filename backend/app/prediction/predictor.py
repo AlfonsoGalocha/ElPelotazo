@@ -47,6 +47,13 @@ class MarketPredictionOutput:
     confidence: float
     data_quality: float
     explanation: list[dict]
+    market_probability_source: str | None = None
+    bookmakers_count: int | None = None
+    bookmakers_used: int | None = None
+    market_odds_min: float | None = None
+    market_odds_max: float | None = None
+    market_odds_median: float | None = None
+    market_odds_average: float | None = None
 
 
 def predict_markets_for_table(
@@ -81,6 +88,7 @@ def predict_markets_for_table(
             market_probability = quote["market_probability"] if quote else None
             market_odds = quote["market_odds"] if quote else None
             vig_removed = quote.get("vig_removed") if quote else None
+            bookmakers_used = quote.get("bookmakers_used") if quote else None
 
             data_quality = compute_data_quality(row, KEY_FEATURES_FOR_QUALITY)
             agreement = model_agreement[i] if not np.isnan(model_agreement[i]) else None
@@ -95,6 +103,7 @@ def predict_markets_for_table(
                     sample_size_score=sample_size_score,
                     model_agreement=agreement,
                     data_quality=data_quality,
+                    bookmakers_used=bookmakers_used,
                 )
             )
 
@@ -119,6 +128,13 @@ def predict_markets_for_table(
                     confidence=confidence,
                     data_quality=data_quality,
                     explanation=explanation,
+                    market_probability_source=quote.get("market_probability_source") if quote else None,
+                    bookmakers_count=quote.get("bookmakers_count") if quote else None,
+                    bookmakers_used=bookmakers_used,
+                    market_odds_min=quote.get("market_odds_min") if quote else None,
+                    market_odds_max=quote.get("market_odds_max") if quote else None,
+                    market_odds_median=quote.get("market_odds_median") if quote else None,
+                    market_odds_average=quote.get("market_odds_average") if quote else None,
                 )
             )
     return outputs

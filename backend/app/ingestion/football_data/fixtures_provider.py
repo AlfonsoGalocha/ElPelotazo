@@ -26,6 +26,7 @@ Limitaciones honestas:
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -51,6 +52,17 @@ def season_label_to_openfootball(season_label: str) -> str:
     """"2026/27" -> "2026-27" (formato de carpeta del repo)."""
     start, end = season_label.split("/")
     return f"{start}-{end}"
+
+
+def parse_matchday(round_name: str) -> int | None:
+    """openfootball usa el formato "Matchday N" de forma consistente en las
+    5 ligas del MVP (verificado contra el JSON real de cada una: es.1,
+    en.1, de.1, it.1, fr.1 todas usan "Matchday N", nunca "Round N" ni
+    nombres de fase de eliminatoria). Devuelve None ante cualquier formato
+    inesperado en vez de asumir un numero (p.ej. competiciones con fases de
+    grupos/eliminatorias que este adapter no cubre en el MVP)."""
+    match = re.fullmatch(r"Matchday (\d+)", round_name.strip())
+    return int(match.group(1)) if match else None
 
 
 class OpenFootballFixturesProvider(DataProvider):
@@ -139,6 +151,7 @@ class OpenFootballFixturesProvider(DataProvider):
                     away_team_raw=match["team2"],
                     home_goals=None,
                     away_goals=None,
+                    matchday=parse_matchday(round_name),
                 )
             )
         return records

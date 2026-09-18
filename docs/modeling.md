@@ -52,11 +52,65 @@ Tres numeros con significado distinto, nunca mezclados:
   posible). Puede ser grande y venir de un modelo mal calibrado.
 - **confidence** (`prediction/confidence.py`): combinacion documentada de
   calidad de calibracion historica + tamanho de muestra + acuerdo entre
-  modelos + calidad de dato. Un edge enorme con confidence baja se
-  presenta como tal, no se disfraza.
+  modelos + calidad de dato + **cobertura de mercado** (cuantas casas de
+  apuestas independientes respaldan `market_probability`, ver
+  `market/consensus.py` — una cuota de una unica casa pesa menos que un
+  consenso de 5+). Un edge enorme con confidence baja se presenta como
+  tal, no se disfraza.
 - **data_quality** (`prediction/data_quality.py`): completitud +
   frescura + tamanho de muestra de ESTA prediccion concreta. Independiente
   de si el modelo acierta.
+
+## Consenso de mercado, no una unica casa (`market/consensus.py`)
+
+Con The Odds API llegan cuotas de VARIAS casas de apuestas por partido.
+Tratar la cuota de una unica casa (aunque sea la "preferida") como "el
+mercado" es fragil: una casa con un error de tipeo, una linea mal
+identificada, o simplemente poco liquida, puede inflar un edge que en
+realidad es ruido de datos, no una oportunidad real.
+
+`compute_market_consensus()`:
+1. Nunca mezcla `snapshot_type` distintos (pre_match/closing/opening/live)
+   en el mismo calculo.
+2. Quita el vig por bookmaker cuando cotiza ambas selecciones.
+3. Descarta bookmakers outlier (probabilidad implicita a mas de 3.5
+   desviaciones absolutas medianas de la mediana del grupo) ANTES de
+   agregar — solo con 3+ casas, donde hay base estadistica para decidirlo.
+4. Agrega con la MEDIANA de las probabilidades supervivientes.
+5. Guarda `bookmakers_count`/`bookmakers_used`/`min_odds`/`max_odds`/
+   `median_odds`/`average_odds` en cada `Prediction`, para poder mostrar
+   evidencia de mercado y para que `confidence` la pondere.
+
+## Ranking de senhales (`prediction/ranking.py`)
+
+Dos fases separadas: un filtro DURO configurable (`MIN_SIGNAL_ODDS`,
+`MIN_EDGE_PP`, `MIN_BOOKMAKERS`, `MIN_DATA_QUALITY` en `Settings`, nunca
+hardcodeados en el frontend) que descarta predicciones sin mercado valido
+o con datos insuficientes, y un SCORING transparente entre las que pasan:
+
+```
+score = model_probability^2 * max(edge, 0) * confidence * data_quality
+```
+
+El cuadrado de la probabilidad es deliberado: sin el, una jugada mediocre
+con mucho edge en puntos porcentuales (p.ej. 55% a cuota 3.0) puede
+puntuar por encima de una jugada solida de alta probabilidad (p.ej. 80% a
+cuota 1.35) solo por el tamanho bruto del edge. `/predictions/best` y
+`/predictions/top-signals` ("Mejores señales") usan este mismo scoring;
+`/predictions/model-only` expone, sin competir en el ranking, las
+predicciones sin mercado (tarjetas/corners, o goles sin cuota todavia).
+
+## Jornada actual (`services/round_service.py`)
+
+La UI principal muestra la jornada en curso de cada liga, no simplemente
+"los proximos partidos que haya": mientras queden partidos SIN JUGAR de
+la jornada N, esa sigue siendo la jornada actual aunque la jornada N+1 ya
+tenga fecha. El numero de jornada viene de `Match.matchday`, poblado solo
+por el adapter de fixtures (openfootball, campo `round: "Matchday N"`,
+verificado real y consistente en las 5 ligas del MVP) — el dataset
+historico no trae jornada. Si un partido programado no tiene `matchday`
+todavia (fixtures ingeridos antes de este cambio), se cae a un fallback
+explicito por fecha en vez de fingir una jornada real.
 
 ## Versionado (seccion 34)
 

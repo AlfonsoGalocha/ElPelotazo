@@ -19,6 +19,17 @@ export interface Match {
   status: "scheduled" | "finished";
   home_goals: number | null;
   away_goals: number | null;
+  matchday: number | null;
+}
+
+export interface RoundInfo {
+  competition_code: string;
+  round: number | null;
+  round_start: string | null;
+  round_end: string | null;
+  next_round: number | null;
+  is_fallback: boolean;
+  match_ids: number[];
 }
 
 export interface PredictionFactor {
@@ -49,6 +60,14 @@ export interface Prediction {
   explanation: PredictionFactor[];
   model_version_id: number;
   created_at: string;
+  has_market: boolean;
+  market_probability_source: string | null;
+  bookmakers_count: number | null;
+  bookmakers_used: number | null;
+  market_odds_min: number | null;
+  market_odds_max: number | null;
+  market_odds_median: number | null;
+  market_odds_average: number | null;
 }
 
 export const MARKET_DISPLAY_NAMES: Record<string, string> = {

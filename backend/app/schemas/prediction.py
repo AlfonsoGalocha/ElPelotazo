@@ -4,7 +4,7 @@ import datetime as dt
 
 from pydantic import BaseModel
 
-from backend.app.schemas.match import MatchOut
+from backend.app.schemas.match import MatchOut, RoundOut
 
 
 class PredictionFactorOut(BaseModel):
@@ -33,5 +33,30 @@ class PredictionOut(BaseModel):
     explanation: list[PredictionFactorOut]
     model_version_id: int
     created_at: dt.datetime
+    has_market: bool = False
+    market_probability_source: str | None = None
+    bookmakers_count: int | None = None
+    bookmakers_used: int | None = None
+    market_odds_min: float | None = None
+    market_odds_max: float | None = None
+    market_odds_median: float | None = None
+    market_odds_average: float | None = None
 
     model_config = {"from_attributes": True}
+
+
+class ExcludedSignalOut(BaseModel):
+    prediction_id: int
+    match: MatchOut
+    market: str
+    reason: str
+    model_probability: float
+    market_probability: float | None
+    market_odds: float | None
+    edge: float | None
+    bookmakers_used: int | None
+
+
+class CurrentRoundPredictionsOut(BaseModel):
+    round: RoundOut | None
+    predictions: list[PredictionOut]

@@ -1,4 +1,16 @@
-"""Agregacion de cuotas de mercado para un partido/mercado/linea concretos."""
+"""Cuota de una UNICA casa para un partido/mercado/linea concretos.
+
+USO RESTRINGIDO: solo para backtesting sobre el dataset HISTORICO
+(`services/match_service.py::load_market_odds_column`), donde ademas no hay
+otra opcion — el dataset historico (football-data.co.uk / xgabora) solo
+trae cuotas de Bet365, nunca de varias casas a la vez, asi que no existe
+"consenso" posible que calcular ahi.
+
+Para PREDICCIONES EN VIVO (partidos futuros con cuotas de varias casas via
+The Odds API), usar `market/consensus.py::compute_market_consensus` en su
+lugar: una unica cuota (aunque sea la de la casa "preferida") no es un
+mercado, y tratarla como tal fue la causa de senhales con edge inflado por
+una casa outlier (ver revision de arquitectura, seccion 5/6)."""
 
 from __future__ import annotations
 

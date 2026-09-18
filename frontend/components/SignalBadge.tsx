@@ -12,7 +12,13 @@ const LABELS: Record<SignalTier, string> = {
   LOW_DATA_SUPPORT: "DATOS BAJA CALIDAD",
 };
 
+// A peticion explicita: la etiqueta "DATOS MEDIA CALIDAD" es ruido visual
+// (la inmensa mayoria de predicciones caen ahi) y no aporta nada
+// accionable. Solo se muestra un badge para los extremos (alta o baja
+// calidad de datos); "media" no se muestra (no es ni una senhal buena ni
+// una alerta, es el caso normal).
 export default function SignalBadge({ tier }: { tier: SignalTier }) {
+  if (tier === "MEDIUM_DATA_SUPPORT") return null;
   return (
     <span className={`inline-block rounded border px-2 py-0.5 text-[10px] font-medium tracking-wide ${STYLES[tier]}`}>
       {LABELS[tier]}

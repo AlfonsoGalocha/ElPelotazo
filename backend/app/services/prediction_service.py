@@ -10,7 +10,7 @@ from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import ModelVersion, Prediction
 from backend.app.features.goals import build_match_feature_table
-from backend.app.market.odds import best_available_quote
+from backend.app.market.consensus import compute_market_consensus
 from backend.app.prediction.predictor import (
     predict_markets_for_table,
     predict_secondary_markets_for_table,
@@ -73,13 +73,29 @@ def generate_predictions_for_competition(
     market_quotes = {}
     for match_id, odds_rows in match_odds_rows.items():
         for market_key, (market, line, selection) in MARKET_TO_ODDS_LOOKUP.items():
-            quote = best_available_quote(odds_rows, market, line, selection)
-            if quote:
-                market_quotes[(match_id, market_key)] = {
-                    "market_probability": quote.market_probability,
-                    "market_odds": quote.market_odds,
-                    "vig_removed": quote.vig_removed,
-                }
+            consensus = compute_market_consensus(odds_rows, market, line, selection)
+            if consensus.market_probability is None:
+                continue
+            market_quotes[(match_id, market_key)] = {
+                "market_probability": consensus.market_probability,
+                "market_odds": consensus.market_odds,
+                "vig_removed": consensus.market_probability_source == "consensus_no_vig"
+                or consensus.market_probability_source == "single_book_no_vig",
+                "market_probability_source": consensus.market_probability_source,
+                "bookmakers_count": consensus.bookmakers_count,
+                "bookmakers_used": consensus.bookmakers_used,
+                "market_odds_min": consensus.min_odds,
+                "market_odds_max": consensus.max_odds,
+                "market_odds_median": consensus.median_odds,
+                "market_odds_average": consensus.average_odds,
+            }
+            if consensus.outliers_removed:
+                logger.info(
+                    "market_consensus.outliers_removed: match_id=%d market=%s bookmakers=%s",
+                    match_id,
+                    market_key,
+                    consensus.outliers_removed,
+                )
 
     outputs = predict_markets_for_table(
         target_matches,
@@ -127,6 +143,13 @@ def generate_predictions_for_competition(
             data_quality=output.data_quality,
             explanation={"factors": output.explanation},
             features_used={"feature_names": [f["feature"] for f in output.explanation]},
+            market_probability_source=output.market_probability_source,
+            bookmakers_count=output.bookmakers_count,
+            bookmakers_used=output.bookmakers_used,
+            market_odds_min=output.market_odds_min,
+            market_odds_max=output.market_odds_max,
+            market_odds_median=output.market_odds_median,
+            market_odds_average=output.market_odds_average,
         )
         db.add(prediction)
         predictions.append(prediction)

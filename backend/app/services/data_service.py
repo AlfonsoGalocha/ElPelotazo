@@ -48,10 +48,50 @@ def ingest_matches(db: Session, provider: DataProvider, competition_code: str, s
     return count
 
 
+DUPLICATE_MATCH_DRIFT = dt.timedelta(days=3)  # tolerancia para reconocer que dos
+# registros de fuentes DISTINTAS (p.ej. openfootball_fixtures y
+# club_football_match_data) son el MISMO partido real, cuando la fecha
+# exacta pueda variar unas horas/dias entre fuentes.
+
+
+def _find_absorbable_duplicate(
+    db: Session, competition_id: int, season_id: int, home_team_id: int, away_team_id: int, kickoff: dt.datetime
+) -> Match | None:
+    """Busca un `Match` ya existente de OTRA fuente que sea, con altisima
+    probabilidad, el MISMO partido real: mismo equipo local/visitante,
+    misma competicion/temporada, fecha cercana.
+
+    Sin esto, un partido ingerido primero como "scheduled" via
+    `openfootball_fixtures` (fixtures futuros) y luego, una vez jugado,
+    ingerido de nuevo como "finished" via `club_football_match_data`
+    (historico) con un `provider_id` DISTINTO, crearia una fila DUPLICADA:
+    la original se quedaria "scheduled" para siempre (huerfana, nunca se
+    marca como jugada), mientras la nueva fila "finished" coexiste con
+    ella. Ademas de la duplicacion en si, esto rompe cualquier logica de
+    "jornada actual" basada en `status == 'scheduled'`, y perderia el
+    `matchday` que so lo trae el fixture original.
+    """
+    candidates = (
+        db.query(Match)
+        .filter(
+            Match.competition_id == competition_id,
+            Match.season_id == season_id,
+            Match.home_team_id == home_team_id,
+            Match.away_team_id == away_team_id,
+        )
+        .all()
+    )
+    for candidate in candidates:
+        if abs(candidate.kickoff_utc - kickoff) <= DUPLICATE_MATCH_DRIFT:
+            return candidate
+    return None
+
+
 def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, season_id: int) -> Match:
     home_team_id = resolve_team_id(db, record.provider, record.home_team_raw)
     away_team_id = resolve_team_id(db, record.provider, record.away_team_raw)
     referee_id = resolve_referee_id(db, record.referee_raw)
+    kickoff = dt.datetime.fromisoformat(record.date)
 
     match = (
         db.query(Match)
@@ -59,18 +99,42 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
         .one_or_none()
     )
     is_finished = record.home_goals is not None and record.away_goals is not None
+
+    if match is None:
+        match = _find_absorbable_duplicate(
+            db, competition_id, season_id, home_team_id, away_team_id, kickoff
+        )
+        if match is not None:
+            logger.info(
+                "ingestion.duplicate_match_absorbed: match_id=%d old_provider=%s new_provider=%s",
+                match.id,
+                match.provider,
+                record.provider,
+            )
+            # Se adopta la fuente NUEVA (normalmente mas completa: el
+            # historico trae stats/goles que el fixture nunca tuvo), pero
+            # se conserva el `id` (y por tanto predicciones/cuotas ya
+            # asociadas) y el `matchday` si ya estaba puesto y la fuente
+            # nueva no trae uno.
+            match.provider = record.provider
+            match.provider_id = record.provider_id
+            match.kickoff_utc = kickoff  # la fuente nueva suele ser mas autorizada (resultado ya jugado)
+
     if match is None:
         match = Match(
             provider=record.provider,
             provider_id=record.provider_id,
             competition_id=competition_id,
             season_id=season_id,
-            kickoff_utc=dt.datetime.fromisoformat(record.date),
+            kickoff_utc=kickoff,
             home_team_id=home_team_id,
             away_team_id=away_team_id,
             referee_id=referee_id,
         )
         db.add(match)
+
+    if record.matchday is not None:
+        match.matchday = record.matchday
 
     match.home_goals = record.home_goals
     match.away_goals = record.away_goals
@@ -197,7 +261,10 @@ def attach_odds_to_scheduled_matches(
                     line=odds.line,
                     selection=odds.selection,
                     price=odds.price,
-                    snapshot_type="live",
+                    # "pre_match", no "live": son cuotas tomadas ANTES del
+                    # partido para un fixture programado, nunca cuotas en
+                    # vivo durante el juego (esta fuente no las provee).
+                    snapshot_type="pre_match",
                     recorded_at=dt.datetime.utcnow(),
                 )
             )
