@@ -41,6 +41,9 @@ from dataclasses import dataclass
 from backend.app.db.models.matches import MatchOdds
 from backend.app.market.implied_probability import implied_probability
 from backend.app.market.vig import no_vig_probabilities
+from backend.app.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Preferencia de snapshot: closing (precio final pre-partido) es mas
 # informativo que uno tomado dias antes (pre_match); "live" nunca deberia
@@ -108,6 +111,26 @@ def compute_market_consensus(
     partir de TODAS las cuotas disponibles de TODOS los bookmakers, en vez
     de confiar en una unica casa."""
     candidates = [o for o in odds_rows if o.market == market and o.line == line]
+    if not candidates:
+        return MarketConsensus(None, None, None, 0, 0, None, None, None, None, [])
+
+    # Cuota REAL invalida (<=1.0): bug real detectado con mercados
+    # "additional" de The Odds API (alternate_totals/btts, menos fiables
+    # que h2h/totals) -- alguna casa puede devolver 1.0 como placeholder
+    # de "mercado suspendido"/sin liquidez en vez de omitir la seleccion.
+    # Sin este filtro, una unica cuota basura de una casa tumbaba TODO el
+    # calculo de consenso (y con el, el comando entero de refresco) via
+    # implied_probability(). Se descarta como si esa casa no hubiera
+    # cotizado esta seleccion -- nunca se inventa ni se corrige el valor.
+    invalid = [o for o in candidates if o.price <= 1.0]
+    if invalid:
+        logger.warning(
+            "market.consensus.invalid_odds_discarded: market=%s line=%s bookmakers=%s",
+            market,
+            line,
+            sorted({o.bookmaker for o in invalid}),
+        )
+        candidates = [o for o in candidates if o.price > 1.0]
     if not candidates:
         return MarketConsensus(None, None, None, 0, 0, None, None, None, None, [])
 

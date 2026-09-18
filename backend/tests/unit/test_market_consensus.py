@@ -31,6 +31,21 @@ def test_no_rows_returns_empty_consensus():
     assert result.bookmakers_count == 0
 
 
+def test_invalid_odds_are_discarded_instead_of_crashing():
+    """Bug real detectado con mercados 'additional' de The Odds API
+    (alternate_totals/btts, menos fiables que h2h/totals): una casa puede
+    devolver price=1.0 como placeholder de mercado suspendido/sin
+    liquidez. Sin filtrar esto antes de implied_probability(), una unica
+    cuota basura tumbaba TODO el calculo de consenso (ValueError) y con
+    el, el comando de refresco entero. La cuota invalida se descarta como
+    si esa casa no hubiera cotizado, nunca se inventa ni se corrige."""
+    rows = _dual_sided_rows({"bet365": (1.90, 1.95)})
+    rows.append(_FakeOddsRow("suspended_book", "over_under_goals", 2.5, "over", 1.0))
+    result = compute_market_consensus(rows, "over_under_goals", 2.5, "over")
+    assert result.market_probability is not None
+    assert result.bookmakers_count == 1  # la casa con price=1.0 no cuenta
+
+
 def test_single_bookmaker_dual_sided_removes_vig():
     rows = _dual_sided_rows({"bet365": (1.90, 1.95)})
     result = compute_market_consensus(rows, "over_under_goals", 2.5, "over")
