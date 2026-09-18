@@ -145,17 +145,29 @@ modelo sigue funcionando, simplemente no hay con que compararlo.
   de fecha; nunca crea partidos nuevos).
 - CLI: `football-edge update-odds` (o `football-edge refresh`, que ya lo
   incluye antes de generar las predicciones).
-- Cobertura: 1X2 (`h2h`) y Over/Under de goles a 1.5/2.5/3.5 (`totals`).
-  BTTS no esta disponible en el plan usado, igual que en los datasets
-  historicos (queda `None` en ambos casos, nunca inventado).
-- **Tarjetas y corners NUNCA tienen cuota real con este adapter, en ningun
-  plan de The Odds API**: no es un bug ni una limitacion temporal, es que
-  esos mercados sencillamente no existen en su catalogo de mercados para
-  futbol (que se limita a resultado y totales de goles). Para esos
-  mercados hace falta la fuente API-Football descrita mas abajo; sin
-  ella, quedan siempre como "prediccion del modelo — sin mercado"
-  (`/predictions/model-only`) y no compiten en el ranking de "mejores
-  señales".
+- Cobertura: 1X2 (`h2h`), Over/Under de goles a 1.5/2.5/3.5 (`totals` +
+  `alternate_totals`) y Ambos Marcan (`btts`).
+  **Bug real corregido**: hasta ahora solo se pedia `h2h,totals` a la API.
+  El mercado `totals` a secas solo trae la linea PRINCIPAL de cada
+  bookmaker (normalmente 2.5, a veces 3.5 segun la casa) — por eso nunca
+  aparecia la linea 1.5, no era un filtro nuestro. Y `btts` no se pedia en
+  absoluto, aunque el modelo ya lo soportaba (`prediction/market_labels.py`)
+  desde el principio. Ahora se piden tambien `alternate_totals` (todas las
+  lineas extra que cada bookmaker ofrezca, incluida 1.5) y `btts`. Estos
+  dos mercados adicionales son nuevos y AUN NO verificados end-to-end (ver
+  nota de honestidad); ademas, The Odds API puede cobrar cuota extra por
+  "additional markets" segun su tabla de precios, asi que el consumo del
+  plan gratuito (500 req/mes) puede subir mas rapido que antes.
+- **Tarjetas y corners quedan aparcados (decision del usuario, 2026-09-18)**:
+  la unica fuente viable para esos mercados (API-Football) exige plan de
+  pago para acceder a la temporada en curso — el plan Free solo cubre
+  temporadas historicas cerradas (2022-2024), inutil para cuotas de
+  partidos futuros. El adapter (`ingestion/api_football/odds_provider.py`)
+  queda implementado y funcional por si en el futuro se activa un plan de
+  pago, pero deshabilitado por decision de producto, no por un bug. Sin
+  el, esos mercados quedan siempre como "prediccion del modelo — sin
+  mercado" (`/predictions/model-only`) y no compiten en el ranking de
+  "mejores señales". El foco pasa a ser 1X2 y goles (incluido BTTS).
 
 Activacion (gratis, sin tarjeta):
 1. Registrate en https://the-odds-api.com/#get-access (plan free = 500
@@ -169,11 +181,13 @@ Activacion (gratis, sin tarjeta):
    que esta leyendo, para descartar ese problema.
 
 **Nota de honestidad**: este adapter se escribio siguiendo la documentacion
-publica de The Odds API, pero el entorno de desarrollo tiene el egress de
-red restringido a un allowlist que no incluye `the-odds-api.com`, asi que
-no se pudo verificar end-to-end contra la API real (solo contra los tests
-unitarios con respuestas simuladas). Si el formato de respuesta de la API
-ha cambiado, el parseo en `_parse_event()` puede necesitar un ajuste.
+publica de The Odds API; el entorno de desarrollo tiene el egress de red
+restringido a un allowlist que no incluye `the-odds-api.com`, asi que no
+se pudo verificar end-to-end desde aqui. `h2h` y `totals` (1X2 y
+over/under principal) SI se verificaron end-to-end en produccion por el
+usuario para las 5 ligas (incluida la correccion del sport_key invalido
+de Bundesliga). `alternate_totals` y `btts` son mercados anadidos
+despues y todavia sin esa verificacion en produccion.
 
 ## Regla anti-"datos inventados"
 

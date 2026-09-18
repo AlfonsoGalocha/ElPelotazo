@@ -9,18 +9,24 @@ una fuente de cuotas en vivo, y esa fuente necesita casi siempre una API
 real (no hay ningun mirror de GitHub con cuotas actualizadas a diario).
 
 Fuente: https://the-odds-api.com — plan gratuito: 500 requests/mes, cubre
-1X2 (`h2h`) y Over/Under de goles (`totals`) para las 5 ligas del MVP.
+1X2 (`h2h`), Over/Under de goles (`totals` + `alternate_totals` para lineas
+extra como 1.5) y Ambos Marcan (`btts`) para las 5 ligas del MVP.
 
 Requiere registrarse (gratis) y configurar ODDS_API_KEY en `.env`. Sin key,
 `is_available()` devuelve False y el resto del sistema sigue funcionando
 (simplemente sin `market_probability`/`edge` para partidos futuros, exactamente
 igual que hasta ahora).
 
-IMPORTANTE — sin verificar end-to-end: el entorno donde se desarrollo esta
-adaptador tiene el egress de red restringido a un allowlist que NO incluye
-the-odds-api.com, asi que este codigo se escribio siguiendo la documentacion
-publica de la API pero no pudo probarse contra la API real. Si el formato de
-respuesta ha cambiado, avisa y se ajusta.
+IMPORTANTE — verificado end-to-end en produccion (por el usuario, no desde
+este entorno de desarrollo con red restringida) para `h2h` y `totals` en
+las 5 ligas. `alternate_totals` y `btts` son mercados anadidos despues y
+AUN NO verificados end-to-end: The Odds API cobra el consumo de cuota por
+cada "grupo de mercados" pedido (h2h/totals cuenta como 1, additional
+markets como `alternate_totals`/`btts` puede contar como consumo extra
+segun su tabla de precios), asi que anadirlos puede agotar el plan
+gratuito de 500 req/mes mas rapido de lo esperado -- si eso pasa, se
+puede pedir `alternate_totals`/`btts` en una llamada aparte y con menos
+frecuencia que `h2h,totals`, en vez de en todas las peticiones.
 """
 
 from __future__ import annotations
@@ -80,7 +86,22 @@ class OddsApiProvider(DataProvider):
         params = {
             "apiKey": settings.odds_api_key,
             "regions": "eu",
-            "markets": "h2h,totals",
+            # "totals" es la linea PRINCIPAL de cada bookmaker (normalmente
+            # 2.5, a veces 3.5 segun la casa) -- por eso antes solo
+            # aparecian esas dos lineas y nunca 1.5: no es un filtro
+            # nuestro, es que "totals" a secas no incluye lineas
+            # alternativas. "alternate_totals" es el mercado que expone
+            # TODAS las lineas extra (incluida 1.5) que cada bookmaker
+            # ofrezca. "btts" (Both Teams To Score) es un mercado aparte
+            # que antes no se pedia en absoluto, así que nunca podía llegar
+            # aunque el modelo ya lo soporta (ver prediction/market_labels.py).
+            # Sin verificar end-to-end (ver docstring del modulo): "alternate_totals"
+            # es un mercado "additional" en The Odds API que puede no estar
+            # cubierto por todos los bookmakers de la region "eu" ni contar
+            # igual contra la cuota del plan gratuito -- si tras esto sigue
+            # sin verse la linea 1.5 para una liga concreta, puede ser que
+            # ningun bookmaker cubierto la ofrezca ese dia, no un fallo.
+            "markets": "h2h,totals,alternate_totals,btts",
             "oddsFormat": "decimal",
             "dateFormat": "iso",
         }
@@ -130,7 +151,7 @@ class OddsApiProvider(DataProvider):
                         odds.append(
                             RawOddsRecord(bookmaker_key, "match_result", None, selection, float(outcome["price"]))
                         )
-                elif market["key"] == "totals":
+                elif market["key"] in ("totals", "alternate_totals"):
                     for outcome in market["outcomes"]:
                         point = outcome.get("point")
                         if point not in RELEVANT_TOTAL_LINES:
@@ -140,6 +161,12 @@ class OddsApiProvider(DataProvider):
                             RawOddsRecord(
                                 bookmaker_key, "over_under_goals", float(point), selection, float(outcome["price"])
                             )
+                        )
+                elif market["key"] == "btts":
+                    for outcome in market["outcomes"]:
+                        selection = "yes" if outcome["name"].lower() == "yes" else "no"
+                        odds.append(
+                            RawOddsRecord(bookmaker_key, "btts", None, selection, float(outcome["price"]))
                         )
         return FixtureOddsSnapshot(home_team, away_team, commence_time, odds)
 

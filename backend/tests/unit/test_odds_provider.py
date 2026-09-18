@@ -61,6 +61,76 @@ def test_parse_event_extracts_h2h_and_totals_markets():
     assert markets[("over_under_goals", 2.5, "under")] == 2.30
 
 
+def test_parse_event_extracts_alternate_totals_and_btts():
+    """Regresion: antes solo se pedia "h2h,totals" a The Odds API, y
+    "totals" a secas solo trae la linea PRINCIPAL de cada bookmaker
+    (normalmente 2.5, a veces 3.5) -- nunca lineas alternativas como 1.5,
+    y el mercado "btts" (Ambos Marcan) no se pedia en absoluto aunque el
+    modelo ya lo soporta (ver prediction/market_labels.py). Bug real
+    reportado por el usuario: "solo sacamos... 2.5 o 3.5... quiero
+    tambien 1.5 y ambos marcan"."""
+    event = {
+        "home_team": "A",
+        "away_team": "B",
+        "commence_time": "2026-09-19T18:30:00Z",
+        "bookmakers": [
+            {
+                "key": "bet365",
+                "markets": [
+                    {
+                        "key": "alternate_totals",
+                        "outcomes": [
+                            {"name": "Over", "point": 1.5, "price": 1.25},
+                            {"name": "Under", "point": 1.5, "price": 3.75},
+                        ],
+                    },
+                    {
+                        "key": "btts",
+                        "outcomes": [
+                            {"name": "Yes", "price": 1.70},
+                            {"name": "No", "price": 2.05},
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+    snapshot = OddsApiProvider._parse_event(event)
+    markets = {(o.market, o.line, o.selection): o.price for o in snapshot.odds}
+    assert markets[("over_under_goals", 1.5, "over")] == 1.25
+    assert markets[("over_under_goals", 1.5, "under")] == 3.75
+    assert markets[("btts", None, "yes")] == 1.70
+    assert markets[("btts", None, "no")] == 2.05
+
+
+def test_download_requests_alternate_totals_and_btts_markets(monkeypatch):
+    """Fija el parametro `markets` enviado a The Odds API para que no
+    pueda volver a colarse una regresion que quite `alternate_totals`
+    (unica forma de obtener la linea 1.5) o `btts` sin que un test falle."""
+    captured: dict = {}
+
+    class _FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return []
+
+    class _FakeClient:
+        def get(self, url, params):
+            captured["params"] = params
+            return _FakeResponse()
+
+    from backend.app.config.settings import get_settings
+
+    provider = OddsApiProvider(http_client=_FakeClient())
+    monkeypatch.setattr(get_settings(), "odds_api_key", "fake-key", raising=False)
+    provider._download("soccer_epl")
+    assert captured["params"]["markets"] == "h2h,totals,alternate_totals,btts"
+
+
 def test_parse_event_ignores_irrelevant_total_lines():
     """Solo interesan las lineas 1.5/2.5/3.5 (las que usan los mercados
     del MVP); otras lineas que algunas casas ofrecen (0.5, 4.5...) se
