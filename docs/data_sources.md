@@ -109,6 +109,16 @@ modelo sigue funcionando, simplemente no hay con que compararlo.
 - Cobertura: 1X2 (`h2h`) y Over/Under de goles a 1.5/2.5/3.5 (`totals`).
   BTTS no esta disponible en el plan usado, igual que en los datasets
   historicos (queda `None` en ambos casos, nunca inventado).
+- **Tarjetas y corners NUNCA tienen cuota real, en ningun plan de The Odds
+  API**: no es un bug ni una limitacion temporal, es que esos mercados
+  sencillamente no existen en su catalogo de mercados para futbol (que se
+  limita a resultado y totales de goles). Conseguir cuotas reales de
+  tarjetas/corners requeriria una fuente DISTINTA (proveedores mas
+  especializados, normalmente de pago, o scraping directo de una casa de
+  apuestas concreta) — no una configuracion distinta de este mismo
+  adapter. Por eso estos mercados son siempre "prediccion del modelo — sin
+  mercado" (`/predictions/model-only`) y nunca compiten en el ranking de
+  "mejores señales".
 
 Activacion (gratis, sin tarjeta):
 1. Registrate en https://the-odds-api.com/#get-access (plan free = 500

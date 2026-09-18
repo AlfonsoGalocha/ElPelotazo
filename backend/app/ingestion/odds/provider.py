@@ -42,7 +42,15 @@ BASE_URL = "https://api.the-odds-api.com/v4/sports"
 COMPETITION_TO_SPORT_KEY: dict[str, str] = {
     "laliga": "soccer_spain_la_liga",
     "premier_league": "soccer_epl",
-    "bundesliga": "soccer_germany_bundesliga1",
+    # OJO: "soccer_germany_bundesliga1" (con el "1") es un sport_key
+    # INVALIDO en The Odds API -- el key documentado para la 1. Bundesliga
+    # es "soccer_germany_bundesliga" a secas ("soccer_germany_bundesliga2"
+    # es la 2. Bundesliga). Con la key invalida, la API devuelve error en
+    # cada peticion y Bundesliga se queda sin cuotas siempre, mientras el
+    # resto de ligas funciona con normalidad -- exactamente el sintoma
+    # reportado. No se ha podido verificar end-to-end contra la API real
+    # desde este entorno (red restringida); si sigue sin funcionar, avisa.
+    "bundesliga": "soccer_germany_bundesliga",
     "serie_a": "soccer_italy_serie_a",
     "ligue_1": "soccer_france_ligue_one",
 }
@@ -90,6 +98,19 @@ class OddsApiProvider(DataProvider):
         }
         logger.info("ingestion.odds_api.download", extra={"sport_key": sport_key})
         response = self._client.get(url, params=params)
+        if response.status_code >= 400:
+            # El mensaje por defecto de raise_for_status() no incluye el
+            # cuerpo de la respuesta, que es donde The Odds API explica el
+            # motivo real (p.ej. "Unknown sport_key"). Sin esto, un
+            # sport_key invalido para UNA sola liga (como paso con
+            # Bundesliga) es dificil de diagnosticar: solo se ve un 4xx
+            # generico en vez del motivo exacto.
+            logger.warning(
+                "ingestion.odds_api.error_response: sport_key=%s status=%d body=%s",
+                sport_key,
+                response.status_code,
+                response.text[:500],
+            )
         response.raise_for_status()
         return response.json()
 
