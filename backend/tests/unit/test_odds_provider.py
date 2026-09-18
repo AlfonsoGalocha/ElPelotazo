@@ -103,32 +103,112 @@ def test_parse_event_extracts_alternate_totals_and_btts():
     assert markets[("btts", None, "no")] == 2.05
 
 
-def test_download_requests_alternate_totals_and_btts_markets(monkeypatch):
-    """Fija el parametro `markets` enviado a The Odds API para que no
-    pueda volver a colarse una regresion que quite `alternate_totals`
-    (unica forma de obtener la linea 1.5) o `btts` sin que un test falle."""
+class _FakeResponse:
+    def __init__(self, payload, status_code: int = 200):
+        self.status_code = status_code
+        self._payload = payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise __import__("httpx").HTTPStatusError("error", request=None, response=self)
+
+    def json(self):
+        return self._payload
+
+    @property
+    def text(self):
+        return str(self._payload)
+
+
+def test_download_only_requests_featured_markets(monkeypatch):
+    """Regresion real: pedir un mercado "additional" (alternate_totals,
+    btts) en el endpoint MASIVO (`/sports/{sport}/odds`) devuelve 422
+    "Markets not supported by this endpoint" y tumba TODA la peticion --
+    tambien h2h/totals, que si funcionaban. Este test fija que el
+    endpoint masivo solo pida mercados "featured"."""
     captured: dict = {}
-
-    class _FakeResponse:
-        status_code = 200
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return []
 
     class _FakeClient:
         def get(self, url, params):
             captured["params"] = params
-            return _FakeResponse()
+            return _FakeResponse([])
 
     from backend.app.config.settings import get_settings
 
     provider = OddsApiProvider(http_client=_FakeClient())
     monkeypatch.setattr(get_settings(), "odds_api_key", "fake-key", raising=False)
     provider._download("soccer_epl")
-    assert captured["params"]["markets"] == "h2h,totals,alternate_totals,btts"
+    assert captured["params"]["markets"] == "h2h,totals"
+
+
+def test_fetch_odds_does_not_call_additional_markets_by_default(monkeypatch):
+    """Por defecto (`odds_api_fetch_additional_markets=False`) no se hace
+    ninguna request extra por evento, para no gastar cuota sin que el
+    usuario lo pida explicitamente."""
+    call_count = {"n": 0}
+
+    class _FakeClient:
+        def get(self, url, params):
+            call_count["n"] += 1
+            return _FakeResponse(
+                [{"id": "evt1", "home_team": "A", "away_team": "B", "commence_time": "2026-09-19T18:30:00Z", "bookmakers": []}]
+            )
+
+    from backend.app.config.settings import get_settings
+
+    provider = OddsApiProvider(http_client=_FakeClient())
+    settings = get_settings()
+    monkeypatch.setattr(settings, "odds_api_key", "fake-key", raising=False)
+    monkeypatch.setattr(settings, "odds_api_fetch_additional_markets", False, raising=False)
+    provider.fetch_odds("premier_league")
+    assert call_count["n"] == 1
+
+
+def test_fetch_odds_merges_additional_markets_per_event_when_enabled(monkeypatch):
+    """Con el flag activado, se hace 1 request extra POR EVENTO al
+    endpoint `/events/{id}/odds` y se combinan sus mercados con los del
+    endpoint masivo antes de parsear."""
+    requests_made: list[str] = []
+
+    class _FakeClient:
+        def get(self, url, params):
+            requests_made.append(url)
+            if url.endswith("/odds") and "/events/" not in url:
+                return _FakeResponse(
+                    [
+                        {
+                            "id": "evt1",
+                            "home_team": "A",
+                            "away_team": "B",
+                            "commence_time": "2026-09-19T18:30:00Z",
+                            "bookmakers": [
+                                {"key": "bet365", "markets": [{"key": "h2h", "outcomes": []}]},
+                            ],
+                        }
+                    ]
+                )
+            return _FakeResponse(
+                {
+                    "bookmakers": [
+                        {
+                            "key": "bet365",
+                            "markets": [
+                                {"key": "btts", "outcomes": [{"name": "Yes", "price": 1.7}]},
+                            ],
+                        }
+                    ]
+                }
+            )
+
+    from backend.app.config.settings import get_settings
+
+    provider = OddsApiProvider(http_client=_FakeClient())
+    settings = get_settings()
+    monkeypatch.setattr(settings, "odds_api_key", "fake-key", raising=False)
+    monkeypatch.setattr(settings, "odds_api_fetch_additional_markets", True, raising=False)
+    snapshots = provider.fetch_odds("premier_league")
+    assert any(r.market == "btts" for r in snapshots[0].odds)
+    assert any("/events/evt1/odds" in url for url in requests_made)
 
 
 def test_parse_event_ignores_irrelevant_total_lines():

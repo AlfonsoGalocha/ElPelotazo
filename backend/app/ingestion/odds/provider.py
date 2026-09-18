@@ -9,24 +9,31 @@ una fuente de cuotas en vivo, y esa fuente necesita casi siempre una API
 real (no hay ningun mirror de GitHub con cuotas actualizadas a diario).
 
 Fuente: https://the-odds-api.com — plan gratuito: 500 requests/mes, cubre
-1X2 (`h2h`), Over/Under de goles (`totals` + `alternate_totals` para lineas
-extra como 1.5) y Ambos Marcan (`btts`) para las 5 ligas del MVP.
+1X2 (`h2h`) y Over/Under de goles (`totals`) para las 5 ligas del MVP.
+Opcionalmente (ver `Settings.odds_api_fetch_additional_markets`), tambien
+Over/Under a linea 1.5 (`alternate_totals`) y Ambos Marcan (`btts`).
 
 Requiere registrarse (gratis) y configurar ODDS_API_KEY en `.env`. Sin key,
 `is_available()` devuelve False y el resto del sistema sigue funcionando
 (simplemente sin `market_probability`/`edge` para partidos futuros, exactamente
 igual que hasta ahora).
 
-IMPORTANTE — verificado end-to-end en produccion (por el usuario, no desde
-este entorno de desarrollo con red restringida) para `h2h` y `totals` en
-las 5 ligas. `alternate_totals` y `btts` son mercados anadidos despues y
-AUN NO verificados end-to-end: The Odds API cobra el consumo de cuota por
-cada "grupo de mercados" pedido (h2h/totals cuenta como 1, additional
-markets como `alternate_totals`/`btts` puede contar como consumo extra
-segun su tabla de precios), asi que anadirlos puede agotar el plan
-gratuito de 500 req/mes mas rapido de lo esperado -- si eso pasa, se
-puede pedir `alternate_totals`/`btts` en una llamada aparte y con menos
-frecuencia que `h2h,totals`, en vez de en todas las peticiones.
+IMPORTANTE — dos endpoints DISTINTOS, descubierto por un 422 real en
+produccion: el endpoint masivo `/sports/{sport}/odds` (una request trae
+TODOS los partidos de la liga) solo admite mercados "featured" (`h2h`,
+`totals`, `spreads`); pedir un mercado "additional" como `alternate_totals`
+o `btts` ahi devuelve 422 "Markets not supported by this endpoint" y
+tumba TODA la peticion (tambien h2h/totals). Los mercados "additional"
+solo se pueden pedir en el endpoint POR EVENTO,
+`/sports/{sport}/events/{eventId}/odds` — una request POR PARTIDO, no
+por liga. Por eso van en un metodo aparte (`_download_additional_markets`)
+y detras de un flag desactivado por defecto: activarlo multiplica el
+consumo de cuota (~1 request extra por partido en cartel, no por liga) y
+podria agotar el plan gratuito de 500 req/mes rapidamente si se refresca
+a menudo. `h2h`/`totals` via el endpoint masivo SI estan verificados
+end-to-end en produccion (por el usuario) para las 5 ligas; el endpoint
+por evento para `alternate_totals`/`btts` esta escrito siguiendo la
+documentacion publica pero AUN NO verificado end-to-end.
 """
 
 from __future__ import annotations
@@ -64,6 +71,22 @@ COMPETITION_TO_SPORT_KEY: dict[str, str] = {
 RELEVANT_TOTAL_LINES = {1.5, 2.5, 3.5}
 
 
+def _merge_bookmaker_markets(base: list[dict], extra: list[dict]) -> list[dict]:
+    """Combina la lista de bookmakers de la request masiva (h2h/totals) con
+    la del endpoint por evento (alternate_totals/btts) para que
+    `_parse_event` procese ambas fuentes como si fueran una sola
+    respuesta. Se combina por `key` de bookmaker; si una casa solo aparece
+    en una de las dos listas, se conserva tal cual."""
+    merged: dict[str, dict] = {b["key"]: {**b, "markets": list(b.get("markets", []))} for b in base}
+    for bookmaker in extra:
+        key = bookmaker["key"]
+        if key in merged:
+            merged[key]["markets"].extend(bookmaker.get("markets", []))
+        else:
+            merged[key] = bookmaker
+    return list(merged.values())
+
+
 class OddsApiProvider(DataProvider):
     name = "the_odds_api"
 
@@ -86,22 +109,11 @@ class OddsApiProvider(DataProvider):
         params = {
             "apiKey": settings.odds_api_key,
             "regions": "eu",
-            # "totals" es la linea PRINCIPAL de cada bookmaker (normalmente
-            # 2.5, a veces 3.5 segun la casa) -- por eso antes solo
-            # aparecian esas dos lineas y nunca 1.5: no es un filtro
-            # nuestro, es que "totals" a secas no incluye lineas
-            # alternativas. "alternate_totals" es el mercado que expone
-            # TODAS las lineas extra (incluida 1.5) que cada bookmaker
-            # ofrezca. "btts" (Both Teams To Score) es un mercado aparte
-            # que antes no se pedia en absoluto, así que nunca podía llegar
-            # aunque el modelo ya lo soporta (ver prediction/market_labels.py).
-            # Sin verificar end-to-end (ver docstring del modulo): "alternate_totals"
-            # es un mercado "additional" en The Odds API que puede no estar
-            # cubierto por todos los bookmakers de la region "eu" ni contar
-            # igual contra la cuota del plan gratuito -- si tras esto sigue
-            # sin verse la linea 1.5 para una liga concreta, puede ser que
-            # ningun bookmaker cubierto la ofrezca ese dia, no un fallo.
-            "markets": "h2h,totals,alternate_totals,btts",
+            # SOLO mercados "featured": el endpoint masivo (todos los
+            # partidos de la liga en 1 request) devuelve 422 para
+            # cualquier mercado "additional" (alternate_totals, btts...),
+            # ver docstring del modulo.
+            "markets": "h2h,totals",
             "oddsFormat": "decimal",
             "dateFormat": "iso",
         }
@@ -123,11 +135,45 @@ class OddsApiProvider(DataProvider):
         response.raise_for_status()
         return response.json()
 
+    def _download_additional_markets(self, sport_key: str, event_id: str) -> dict | None:
+        """Mercados "additional" (alternate_totals, btts): solo se pueden
+        pedir por evento, 1 request por partido -- ver docstring del
+        modulo. `None` si la request falla, para no tumbar el resto del
+        refresco por un evento suelto (p.ej. sin cuotas todavia)."""
+        settings = get_settings()
+        url = f"{BASE_URL}/{sport_key}/events/{event_id}/odds"
+        params = {
+            "apiKey": settings.odds_api_key,
+            "regions": "eu",
+            "markets": "alternate_totals,btts",
+            "oddsFormat": "decimal",
+            "dateFormat": "iso",
+        }
+        response = self._client.get(url, params=params)
+        if response.status_code >= 400:
+            logger.warning(
+                "ingestion.odds_api.additional_markets_error: sport_key=%s event_id=%s status=%d body=%s",
+                sport_key,
+                event_id,
+                response.status_code,
+                response.text[:500],
+            )
+            return None
+        return response.json()
+
     def fetch_odds(self, competition_code: str) -> list[FixtureOddsSnapshot]:
         sport_key = COMPETITION_TO_SPORT_KEY.get(competition_code)
         if sport_key is None:
             raise ValueError(f"Competicion no soportada por este adapter: {competition_code}")
         payload = self._download(sport_key)
+        settings = get_settings()
+        if settings.odds_api_fetch_additional_markets:
+            for event in payload:
+                additional = self._download_additional_markets(sport_key, event["id"])
+                if additional:
+                    event["bookmakers"] = _merge_bookmaker_markets(
+                        event.get("bookmakers", []), additional.get("bookmakers", [])
+                    )
         return [self._parse_event(event) for event in payload]
 
     @staticmethod

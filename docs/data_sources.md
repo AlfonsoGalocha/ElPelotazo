@@ -145,19 +145,29 @@ modelo sigue funcionando, simplemente no hay con que compararlo.
   de fecha; nunca crea partidos nuevos).
 - CLI: `football-edge update-odds` (o `football-edge refresh`, que ya lo
   incluye antes de generar las predicciones).
-- Cobertura: 1X2 (`h2h`), Over/Under de goles a 1.5/2.5/3.5 (`totals` +
-  `alternate_totals`) y Ambos Marcan (`btts`).
-  **Bug real corregido**: hasta ahora solo se pedia `h2h,totals` a la API.
-  El mercado `totals` a secas solo trae la linea PRINCIPAL de cada
-  bookmaker (normalmente 2.5, a veces 3.5 segun la casa) — por eso nunca
-  aparecia la linea 1.5, no era un filtro nuestro. Y `btts` no se pedia en
-  absoluto, aunque el modelo ya lo soportaba (`prediction/market_labels.py`)
-  desde el principio. Ahora se piden tambien `alternate_totals` (todas las
-  lineas extra que cada bookmaker ofrezca, incluida 1.5) y `btts`. Estos
-  dos mercados adicionales son nuevos y AUN NO verificados end-to-end (ver
-  nota de honestidad); ademas, The Odds API puede cobrar cuota extra por
-  "additional markets" segun su tabla de precios, asi que el consumo del
-  plan gratuito (500 req/mes) puede subir mas rapido que antes.
+- Cobertura por defecto (siempre activa si `ODDS_API_ENABLED=true`): 1X2
+  (`h2h`) y Over/Under de goles a 2.5/3.5 (`totals`, la linea principal
+  de cada bookmaker). 1 request por liga (endpoint masivo).
+- Cobertura opcional (`ODDS_API_FETCH_ADDITIONAL_MARKETS=true`): tambien
+  Over/Under a linea 1.5 (`alternate_totals`) y Ambos Marcan (`btts`).
+  **Dos bugs reales corregidos, uno tras otro**: (1) el mercado `totals`
+  a secas solo trae la linea PRINCIPAL de cada bookmaker (normalmente
+  2.5, a veces 3.5), nunca lineas alternativas como 1.5 — no era un
+  filtro nuestro. (2) `btts` no se pedia en absoluto, aunque el modelo ya
+  lo soportaba (`prediction/market_labels.py`) desde el principio. El
+  primer intento de arreglarlo anadio `alternate_totals,btts` directamente
+  al endpoint masivo (`/sports/{sport}/odds`) — **eso rompio TAMBIEN
+  h2h/totals**, porque ese endpoint solo admite mercados "featured" y
+  devuelve 422 "Markets not supported by this endpoint" (rechaza la
+  request COMPLETA) si se le pide un mercado "additional". La solucion
+  real: `alternate_totals`/`btts` se piden en un endpoint APARTE, por
+  evento (`/sports/{sport}/events/{eventId}/odds`, `_download_additional_markets`
+  en el adapter) — 1 request extra POR PARTIDO en cartel, no por liga.
+  Por el coste de cuota que eso supone, va detras de un flag desactivado
+  por defecto: actívalo solo si tu consumo mensual (500 req/mes en el
+  plan free) lo permite. `alternate_totals`/`btts` via este endpoint por
+  evento AUN NO estan verificados end-to-end; `h2h`/`totals` via el
+  endpoint masivo si.
 - **Tarjetas y corners quedan aparcados (decision del usuario, 2026-09-18)**:
   la unica fuente viable para esos mercados (API-Football) exige plan de
   pago para acceder a la temporada en curso — el plan Free solo cubre

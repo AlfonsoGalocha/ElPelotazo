@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     api_football_use_rapidapi: bool = False
     odds_api_enabled: bool = False
     odds_api_key: str | None = None
+    # "alternate_totals" (linea 1.5 de goles) y "btts" son mercados
+    # "additional" de The Odds API: a diferencia de h2h/totals, la API los
+    # factura aparte y solo se pueden pedir por evento individual (ver
+    # ingestion/odds/provider.py), lo que multiplica las requests por
+    # partido en vez de 1 por liga. Desactivado por defecto para no agotar
+    # el plan gratuito (500 req/mes) sin que el usuario lo decida.
+    odds_api_fetch_additional_markets: bool = False
 
     model_artifacts_dir: str = "models/artifacts"
     random_seed: int = 42
