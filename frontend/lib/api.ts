@@ -20,9 +20,12 @@ export function getUpcomingPredictions(days = 7): Promise<Prediction[]> {
 
 // "Mejores señales": SOLO predicciones con mercado real valido (ver
 // backend/app/prediction/ranking.py). Nunca incluye tarjetas/corners ni
-// goles sin cuota todavia.
-export function getTopSignals(limit = 20): Promise<Prediction[]> {
-  return apiFetch<Prediction[]>(`/predictions/top-signals?limit=${limit}`);
+// goles sin cuota todavia. `date` (YYYY-MM-DD) filtra a un dia concreto en
+// vez de la ventana relativa por defecto (proximos 4 dias).
+export function getTopSignals(limit = 20, date?: string): Promise<Prediction[]> {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (date) qs.set("date", date);
+  return apiFetch<Prediction[]>(`/predictions/top-signals?${qs.toString()}`);
 }
 
 export function getBestPredictions(limit = 5, marketFamily?: string): Promise<Prediction[]> {

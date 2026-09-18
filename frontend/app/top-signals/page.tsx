@@ -2,19 +2,50 @@ import { getTopSignals } from "@/lib/api";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
 
-export default async function TopSignalsPage() {
-  const predictions = await getTopSignals(30).catch(() => []);
+export default async function TopSignalsPage({
+  searchParams,
+}: {
+  searchParams: { date?: string };
+}) {
+  const { date } = searchParams;
+  const predictions = await getTopSignals(30, date).catch(() => []);
 
   return (
     <div>
       <h1 className="mb-1 text-xl font-semibold text-slate-100">Mejores señales</h1>
-      <p className="mb-6 text-sm text-slate-500">
-        De los próximos 4 días. Solo predicciones con mercado real y válido (cuota &gt; 1.0, edge no
+      <p className="mb-4 text-sm text-slate-500">
+        {date
+          ? `Solo partidos del ${new Date(`${date}T00:00:00`).toLocaleDateString("es-ES", {
+              weekday: "long",
+              day: "2-digit",
+              month: "short",
+            })}.`
+          : "De los próximos 4 días."}{" "}
+        Solo predicciones con mercado real y válido (cuota &gt; 1.0, edge no
         negativo, al menos una casa de apuestas respaldando el consenso). Puntuación = probabilidad²×
         edge × confianza × calidad de datos — una cuota irrisoria (ej. 1.02) con edge casi nulo no
         sube aquí aunque la probabilidad del modelo sea altísima. La confianza ya incluye cuántas
         casas respaldan la cuota: un consenso de una única casa pesa menos que el de 5+.
       </p>
+
+      <form className="mb-6 flex items-center gap-2 text-sm text-slate-400">
+        <label htmlFor="date">Filtrar por día:</label>
+        <input
+          id="date"
+          type="date"
+          name="date"
+          defaultValue={date ?? ""}
+          className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+        />
+        <button type="submit" className="rounded border border-surface-border px-3 py-1 hover:bg-surface-raised">
+          Aplicar
+        </button>
+        {date && (
+          <a href="/top-signals" className="text-slate-500 underline hover:text-slate-300">
+            Quitar filtro
+          </a>
+        )}
+      </form>
 
       <div className="overflow-hidden rounded-lg border border-surface-border">
         <table className="w-full text-sm">

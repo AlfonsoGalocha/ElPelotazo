@@ -330,6 +330,22 @@ def test_top_signals_default_window_excludes_far_future_matches(seeded_competiti
     wide_match_ids = {p["match"]["id"] for p in wide_response.json()}
     assert far_match_id in wide_match_ids
 
+    # `date` filtra a un dia CONCRETO en vez de la ventana relativa: el
+    # partido lejano (fuera de la ventana por defecto de `days`) debe
+    # aparecer si se pide exactamente su dia, e ignorar `days`.
+    exact_day_response = client.get(
+        "/predictions/top-signals", params={"limit": 100, "date": far_kickoff.date().isoformat()}
+    )
+    exact_day_match_ids = {p["match"]["id"] for p in exact_day_response.json()}
+    assert far_match_id in exact_day_match_ids
+
+    other_day_response = client.get(
+        "/predictions/top-signals",
+        params={"limit": 100, "date": (far_kickoff.date() + dt.timedelta(days=1)).isoformat()},
+    )
+    other_day_match_ids = {p["match"]["id"] for p in other_day_response.json()}
+    assert far_match_id not in other_day_match_ids
+
 
 class _FakeApiFootballProvider:
     """Nunca se probo `ApiFootballOddsProvider` real contra la API (red

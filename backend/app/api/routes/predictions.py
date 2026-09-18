@@ -115,19 +115,36 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
     }
 
 
-def _base_signal_query(db: Session, market_family: str | None, upcoming_only: bool, days: int | None = 4):
+def _base_signal_query(
+    db: Session,
+    market_family: str | None,
+    upcoming_only: bool,
+    days: int | None = 4,
+    date: dt.date | None = None,
+):
     """`days`: sin limite superior, "las mejores predicciones" puede mezclar
     partidos de jornadas MUY distintas entre si (una de esta semana, otra
     dentro de 3), lo que parece un error de datos aunque no lo sea (dos
     partidos del mismo equipo en jornadas distintas es normal, pero
     mostrarlos juntos sin fecha visible confunde). Por defecto se limita a
     los proximos `days` dias — "las mejores predicciones DE AHORA", no
-    "de cualquier fecha futura". `None` quita el limite."""
+    "de cualquier fecha futura". `None` quita el limite.
+
+    `date`: filtro alternativo a `days`, para un dia CONCRETO (p.ej. "solo
+    el sabado") en vez de una ventana relativa a ahora. Si se da, tiene
+    prioridad sobre `days` -- un dia concreto puede caer fuera de la
+    ventana por defecto de 4 dias y aun asi ser justo lo que se pide."""
     query = db.query(Prediction).join(Match, Match.id == Prediction.match_id)
     if upcoming_only:
-        query = query.filter(Match.status == "scheduled").filter(Match.kickoff_utc >= dt.datetime.utcnow())
-        if days is not None:
-            query = query.filter(Match.kickoff_utc <= dt.datetime.utcnow() + dt.timedelta(days=days))
+        query = query.filter(Match.status == "scheduled")
+        if date is not None:
+            day_start = dt.datetime.combine(date, dt.time.min)
+            day_end = day_start + dt.timedelta(days=1)
+            query = query.filter(Match.kickoff_utc >= day_start).filter(Match.kickoff_utc < day_end)
+        else:
+            query = query.filter(Match.kickoff_utc >= dt.datetime.utcnow())
+            if days is not None:
+                query = query.filter(Match.kickoff_utc <= dt.datetime.utcnow() + dt.timedelta(days=days))
     if market_family:
         prefixes = {"cards": "cards_", "corners": "corners_"}
         if market_family == "goals":
@@ -144,18 +161,19 @@ def top_signals(
     limit: int = Query(20, ge=1, le=100),
     market_family: str | None = Query(None, description="'goals', 'cards' o 'corners'"),
     upcoming_only: bool = Query(True),
-    days: int = Query(4, ge=1, le=30, description="Ventana de dias hacia adelante"),
+    days: int = Query(4, ge=1, le=30, description="Ventana de dias hacia adelante (ignorado si se da `date`)"),
+    date: dt.date | None = Query(None, description="Filtrar a un dia concreto (YYYY-MM-DD) en vez de una ventana"),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """"Mejores señales": ranking transparente que SOLO considera
     predicciones con mercado real (ver prediction/ranking.py) dentro de los
-    proximos `days` dias. Una prediccion sin cuota de mercado, con cuota
-    invalida, sin evidencia de casas de apuestas suficiente, o con edge
-    negativo/ausente NUNCA entra aqui — puede existir (ver
-    `/predictions/model-only`), pero no compite en este ranking (seccion
-    2/7 de la revision de arquitectura).
+    proximos `days` dias, o de un `date` concreto si se especifica. Una
+    prediccion sin cuota de mercado, con cuota invalida, sin evidencia de
+    casas de apuestas suficiente, o con edge negativo/ausente NUNCA entra
+    aqui — puede existir (ver `/predictions/model-only`), pero no compite
+    en este ranking (seccion 2/7 de la revision de arquitectura).
     """
-    candidates = _base_signal_query(db, market_family, upcoming_only, days).all()
+    candidates = _base_signal_query(db, market_family, upcoming_only, days, date).all()
     included, excluded = rank_signals(candidates)
     if excluded:
         logger.info(
@@ -173,22 +191,24 @@ def best_predictions(
         None, description="'goals', 'cards' o 'corners'; omitir para mezclar todas"
     ),
     upcoming_only: bool = Query(True),
-    days: int = Query(4, ge=1, le=30, description="Ventana de dias hacia adelante"),
+    days: int = Query(4, ge=1, le=30, description="Ventana de dias hacia adelante (ignorado si se da `date`)"),
+    date: dt.date | None = Query(None, description="Filtrar a un dia concreto (YYYY-MM-DD) en vez de una ventana"),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """"Las 5 mejores predicciones" (widget de portada), dentro de los
-    proximos `days` dias — nunca "cualquier fecha futura": mezclar
-    partidos de jornadas muy distintas entre si (sin fecha visible en el
-    widget) parece un error de datos aunque no lo sea. Mismo criterio que
-    `/top-signals` (solo mercado valido, mismo scoring), con un `limit` mas
-    pequenho pensado para un resumen. Ver prediction/ranking.py para el
-    filtro de calidad y la formula de puntuacion documentados.
+    proximos `days` dias, o de un `date` concreto — nunca "cualquier fecha
+    futura": mezclar partidos de jornadas muy distintas entre si (sin fecha
+    visible en el widget) parece un error de datos aunque no lo sea. Mismo
+    criterio que `/top-signals` (solo mercado valido, mismo scoring), con
+    un `limit` mas pequenho pensado para un resumen. Ver
+    prediction/ranking.py para el filtro de calidad y la formula de
+    puntuacion documentados.
 
     Predicciones sin mercado (tarjetas/corners, o goles sin odds todavia)
     NUNCA aparecen aqui: usa `/predictions/model-only` para mostrarlas por
     separado, etiquetadas explicitamente como "sin mercado".
     """
-    candidates = _base_signal_query(db, market_family, upcoming_only, days).all()
+    candidates = _base_signal_query(db, market_family, upcoming_only, days, date).all()
     included, _ = rank_signals(candidates)
     return [serialize_prediction(s.prediction) for s in included[:limit]]
 
@@ -198,12 +218,13 @@ def best_predictions_debug(
     market_family: str | None = Query(None),
     upcoming_only: bool = Query(True),
     days: int = Query(4, ge=1, le=30),
+    date: dt.date | None = Query(None),
     db: Session = Depends(get_db),
 ) -> dict:
     """Observabilidad (seccion 13): por cada prediccion candidata, si entro
     al ranking o no y por que. Pensado para depurar "por que esta senhal no
     aparece" sin tener que adivinar leyendo logs."""
-    candidates = _base_signal_query(db, market_family, upcoming_only, days).all()
+    candidates = _base_signal_query(db, market_family, upcoming_only, days, date).all()
     included, excluded = rank_signals(candidates)
     return {
         "included": [
