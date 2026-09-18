@@ -67,6 +67,7 @@ KNOWN_ALIASES: dict[str, str] = {
     "malaga cf": "Malaga",
     "rc celta de vigo": "Celta Vigo",
     "rc deportivo la coruna": "La Coruna",
+    "deportivo la coruna": "La Coruna",
     "rcd espanyol de barcelona": "Espanyol",
     "rayo vallecano de madrid": "Rayo Vallecano",
     "real betis balompie": "Real Betis",
