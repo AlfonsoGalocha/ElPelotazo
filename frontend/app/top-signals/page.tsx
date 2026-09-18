@@ -5,11 +5,19 @@ import SignalBadge from "@/components/SignalBadge";
 export default async function TopSignalsPage({
   searchParams,
 }: {
-  searchParams: { date?: string; sort_by?: "score" | "edge" };
+  searchParams: {
+    date?: string;
+    sort_by?: "score" | "edge";
+    min_fair_odds?: string;
+    max_fair_odds?: string;
+  };
 }) {
   const { date } = searchParams;
   const sortBy = searchParams.sort_by === "edge" ? "edge" : "score";
-  const predictions = await getTopSignals(30, date, sortBy).catch(() => []);
+  const minFairOdds = searchParams.min_fair_odds ? Number(searchParams.min_fair_odds) : undefined;
+  const maxFairOdds = searchParams.max_fair_odds ? Number(searchParams.max_fair_odds) : undefined;
+  const hasFairOddsFilter = minFairOdds !== undefined || maxFairOdds !== undefined;
+  const predictions = await getTopSignals({ limit: 30, date, sortBy, minFairOdds, maxFairOdds }).catch(() => []);
 
   return (
     <div>
@@ -28,7 +36,12 @@ export default async function TopSignalsPage({
         destacar, aunque matemáticamente haya diferencia.{" "}
         {sortBy === "edge"
           ? "Ordenado por edge de mayor a menor."
-          : "Puntuación = probabilidad²× edge × confianza × calidad de datos — una cuota irrisoria (ej. 1.02) con edge casi nulo no sube aquí aunque la probabilidad del modelo sea altísima. La confianza ya incluye cuántas casas respaldan la cuota: un consenso de una única casa pesa menos que el de 5+."}
+          : "Puntuación = probabilidad²× edge × confianza × calidad de datos — una cuota irrisoria (ej. 1.02) con edge casi nulo no sube aquí aunque la probabilidad del modelo sea altísima. La confianza ya incluye cuántas casas respaldan la cuota: un consenso de una única casa pesa menos que el de 5+."}{" "}
+        {hasFairOddsFilter && (
+          <>
+            Filtrado a cuota justa del modelo entre {minFairOdds ?? "0"} y {maxFairOdds ?? "∞"}.
+          </>
+        )}
       </p>
 
       <form className="mb-6 flex flex-wrap items-center gap-2 text-sm text-slate-400">
@@ -52,15 +65,39 @@ export default async function TopSignalsPage({
           <option value="score">Puntuación (por defecto)</option>
           <option value="edge">Edge (mayor a menor)</option>
         </select>
+        <label htmlFor="min_fair_odds" className="ml-2">
+          Cuota justa entre:
+        </label>
+        <input
+          id="min_fair_odds"
+          type="number"
+          name="min_fair_odds"
+          step="0.01"
+          min="1"
+          placeholder="1.00"
+          defaultValue={searchParams.min_fair_odds ?? ""}
+          className="w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+        />
+        <span>y</span>
+        <input
+          id="max_fair_odds"
+          type="number"
+          name="max_fair_odds"
+          step="0.01"
+          min="1"
+          placeholder="2.00"
+          defaultValue={searchParams.max_fair_odds ?? ""}
+          className="w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+        />
         <button type="submit" className="rounded border border-surface-border px-3 py-1 hover:bg-surface-raised">
           Aplicar
         </button>
-        {date && (
+        {(date || hasFairOddsFilter) && (
           <a
             href={`/top-signals${sortBy === "edge" ? "?sort_by=edge" : ""}`}
             className="text-slate-500 underline hover:text-slate-300"
           >
-            Quitar filtro de fecha
+            Quitar filtros
           </a>
         )}
       </form>

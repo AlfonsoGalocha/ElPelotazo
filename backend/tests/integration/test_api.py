@@ -386,6 +386,38 @@ def test_top_signals_rejects_unknown_sort_by(seeded_competition_code):
     assert response.status_code == 422
 
 
+def test_top_signals_filters_by_fair_odds_range(seeded_competition_code):
+    """Pedido explicito de usuario: poder acotar "Mejores señales" por
+    rango de CUOTA JUSTA del modelo (p.ej. "solo entre 1 y 2", favoritos
+    claros segun el modelo), independiente del filtro MAX_SIGNAL_ODDS
+    (que limita la cuota de MERCADO, pensado para evitar tiros muy
+    largos)."""
+    with session_scope() as db:
+        valid_predictions = (
+            db.query(Prediction)
+            .filter(Prediction.market_odds.isnot(None))
+            .filter(Prediction.market_probability.isnot(None))
+            .order_by(Prediction.id)
+            .limit(2)
+            .all()
+        )
+        assert len(valid_predictions) == 2
+        low_fair_id, high_fair_id = valid_predictions[0].id, valid_predictions[1].id
+        valid_predictions[0].fair_odds = 1.50
+        valid_predictions[1].fair_odds = 4.00
+        db.flush()
+
+    client = TestClient(app)
+    response = client.get(
+        "/predictions/top-signals",
+        params={"limit": 100, "days": 30, "min_fair_odds": 1.0, "max_fair_odds": 2.0},
+    )
+    assert response.status_code == 200
+    returned_ids = {p["id"] for p in response.json()}
+    assert low_fair_id in returned_ids
+    assert high_fair_id not in returned_ids
+
+
 class _FakeApiFootballProvider:
     """Nunca se probo `ApiFootballOddsProvider` real contra la API (red
     restringida): este test cubre el flujo completo attach -> regenerar

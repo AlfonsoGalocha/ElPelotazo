@@ -18,20 +18,32 @@ export function getUpcomingPredictions(days = 7): Promise<Prediction[]> {
   return apiFetch<Prediction[]>(`/predictions/today?days=${days}`);
 }
 
+export interface TopSignalsOptions {
+  limit?: number;
+  date?: string;
+  sortBy?: "score" | "edge";
+  // Cuota JUSTA del modelo (1/model_probability), no la de mercado --
+  // pedido explicito de usuario para acotar por rango (ej. "solo entre 1
+  // y 2" = favoritos claros segun el modelo). Independiente del filtro
+  // MAX_SIGNAL_ODDS del backend (que limita la cuota de MERCADO, pensado
+  // para evitar tiros muy largos, no para segmentar por rango).
+  minFairOdds?: number;
+  maxFairOdds?: number;
+}
+
 // "Mejores señales": SOLO predicciones con mercado real valido (ver
 // backend/app/prediction/ranking.py). Nunca incluye tarjetas/corners ni
 // goles sin cuota todavia. `date` (YYYY-MM-DD) filtra a un dia concreto en
 // vez de la ventana relativa por defecto (proximos 4 dias). `sortBy`:
 // "score" (por defecto, ranking compuesto) o "edge" (de mayor a menor
 // edge en crudo) -- solo cambia el ORDEN, el filtro de calidad es el mismo.
-export function getTopSignals(
-  limit = 20,
-  date?: string,
-  sortBy?: "score" | "edge"
-): Promise<Prediction[]> {
+export function getTopSignals(opts: TopSignalsOptions = {}): Promise<Prediction[]> {
+  const { limit = 20, date, sortBy, minFairOdds, maxFairOdds } = opts;
   const qs = new URLSearchParams({ limit: String(limit) });
   if (date) qs.set("date", date);
   if (sortBy) qs.set("sort_by", sortBy);
+  if (minFairOdds !== undefined) qs.set("min_fair_odds", String(minFairOdds));
+  if (maxFairOdds !== undefined) qs.set("max_fair_odds", String(maxFairOdds));
   return apiFetch<Prediction[]>(`/predictions/top-signals?${qs.toString()}`);
 }
 

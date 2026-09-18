@@ -121,6 +121,8 @@ def _base_signal_query(
     upcoming_only: bool,
     days: int | None = 4,
     date: dt.date | None = None,
+    min_fair_odds: float | None = None,
+    max_fair_odds: float | None = None,
 ):
     """`days`: sin limite superior, "las mejores predicciones" puede mezclar
     partidos de jornadas MUY distintas entre si (una de esta semana, otra
@@ -133,7 +135,17 @@ def _base_signal_query(
     `date`: filtro alternativo a `days`, para un dia CONCRETO (p.ej. "solo
     el sabado") en vez de una ventana relativa a ahora. Si se da, tiene
     prioridad sobre `days` -- un dia concreto puede caer fuera de la
-    ventana por defecto de 4 dias y aun asi ser justo lo que se pide."""
+    ventana por defecto de 4 dias y aun asi ser justo lo que se pide.
+
+    `min_fair_odds`/`max_fair_odds`: filtro por CUOTA JUSTA del modelo
+    (`fair_odds = 1/model_probability`, ver prediction/fair_odds.py), no
+    por la cuota de mercado -- es "que probabilidad ve el modelo", no "que
+    paga la casa". Pedido explicito de usuario para poder acotar, p.ej.,
+    "solo predicciones entre cuota justa 1 y 2" (favoritos claros segun el
+    modelo) en vez de depender solo del filtro de MAX_SIGNAL_ODDS (que
+    limita la cuota de MERCADO, pensado para evitar tiros muy largos, no
+    para segmentar por rango). Ambos filtros son independientes y se
+    pueden combinar."""
     query = db.query(Prediction).join(Match, Match.id == Prediction.match_id)
     if upcoming_only:
         query = query.filter(Match.status == "scheduled")
@@ -153,6 +165,10 @@ def _base_signal_query(
             )
         elif market_family in prefixes:
             query = query.filter(Prediction.market.startswith(prefixes[market_family]))
+    if min_fair_odds is not None:
+        query = query.filter(Prediction.fair_odds >= min_fair_odds)
+    if max_fair_odds is not None:
+        query = query.filter(Prediction.fair_odds <= max_fair_odds)
     return query
 
 
@@ -166,6 +182,8 @@ def top_signals(
     sort_by: str = Query(
         "score", pattern="^(score|edge)$", description="'score' (por defecto) o 'edge' (de mayor a menor)"
     ),
+    min_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MINIMA del modelo (1/model_probability)"),
+    max_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MAXIMA del modelo (1/model_probability)"),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """"Mejores señales": ranking transparente que SOLO considera
@@ -184,8 +202,14 @@ def top_signals(
     en crudo -- util para ver primero la mayor discrepancia modelo-mercado
     aunque venga de una senhal con probabilidad mas baja o menos casas
     respaldando la cuota, que el score compuesto penaliza a proposito.
+
+    `min_fair_odds`/`max_fair_odds`: filtro por CUOTA JUSTA del modelo
+    (no la de mercado), pedido explicito de usuario para acotar por
+    rango (p.ej. "solo entre 1 y 2" = favoritos claros segun el modelo).
     """
-    candidates = _base_signal_query(db, market_family, upcoming_only, days, date).all()
+    candidates = _base_signal_query(
+        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds
+    ).all()
     included, excluded = rank_signals(candidates)
     if excluded:
         logger.info(
@@ -207,6 +231,8 @@ def best_predictions(
     upcoming_only: bool = Query(True),
     days: int = Query(4, ge=1, le=30, description="Ventana de dias hacia adelante (ignorado si se da `date`)"),
     date: dt.date | None = Query(None, description="Filtrar a un dia concreto (YYYY-MM-DD) en vez de una ventana"),
+    min_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MINIMA del modelo"),
+    max_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MAXIMA del modelo"),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """"Las 5 mejores predicciones" (widget de portada), dentro de los
@@ -222,7 +248,9 @@ def best_predictions(
     NUNCA aparecen aqui: usa `/predictions/model-only` para mostrarlas por
     separado, etiquetadas explicitamente como "sin mercado".
     """
-    candidates = _base_signal_query(db, market_family, upcoming_only, days, date).all()
+    candidates = _base_signal_query(
+        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds
+    ).all()
     included, _ = rank_signals(candidates)
     return [serialize_prediction(s.prediction) for s in included[:limit]]
 
@@ -233,12 +261,16 @@ def best_predictions_debug(
     upcoming_only: bool = Query(True),
     days: int = Query(4, ge=1, le=30),
     date: dt.date | None = Query(None),
+    min_fair_odds: float | None = Query(None, ge=1.0),
+    max_fair_odds: float | None = Query(None, ge=1.0),
     db: Session = Depends(get_db),
 ) -> dict:
     """Observabilidad (seccion 13): por cada prediccion candidata, si entro
     al ranking o no y por que. Pensado para depurar "por que esta senhal no
     aparece" sin tener que adivinar leyendo logs."""
-    candidates = _base_signal_query(db, market_family, upcoming_only, days, date).all()
+    candidates = _base_signal_query(
+        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds
+    ).all()
     included, excluded = rank_signals(candidates)
     return {
         "included": [
