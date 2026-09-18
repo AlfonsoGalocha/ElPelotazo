@@ -20,11 +20,21 @@ from backend.app.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def ingest_matches(db: Session, provider: DataProvider, competition_code: str, season_label: str) -> int:
+def ingest_matches(
+    db: Session, provider: DataProvider, competition_code: str, season_label: str, force_refresh: bool = False
+) -> int:
     """Descarga y persiste los partidos de una (competicion, temporada).
 
     Idempotente: usa (provider, provider_id) como clave unica, asi que
     re-ejecutar la ingesta actualiza en vez de duplicar.
+
+    `force_refresh`: para proveedores con cache en disco (hoy solo
+    `ClubFootballMatchDataProvider`, ver su docstring de
+    `refresh_cache()`), fuerza una re-descarga real antes de leer.
+    Necesario para recoger resultados REALES recien jugados -- sin esto,
+    una vez descargado el CSV la primera vez, nunca se volvia a comprobar
+    si habia partidos nuevos, por mucho que se re-ejecutara `update`. Los
+    proveedores sin cache (o sin este metodo) ignoran el flag sin error.
     """
     if not provider.is_available():
         logger.warning(
@@ -32,6 +42,9 @@ def ingest_matches(db: Session, provider: DataProvider, competition_code: str, s
             extra={"provider": provider.name, "competition": competition_code},
         )
         return 0
+
+    if force_refresh and hasattr(provider, "refresh_cache"):
+        provider.refresh_cache()
 
     records = provider.fetch_matches(competition_code, season_label)
     competition_id = resolve_competition_id(db, competition_code)

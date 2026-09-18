@@ -86,6 +86,25 @@ class ClubFootballMatchDataProvider(DataProvider):
         self._df = df
         return df
 
+    def refresh_cache(self) -> None:
+        """Fuerza una re-descarga real en la proxima llamada a
+        `fetch_matches`, ignorando el cache en disco.
+
+        BUG REAL corregido: una vez descargado el CSV la primera vez,
+        `_load_dataframe()` nunca volvia a comprobar si habia partidos
+        nuevos jugados -- `force_refresh` existia como parametro pero
+        nada lo pasaba nunca en `True`. El sintoma exacto: `football-edge
+        update` (o `refresh`, que lo incluye) se podia re-ejecutar cien
+        veces despues de que terminara una jornada entera y JAMAS se
+        actualizaban los resultados reales, silenciosamente -- el cache
+        de 45MB en `data/external/` se quedaba congelado en el estado del
+        primer `update` que se ejecuto en el proyecto. Sin esto, no hay
+        forma de que "recopilar los datos reales tras la jornada"
+        funcione nunca, por mucho que se reentrene despues."""
+        self._df = None
+        if self._cache_path.exists():
+            self._cache_path.unlink()
+
     def fetch_matches(self, competition_code: str, season_label: str) -> list[RawMatchRecord]:
         div_code = COMPETITION_DIV_CODES.get(competition_code)
         if div_code is None:

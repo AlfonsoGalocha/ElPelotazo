@@ -40,6 +40,7 @@ from backend.app.services.data_service import (
 )
 from backend.app.services.match_service import load_market_odds_column, load_matches_dataframe
 from backend.app.services.model_service import train_competition_models
+from backend.app.services.evaluation_service import evaluate_settled_predictions
 from backend.app.services.prediction_service import generate_predictions_for_competition
 from backend.app.services.round_service import get_current_round
 from backend.app.utils.dates import season_label as season_label_from_date
@@ -64,12 +65,30 @@ def update(
         "history_dataset",
         help="'history_dataset' (mirror en GitHub, recomendado) o 'football_data_co_uk' (fuente directa).",
     ),
+    refresh_cache: bool = typer.Option(
+        True,
+        help=(
+            "Re-descarga el dataset historico aunque ya este cacheado en disco. BUG REAL corregido: "
+            "sin esto por defecto, una vez descargado el CSV la primera vez, este comando nunca volvia "
+            "a comprobar si habia partidos nuevos jugados, por mucho que se re-ejecutara -- exactamente "
+            "lo necesario para recoger resultados reales tras acabar una jornada. Desactivalo "
+            "(--no-refresh-cache) solo para pruebas repetidas el mismo dia sin gastar red."
+        ),
+    ),
 ) -> None:
     """Descarga e ingesta datos historicos reales (resultados + cuotas)."""
     init_db()
     competitions = [competition] if competition else ALL_COMPETITIONS
     seasons = [season] if season else _seasons_since()
     provider = ClubFootballMatchDataProvider() if source == "history_dataset" else FootballDataCoUkProvider()
+
+    # Una unica invalidacion de cache ANTES del bucle (no dentro, por
+    # competicion/temporada): el CSV cubre TODAS las ligas/temporadas en
+    # un unico archivo, asi que invalidar dentro del bucle forzaria una
+    # redescarga completa por cada combinacion (hasta 25 veces) en vez de
+    # una sola vez para toda la ejecucion del comando.
+    if refresh_cache and hasattr(provider, "refresh_cache"):
+        provider.refresh_cache()
 
     with session_scope() as db:
         for comp in competitions:
@@ -390,29 +409,82 @@ def refresh(
     y `edge` cuando haya cuotas disponibles (requieren ODDS_API_KEY /
     API_FOOTBALL_KEY respectivamente; si no estan configuradas, cada paso
     se salta solo sin romper el resto del pipeline).
+
+    Paso 2 (`evaluate`): en cuanto llegan resultados reales nuevos (paso 1),
+    compara las predicciones que YA estaban guardadas de esos partidos
+    contra el resultado real -- asi queda un historial de "como de bien
+    predijo el modelo" ANTES de que el reentrenamiento del paso 6 cambie
+    nada. Nunca falla el `refresh` completo si no hay nada nuevo que
+    evaluar (p.ej. la primera vez que se ejecuta).
     """
-    typer.echo("=== [1/6] Resultados historicos ===")
+    typer.echo("=== [1/7] Resultados historicos ===")
     if skip_historical:
         typer.echo("(saltado por --skip-historical)")
     else:
         update(competition=competition, season=None, source="history_dataset")
 
-    typer.echo("=== [2/6] Fixtures reales (temporada en curso) ===")
+    typer.echo("=== [2/7] Evaluar predicciones de partidos ya finalizados ===")
+    evaluate(competition=competition)
+
+    typer.echo("=== [3/7] Fixtures reales (temporada en curso) ===")
     update_fixtures(competition=competition)
 
-    typer.echo("=== [3/6] Cuotas de mercado reales: goles/1X2 (The Odds API) ===")
+    typer.echo("=== [4/7] Cuotas de mercado reales: goles/1X2 (The Odds API) ===")
     update_odds(competition=competition)
 
-    typer.echo("=== [4/6] Cuotas de mercado reales: tarjetas/corners (API-Football) ===")
+    typer.echo("=== [5/7] Cuotas de mercado reales: tarjetas/corners (API-Football) ===")
     update_secondary_odds(competition=competition)
 
-    typer.echo("=== [5/6] Entrenamiento de modelos ===")
+    typer.echo("=== [6/7] Entrenamiento de modelos ===")
     train(competition=competition)
 
-    typer.echo("=== [6/6] Predicciones para partidos programados ===")
+    typer.echo("=== [7/7] Predicciones para partidos programados ===")
     predict_upcoming(days=days, competition=competition)
 
     typer.echo("\nListo. Arranca (o recarga) la API y el dashboard para verlo.")
+
+
+@app.command()
+def evaluate(competition: str = typer.Option(None), output: str | None = None) -> None:
+    """Compara las predicciones YA HECHAS contra el resultado REAL de los
+    partidos que ya se jugaron ("como de bien acerto el modelo la jornada
+    pasada"), sin volver a entrenar nada -- ver
+    services/evaluation_service.py. Pensado para ejecutarse DESPUES de
+    `football-edge update` (que trae los resultados reales) y ANTES o
+    DESPUES de `train`, da igual: usa las predicciones que YA estaban
+    guardadas de antes del partido, nunca predicciones nuevas.
+
+    Escribe un JSON con Brier score / log loss / calibracion por mercado
+    (siempre) y ROI hipotetico (solo si habia cuota de mercado real).
+    """
+    init_db()
+    with session_scope() as db:
+        report_data = evaluate_settled_predictions(db, competition_code=competition)
+
+    if not report_data["competitions"]:
+        typer.echo(
+            "[evaluate] Sin partidos finalizados con predicciones guardadas todavia. "
+            "Ejecuta 'football-edge update' para traer resultados reales, luego reintenta."
+        )
+        return
+
+    for comp_code, markets in report_data["competitions"].items():
+        typer.echo(f"--- {comp_code} ---")
+        for market, market_report in markets.items():
+            quality = market_report["model_quality"]
+            strategy = market_report["market_strategy"] or {}
+            roi = strategy.get("roi")
+            suffix = f" | ROI={roi:.3f} (n_apuestas={strategy.get('n_bets', 0)})" if roi is not None else ""
+            typer.echo(
+                f"  {market}: n={market_report['n_predictions']} "
+                f"brier={quality['brier_score']:.4f} log_loss={quality['log_loss']:.4f} "
+                f"accuracy={quality['accuracy_secondary_only']:.3f}" + suffix
+            )
+
+    output_path = Path(output) if output else REPO_ROOT / "data" / "processed" / "evaluation_report.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report_data, indent=2, default=str))
+    typer.echo(f"[evaluate] informe completo escrito en {output_path}")
 
 
 @app.command()

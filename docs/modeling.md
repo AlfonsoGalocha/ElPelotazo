@@ -115,6 +115,47 @@ historico no trae jornada. Si un partido programado no tiene `matchday`
 todavia (fixtures ingeridos antes de este cambio), se cae a un fallback
 explicito por fecha en vez de fingir una jornada real.
 
+## Cerrar el ciclo: resultados reales -> reentrenar -> evaluar
+
+El modelo nunca mantiene estado entre ejecuciones: cada `football-edge
+train` reentrena TODO desde cero (Dixon-Coles/baseline/ML classifier)
+leyendo TODOS los partidos ya jugados de la BD en ese momento. Por eso
+"que el modelo aprenda de la realidad" no necesita ninguna infraestructura
+de aprendizaje online -- solo necesita que los resultados reales de la
+jornada que acaba de terminar lleguen a la BD antes de reentrenar.
+
+**Bug real corregido (2026-09-18)**: `ClubFootballMatchDataProvider`
+(fuente por defecto de `football-edge update`) descarga el CSV historico
+UNA VEZ y lo cachea en disco (`data/external/`, ~45MB). El parametro
+`force_refresh` para invalidar ese cache existia desde el principio del
+proyecto, pero NADA lo invocaba nunca en `True` -- asi que, una vez
+descargado el CSV la primera vez, re-ejecutar `update` (o `refresh`, que
+lo incluye) NUNCA volvia a comprobar si habia partidos nuevos jugados,
+por muchas veces que se ejecutara. Esto bloqueaba silenciosamente
+exactamente el flujo que se pedia: "cuando acabe la jornada, recopilar
+los datos reales". Corregido con `ClubFootballMatchDataProvider.refresh_cache()`,
+invocado por defecto en `football-edge update` (desactivable con
+`--no-refresh-cache` solo para pruebas repetidas el mismo dia sin gastar
+red).
+
+**Flujo recomendado tras acabar una jornada** (ya encadenado en
+`football-edge refresh`, en este orden):
+1. `update` -- trae los resultados reales (fuerza el refresco del cache).
+2. `evaluate` -- compara las predicciones que YA estaban guardadas de esos
+   partidos (hechas ANTES del pitido inicial, nunca se borran al
+   finalizar el partido) contra el resultado real: Brier score, log loss,
+   calibracion y accuracy siempre; ROI hipotetico solo si habia cuota de
+   mercado real (ver `backtesting/metrics.py::market_strategy_metrics`).
+   Escribe `data/processed/evaluation_report.json`. Es puramente
+   observabilidad -- no cambia nada del modelo, solo permite VER como de
+   bien predijo antes de decidir si hace falta ajustar algo.
+3. `train` -- reentrena con los resultados nuevos ya incorporados.
+4. `predict-upcoming` -- genera predicciones para los proximos partidos
+   con el modelo ya actualizado.
+
+Comando aislado: `football-edge evaluate --competition laliga` (o sin
+`--competition` para todas). Ver `services/evaluation_service.py`.
+
 ## Versionado (seccion 34)
 
 Cada `train_competition_models(...)` crea una fila nueva en `model_versions`
