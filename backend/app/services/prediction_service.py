@@ -29,6 +29,13 @@ MARKET_TO_ODDS_LOOKUP = {
     "under_2_5": ("over_under_goals", 2.5, "under"),
     "over_3_5": ("over_under_goals", 3.5, "over"),
     "btts": ("btts", None, "yes"),
+    # 1X2: mismo mercado "match_result" que ya traen h2h (The Odds API) y
+    # el dataset historico (Bet365) desde el principio -- solo faltaba
+    # definirlo como mercado del modelo (ver market_labels.py) para que
+    # compitiera en el ranking de senhales igual que los de goles.
+    "home_win": ("match_result", None, "home"),
+    "draw": ("match_result", None, "draw"),
+    "away_win": ("match_result", None, "away"),
 }
 
 # Tarjetas/corners: The Odds API no las ofrece (ver docs/data_sources.md),

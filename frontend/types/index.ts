@@ -76,6 +76,9 @@ export const MARKET_DISPLAY_NAMES: Record<string, string> = {
   under_2_5: "Menos de 2.5 goles",
   over_3_5: "Más de 3.5 goles",
   btts: "Ambos equipos marcan",
+  home_win: "Victoria local (1)",
+  draw: "Empate (X)",
+  away_win: "Victoria visitante (2)",
   cards_over_3_5: "Más de 3.5 tarjetas",
   cards_over_4_5: "Más de 4.5 tarjetas",
   cards_over_5_5: "Más de 5.5 tarjetas",
@@ -87,6 +90,7 @@ export const MARKET_DISPLAY_NAMES: Record<string, string> = {
 };
 
 export const GOALS_MARKETS = ["over_1_5", "over_2_5", "under_2_5", "over_3_5", "btts"];
+export const MATCH_RESULT_MARKETS = ["home_win", "draw", "away_win"];
 export const CARDS_MARKETS = ["cards_over_3_5", "cards_over_4_5", "cards_over_5_5", "cards_under_4_5"];
 export const CORNERS_MARKETS = [
   "corners_over_8_5",

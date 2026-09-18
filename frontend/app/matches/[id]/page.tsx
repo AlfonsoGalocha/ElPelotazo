@@ -1,10 +1,11 @@
 import { notFound } from "next/navigation";
 import { getMatch, getMatchPredictions } from "@/lib/api";
 import type { Prediction } from "@/types";
-import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES } from "@/types";
+import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES, MATCH_RESULT_MARKETS } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
 
 const SECTIONS: { label: string; markets: string[] }[] = [
+  { label: "🏆 Resultado (1X2)", markets: MATCH_RESULT_MARKETS },
   { label: "⚽ Goles", markets: GOALS_MARKETS },
   { label: "🟨 Tarjetas", markets: CARDS_MARKETS },
   { label: "🚩 Córners", markets: CORNERS_MARKETS },

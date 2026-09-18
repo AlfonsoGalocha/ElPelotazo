@@ -3,17 +3,18 @@
 import { useState } from "react";
 import Link from "next/link";
 import type { Prediction } from "@/types";
-import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS } from "@/types";
+import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS, MATCH_RESULT_MARKETS } from "@/types";
 import PredictionRow from "./PredictionRow";
 
-const TABS: { key: "goals" | "cards" | "corners"; label: string; markets: string[] }[] = [
+const TABS: { key: "result" | "goals" | "cards" | "corners"; label: string; markets: string[] }[] = [
+  { key: "result", label: "1X2", markets: MATCH_RESULT_MARKETS },
   { key: "goals", label: "Goles", markets: GOALS_MARKETS },
   { key: "cards", label: "Tarjetas", markets: CARDS_MARKETS },
   { key: "corners", label: "Córners", markets: CORNERS_MARKETS },
 ];
 
 export default function MatchCard({ predictions }: { predictions: Prediction[] }) {
-  const [tab, setTab] = useState<"goals" | "cards" | "corners">("goals");
+  const [tab, setTab] = useState<"result" | "goals" | "cards" | "corners">("result");
   if (predictions.length === 0) return null;
   const match = predictions[0].match;
   const kickoff = new Date(match.kickoff_utc);
