@@ -163,6 +163,9 @@ def top_signals(
     upcoming_only: bool = Query(True),
     days: int = Query(4, ge=1, le=30, description="Ventana de dias hacia adelante (ignorado si se da `date`)"),
     date: dt.date | None = Query(None, description="Filtrar a un dia concreto (YYYY-MM-DD) en vez de una ventana"),
+    sort_by: str = Query(
+        "score", pattern="^(score|edge)$", description="'score' (por defecto) o 'edge' (de mayor a menor)"
+    ),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """"Mejores señales": ranking transparente que SOLO considera
@@ -172,6 +175,15 @@ def top_signals(
     casas de apuestas suficiente, o con edge negativo/ausente NUNCA entra
     aqui — puede existir (ver `/predictions/model-only`), pero no compite
     en este ranking (seccion 2/7 de la revision de arquitectura).
+
+    `sort_by`: el filtro de calidad (que decide QUE entra) es siempre el
+    mismo; `sort_by` solo cambia el ORDEN dentro de lo que ya paso el
+    filtro. "score" (por defecto) es el ranking compuesto documentado en
+    prediction/ranking.py (probabilidad al cuadrado x edge x confianza x
+    calidad); "edge" ordena de mayor a menor edge en puntos porcentuales
+    en crudo -- util para ver primero la mayor discrepancia modelo-mercado
+    aunque venga de una senhal con probabilidad mas baja o menos casas
+    respaldando la cuota, que el score compuesto penaliza a proposito.
     """
     candidates = _base_signal_query(db, market_family, upcoming_only, days, date).all()
     included, excluded = rank_signals(candidates)
@@ -181,6 +193,8 @@ def top_signals(
             len(excluded),
             {r.reason.value: sum(1 for e in excluded if e.reason == r.reason) for r in excluded},
         )
+    if sort_by == "edge":
+        included = sorted(included, key=lambda s: s.prediction.edge or 0.0, reverse=True)
     return [serialize_prediction(s.prediction) for s in included[:limit]]
 
 

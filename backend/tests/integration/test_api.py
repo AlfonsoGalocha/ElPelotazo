@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match
+from backend.app.db.models.modeling import Prediction
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.ingestion.odds.provider import FixtureOddsSnapshot
 from backend.app.main import app
@@ -345,6 +346,44 @@ def test_top_signals_default_window_excludes_far_future_matches(seeded_competiti
     )
     other_day_match_ids = {p["match"]["id"] for p in other_day_response.json()}
     assert far_match_id not in other_day_match_ids
+
+
+def test_top_signals_sort_by_edge_orders_by_edge_not_score(seeded_competition_code):
+    """`sort_by=edge` cambia el ORDEN dentro de lo que ya paso el filtro de
+    calidad, sin cambiar QUE entra (eso lo sigue decidiendo
+    evaluate_quality_gate). Se fuerzan dos edges muy distintos en
+    predicciones ya existentes y validas para comprobar que "edge" las
+    ordena de mayor a menor, al margen de como las ordenaria el score
+    compuesto (probabilidad^2 x edge x confianza x calidad)."""
+    with session_scope() as db:
+        valid_predictions = (
+            db.query(Prediction)
+            .filter(Prediction.market_odds.isnot(None))
+            .filter(Prediction.market_probability.isnot(None))
+            .order_by(Prediction.id)
+            .limit(2)
+            .all()
+        )
+        assert len(valid_predictions) == 2
+        low_edge_id, high_edge_id = valid_predictions[0].id, valid_predictions[1].id
+        valid_predictions[0].edge = 0.02
+        valid_predictions[1].edge = 0.35
+        db.flush()
+
+    client = TestClient(app)
+    response = client.get(
+        "/predictions/top-signals",
+        params={"limit": 100, "days": 30, "sort_by": "edge"},
+    )
+    assert response.status_code == 200
+    ordered_ids = [p["id"] for p in response.json() if p["id"] in (low_edge_id, high_edge_id)]
+    assert ordered_ids == [high_edge_id, low_edge_id]
+
+
+def test_top_signals_rejects_unknown_sort_by(seeded_competition_code):
+    client = TestClient(app)
+    response = client.get("/predictions/top-signals", params={"sort_by": "not_a_real_option"})
+    assert response.status_code == 422
 
 
 class _FakeApiFootballProvider:

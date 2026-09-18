@@ -5,10 +5,11 @@ import SignalBadge from "@/components/SignalBadge";
 export default async function TopSignalsPage({
   searchParams,
 }: {
-  searchParams: { date?: string };
+  searchParams: { date?: string; sort_by?: "score" | "edge" };
 }) {
   const { date } = searchParams;
-  const predictions = await getTopSignals(30, date).catch(() => []);
+  const sortBy = searchParams.sort_by === "edge" ? "edge" : "score";
+  const predictions = await getTopSignals(30, date, sortBy).catch(() => []);
 
   return (
     <div>
@@ -22,13 +23,13 @@ export default async function TopSignalsPage({
             })}.`
           : "De los próximos 4 días."}{" "}
         Solo predicciones con mercado real y válido (cuota &gt; 1.0, edge no
-        negativo, al menos una casa de apuestas respaldando el consenso). Puntuación = probabilidad²×
-        edge × confianza × calidad de datos — una cuota irrisoria (ej. 1.02) con edge casi nulo no
-        sube aquí aunque la probabilidad del modelo sea altísima. La confianza ya incluye cuántas
-        casas respaldan la cuota: un consenso de una única casa pesa menos que el de 5+.
+        negativo, al menos una casa de apuestas respaldando el consenso).{" "}
+        {sortBy === "edge"
+          ? "Ordenado por edge de mayor a menor."
+          : "Puntuación = probabilidad²× edge × confianza × calidad de datos — una cuota irrisoria (ej. 1.02) con edge casi nulo no sube aquí aunque la probabilidad del modelo sea altísima. La confianza ya incluye cuántas casas respaldan la cuota: un consenso de una única casa pesa menos que el de 5+."}
       </p>
 
-      <form className="mb-6 flex items-center gap-2 text-sm text-slate-400">
+      <form className="mb-6 flex flex-wrap items-center gap-2 text-sm text-slate-400">
         <label htmlFor="date">Filtrar por día:</label>
         <input
           id="date"
@@ -37,12 +38,27 @@ export default async function TopSignalsPage({
           defaultValue={date ?? ""}
           className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
         />
+        <label htmlFor="sort_by" className="ml-2">
+          Ordenar por:
+        </label>
+        <select
+          id="sort_by"
+          name="sort_by"
+          defaultValue={sortBy}
+          className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+        >
+          <option value="score">Puntuación (por defecto)</option>
+          <option value="edge">Edge (mayor a menor)</option>
+        </select>
         <button type="submit" className="rounded border border-surface-border px-3 py-1 hover:bg-surface-raised">
           Aplicar
         </button>
         {date && (
-          <a href="/top-signals" className="text-slate-500 underline hover:text-slate-300">
-            Quitar filtro
+          <a
+            href={`/top-signals${sortBy === "edge" ? "?sort_by=edge" : ""}`}
+            className="text-slate-500 underline hover:text-slate-300"
+          >
+            Quitar filtro de fecha
           </a>
         )}
       </form>

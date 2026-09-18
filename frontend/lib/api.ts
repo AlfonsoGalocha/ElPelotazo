@@ -21,10 +21,17 @@ export function getUpcomingPredictions(days = 7): Promise<Prediction[]> {
 // "Mejores señales": SOLO predicciones con mercado real valido (ver
 // backend/app/prediction/ranking.py). Nunca incluye tarjetas/corners ni
 // goles sin cuota todavia. `date` (YYYY-MM-DD) filtra a un dia concreto en
-// vez de la ventana relativa por defecto (proximos 4 dias).
-export function getTopSignals(limit = 20, date?: string): Promise<Prediction[]> {
+// vez de la ventana relativa por defecto (proximos 4 dias). `sortBy`:
+// "score" (por defecto, ranking compuesto) o "edge" (de mayor a menor
+// edge en crudo) -- solo cambia el ORDEN, el filtro de calidad es el mismo.
+export function getTopSignals(
+  limit = 20,
+  date?: string,
+  sortBy?: "score" | "edge"
+): Promise<Prediction[]> {
   const qs = new URLSearchParams({ limit: String(limit) });
   if (date) qs.set("date", date);
+  if (sortBy) qs.set("sort_by", sortBy);
   return apiFetch<Prediction[]>(`/predictions/top-signals?${qs.toString()}`);
 }
 
