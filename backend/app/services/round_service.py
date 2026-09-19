@@ -103,6 +103,50 @@ def get_current_round(db: Session, competition_code: str) -> RoundInfo | None:
     )
 
 
+def get_next_round(db: Session, competition_code: str) -> RoundInfo | None:
+    """La jornada INMEDIATAMENTE posterior a la actual (mismo criterio de
+    `matchday`), para el filtro "Próxima jornada" -- nunca "cualquier
+    partido futuro que caiga en una ventana de dias", que puede mezclar
+    dos jornadas o solo cubrir parte de una. `None` si no hay jornada
+    actual detectable (mismo fallback que `get_current_round`) o si la
+    jornada actual es la ultima programada."""
+    current = get_current_round(db, competition_code)
+    if current is None or current.is_fallback or current.next_round is None:
+        return None
+
+    round_matches = (
+        db.query(Match)
+        .filter(
+            Match.competition_id == current.competition_id,
+            Match.season_id == current.season_id,
+            Match.matchday == current.next_round,
+        )
+        .all()
+    )
+    if not round_matches:
+        return None
+    kickoffs = [m.kickoff_utc for m in round_matches]
+    next_next_round_row = (
+        db.query(func.min(Match.matchday))
+        .filter(
+            Match.competition_id == current.competition_id,
+            Match.season_id == current.season_id,
+            Match.matchday > current.next_round,
+        )
+        .scalar()
+    )
+    return RoundInfo(
+        competition_id=current.competition_id,
+        season_id=current.season_id,
+        round=current.next_round,
+        round_start=min(kickoffs),
+        round_end=max(kickoffs),
+        match_ids=[m.id for m in round_matches],
+        is_fallback=False,
+        next_round=next_next_round_row,
+    )
+
+
 def _fallback_round(db: Session, competition_id: int) -> RoundInfo | None:
     now = dt.datetime.utcnow()
     horizon = now + dt.timedelta(days=FALLBACK_WINDOW_DAYS)

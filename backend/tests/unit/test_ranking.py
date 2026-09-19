@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import datetime as dt
+
 from backend.app.config.settings import Settings
 from backend.app.db.models.modeling import Prediction
-from backend.app.prediction.ranking import ExclusionReason, evaluate_quality_gate, rank_signals, signal_score
+from backend.app.prediction.ranking import (
+    ExclusionReason,
+    evaluate_quality_gate,
+    odds_age_minutes,
+    rank_signals,
+    signal_score,
+)
 
 
 def _prediction(**overrides) -> Prediction:
@@ -24,6 +32,7 @@ def _prediction(**overrides) -> Prediction:
         bookmakers_count=4,
         explanation={"factors": []},
         features_used={"feature_names": []},
+        created_at=dt.datetime.utcnow(),
     )
     defaults.update(overrides)
     return Prediction(**defaults)
@@ -68,6 +77,28 @@ def test_prediction_with_too_few_bookmakers_is_excluded():
     settings = Settings(min_bookmakers=3)
     prediction = _prediction(bookmakers_used=1)
     assert evaluate_quality_gate(prediction, settings) == ExclusionReason.INSUFFICIENT_BOOKMAKERS
+
+
+def test_stale_odds_disabled_by_default():
+    """Por defecto (`max_odds_age_minutes=None`) no se excluye nada por
+    antigueedad -- seccion 12: "no inventar frescura" pero tampoco
+    descartar senhales sin evidencia de que haga falta."""
+    old_prediction = _prediction(created_at=dt.datetime.utcnow() - dt.timedelta(days=30))
+    assert evaluate_quality_gate(old_prediction) is None
+
+
+def test_stale_odds_excluded_when_threshold_configured():
+    settings = Settings(max_odds_age_minutes=60)
+    fresh = _prediction(created_at=dt.datetime.utcnow() - dt.timedelta(minutes=10))
+    stale = _prediction(created_at=dt.datetime.utcnow() - dt.timedelta(minutes=120))
+    assert evaluate_quality_gate(fresh, settings) is None
+    assert evaluate_quality_gate(stale, settings) == ExclusionReason.STALE_ODDS
+
+
+def test_odds_age_minutes_reflects_created_at():
+    prediction = _prediction(created_at=dt.datetime.utcnow() - dt.timedelta(minutes=45))
+    age = odds_age_minutes(prediction)
+    assert 44.0 <= age <= 46.0
 
 
 def test_prediction_passing_all_checks_is_not_excluded():
@@ -125,9 +156,24 @@ def test_rank_signals_separates_included_and_excluded_with_reasons():
 
 
 def test_rank_signals_orders_by_score_descending():
-    low = _prediction(match_id=1, model_probability=0.98, market_probability=0.975, market_odds=1.02, edge=0.005)
-    high = _prediction(match_id=2, model_probability=0.80, market_probability=0.70, market_odds=1.35, edge=0.10)
+    low = _prediction(match_id=1, model_probability=0.85, market_probability=0.80, market_odds=1.50, edge=0.05)
+    high = _prediction(match_id=2, model_probability=0.80, market_probability=0.70, market_odds=1.60, edge=0.10)
 
     included, _ = rank_signals([low, high])
 
     assert [s.prediction.match_id for s in included] == [2, 1]
+
+
+def test_rank_signals_excludes_cuota_1_02_even_with_extreme_probability():
+    """El bug real reportado por el usuario: una cuota 1.02 (modelo 98%,
+    edge practicamente nulo) NO debe aparecer en 'Mejores señales' nunca,
+    ni siquiera si ese dia no hay ninguna otra senhal candidata -- por eso
+    se descarta en el FILTRO DURO (MIN_SIGNAL_ODDS=1.45 por defecto), no
+    solo se penaliza en el scoring (que ya la hundia, pero no la excluia
+    si no habia competencia)."""
+    near_certain_low_value = _prediction(
+        match_id=1, model_probability=0.98, market_probability=0.975, market_odds=1.02, edge=0.005
+    )
+    included, excluded = rank_signals([near_certain_low_value])
+    assert included == []
+    assert excluded[0].reason == ExclusionReason.INVALID_ODDS

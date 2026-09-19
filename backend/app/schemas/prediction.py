@@ -41,6 +41,9 @@ class PredictionOut(BaseModel):
     market_odds_max: float | None = None
     market_odds_median: float | None = None
     market_odds_average: float | None = None
+    market_quality: str | None = None  # "HIGH" | "MEDIUM" | "LOW" (ver prediction/market_quality.py)
+    odds_age_minutes: float | None = None
+    is_stale_odds: bool = False
 
     model_config = {"from_attributes": True}
 

@@ -22,6 +22,18 @@ def configure_logging() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
         stream=sys.stdout,
     )
+    # CRITICO (seguridad real, evidenciada en produccion): httpx emite su
+    # propio log a nivel INFO por cada request ("HTTP Request: GET <url>
+    # ...") que incluye la URL COMPLETA con query params -- The Odds API
+    # pasa la key como `?apiKey=...` en la URL, asi que con el nivel INFO
+    # global (por defecto de este proyecto) esa key aparecia en texto
+    # plano en la consola en cada llamada, aunque nuestro propio codigo
+    # nunca la loguea (ver ingestion/odds/provider.py: nuestros logs solo
+    # incluyen sport_key/status/body, nunca la URL con la key). Se silencia
+    # el logger de httpx a WARNING para cortar esa fuga sin perder nuestros
+    # propios logs estructurados.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     _CONFIGURED = True
 
 

@@ -18,10 +18,20 @@ export function getUpcomingPredictions(days = 7): Promise<Prediction[]> {
   return apiFetch<Prediction[]>(`/predictions/today?days=${days}`);
 }
 
+export type SignalScope = "current_round" | "next_round" | "all_upcoming";
+
 export interface TopSignalsOptions {
   limit?: number;
   date?: string;
   sortBy?: "score" | "edge";
+  // "current_round" (por defecto): solo la jornada actual de cada
+  // competicion (backend/app/services/round_service.py) -- nunca un
+  // partido de la jornada siguiente aunque tenga mas edge. "next_round":
+  // la siguiente jornada. "all_upcoming": ventana de `days` dias, sin
+  // restriccion de jornada (comportamiento anterior).
+  scope?: SignalScope;
+  days?: number; // solo aplica con scope="all_upcoming"
+  competitionCode?: string;
   // Cuota JUSTA del modelo (1/model_probability), no la de mercado --
   // pedido explicito de usuario para acotar por rango (ej. "solo entre 1
   // y 2" = favoritos claros segun el modelo). Independiente del filtro
@@ -32,16 +42,20 @@ export interface TopSignalsOptions {
 }
 
 // "Mejores señales": SOLO predicciones con mercado real valido (ver
-// backend/app/prediction/ranking.py). Nunca incluye tarjetas/corners ni
-// goles sin cuota todavia. `date` (YYYY-MM-DD) filtra a un dia concreto en
-// vez de la ventana relativa por defecto (proximos 4 dias). `sortBy`:
-// "score" (por defecto, ranking compuesto) o "edge" (de mayor a menor
-// edge en crudo) -- solo cambia el ORDEN, el filtro de calidad es el mismo.
+// backend/app/prediction/ranking.py), de la JORNADA ACTUAL de cada
+// competicion por defecto (`scope="current_round"`) -- nunca "los
+// proximos N dias", que puede mezclar jornadas o dejar partidos fuera.
+// `sortBy`: "score" (por defecto, ranking compuesto) o "edge" (de mayor a
+// menor edge en crudo) -- solo cambia el ORDEN, el filtro de calidad es
+// el mismo.
 export function getTopSignals(opts: TopSignalsOptions = {}): Promise<Prediction[]> {
-  const { limit = 20, date, sortBy, minFairOdds, maxFairOdds } = opts;
+  const { limit = 20, date, sortBy, scope, days, competitionCode, minFairOdds, maxFairOdds } = opts;
   const qs = new URLSearchParams({ limit: String(limit) });
   if (date) qs.set("date", date);
   if (sortBy) qs.set("sort_by", sortBy);
+  if (scope) qs.set("scope", scope);
+  if (days !== undefined) qs.set("days", String(days));
+  if (competitionCode) qs.set("competition_code", competitionCode);
   if (minFairOdds !== undefined) qs.set("min_fair_odds", String(minFairOdds));
   if (maxFairOdds !== undefined) qs.set("max_fair_odds", String(maxFairOdds));
   return apiFetch<Prediction[]>(`/predictions/top-signals?${qs.toString()}`);

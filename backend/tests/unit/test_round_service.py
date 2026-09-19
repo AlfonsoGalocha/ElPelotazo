@@ -4,7 +4,7 @@ import datetime as dt
 
 from backend.app.db.models.core import Competition, Season, Team
 from backend.app.db.models.matches import Match
-from backend.app.services.round_service import get_current_round
+from backend.app.services.round_service import get_current_round, get_next_round
 
 
 def _make_competition_with_season(db_session, code: str = "test_league") -> tuple[Competition, Season]:
@@ -124,3 +124,46 @@ def test_falls_back_to_date_window_when_no_matchday_data(db_session):
 
 def test_unknown_competition_returns_none(db_session):
     assert get_current_round(db_session, "does_not_exist") is None
+
+
+def test_get_next_round_returns_the_round_right_after_current(db_session):
+    """Pedido explicito de usuario: poder consultar 'Proxima jornada' por
+    separado de 'Jornada actual', con la MISMA logica robusta basada en
+    matchday (nunca una ventana de dias)."""
+    competition, season = _make_competition_with_season(db_session, "test_league_next")
+    teams = [_make_team(db_session, f"N{i}") for i in range(6)]
+    now = dt.datetime.utcnow()
+
+    _make_match(db_session, competition, season, teams[0], teams[1], now + dt.timedelta(days=1), "scheduled", 5, "n1")
+    next_round_match = _make_match(
+        db_session, competition, season, teams[2], teams[3], now + dt.timedelta(days=8), "scheduled", 6, "n2"
+    )
+    _make_match(db_session, competition, season, teams[4], teams[5], now + dt.timedelta(days=15), "scheduled", 7, "n3")
+
+    next_round = get_next_round(db_session, "test_league_next")
+    assert next_round is not None
+    assert next_round.round == 6
+    assert next_round.match_ids == [next_round_match.id]
+    assert next_round.next_round == 7
+
+
+def test_get_next_round_is_none_when_current_round_is_the_last_one(db_session):
+    competition, season = _make_competition_with_season(db_session, "test_league_last")
+    teams = [_make_team(db_session, f"L{i}") for i in range(2)]
+    now = dt.datetime.utcnow()
+    _make_match(db_session, competition, season, teams[0], teams[1], now + dt.timedelta(days=1), "scheduled", 38, "l1")
+
+    assert get_next_round(db_session, "test_league_last") is None
+
+
+def test_get_next_round_is_none_when_current_round_is_a_fallback(db_session):
+    """Sin matchday real, tampoco se puede inventar una 'proxima jornada' --
+    mismo criterio honesto que `get_current_round` con `is_fallback`."""
+    competition, season = _make_competition_with_season(db_session, "test_league_fallback_next")
+    teams = [_make_team(db_session, f"F{i}") for i in range(2)]
+    now = dt.datetime.utcnow()
+    _make_match(
+        db_session, competition, season, teams[0], teams[1], now + dt.timedelta(days=1), "scheduled", None, "f1"
+    )
+
+    assert get_next_round(db_session, "test_league_fallback_next") is None

@@ -64,7 +64,17 @@ class Settings(BaseSettings):
     # evidencia real; degradar una senhal de baja calidad (cuota 1.02, poco
     # edge, pocas casas) es trabajo del SCORING de ranking, no de este
     # filtro. Ajustables sin tocar codigo.
-    min_signal_odds: float = 1.01  # cualquier cuota > 1.0 es "valida"; el scoring penaliza las bajas
+    # 1.45 (no 1.01): BUG REAL corregido (feedback de usuario, 2026-09-19).
+    # Con 1.01, una cuota 1.02 (modelo 98%, prediccion casi segura, edge
+    # practicamente nulo) PASABA el filtro duro -- solo la quedaba abajo
+    # el SCORING (probabilidad^2 x edge), pero si un dia habia pocas
+    # senhales candidatas, esa cuota irrisoria podia colarse igual en el
+    # top-N por falta de competencia, exactamente el mismo problema que
+    # `max_signal_odds` resuelve en el extremo alto. 1.45 es simetrico a
+    # esa logica: por debajo, el margen para que exista edge real es tan
+    # estrecho que casi nunca compensa el riesgo de un modelo mal
+    # calibrado. Ajustable; nunca hardcodeado en el frontend.
+    min_signal_odds: float = 1.45
     min_edge_pp: float = 0.0  # exige edge NO negativo (el modelo no puede ir peor que el mercado)
     min_bookmakers: int = 1  # al menos una casa real respaldando la cuota (nunca 0 = "sin mercado")
     min_data_quality: float = 0.0  # sin filtro adicional por defecto; confidence ya lo pondera
@@ -80,6 +90,27 @@ class Settings(BaseSettings):
     # universal -- ajustalo segun tu propio criterio de riesgo. `None`
     # desactiva el filtro por completo.
     max_signal_odds: float | None = 6.0
+
+    # --- Calidad de mercado (prediction/market_quality.py) ---
+    # Clasificacion HIGH/MEDIUM/LOW basada en cuantas casas respaldan el
+    # consenso y cuanto se dispersan sus cuotas -- NUNCA se mezcla con la
+    # calibracion del modelo (eso es `confidence`, prediction/confidence.py).
+    # Umbrales de partida, no un estandar universal: ajustar segun cuantas
+    # casas cubre realmente tu fuente de cuotas.
+    market_quality_high_min_bookmakers: int = 10
+    market_quality_medium_min_bookmakers: int = 4
+    # Dispersion relativa = (cuota_max - cuota_min) / cuota_mediana. Por
+    # encima de este umbral, muchas casas respaldando el mercado ya NO
+    # basta para "HIGH": una dispersion grande sugiere que el "consenso"
+    # es menos fiable de lo que el numero de casas por si solo sugiere.
+    market_quality_max_dispersion_ratio: float = 0.15
+
+    # --- Frescura de cuotas ---
+    # `None` (por defecto): no se excluye nada por antigueedad, solo se
+    # muestra la edad de la cuota (seccion 12: "no inventar frescura", pero
+    # tampoco descartar senhales sin evidencia de que haga falta). Fija un
+    # entero para activar la exclusion dura (`ExclusionReason.STALE_ODDS`).
+    max_odds_age_minutes: int | None = None
 
     @property
     def model_artifacts_path(self) -> Path:

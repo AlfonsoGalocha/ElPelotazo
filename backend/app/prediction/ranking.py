@@ -17,6 +17,7 @@ Cada exclusion se puede explicar (`ExclusionReason`), para poder responder
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass
 from enum import Enum
 
@@ -31,6 +32,7 @@ class ExclusionReason(str, Enum):
     INVALID_EDGE = "edge_invalido"  # edge ausente o por debajo del minimo configurado
     INSUFFICIENT_BOOKMAKERS = "pocas_casas"  # menos casas que el minimo configurado
     LOW_DATA_QUALITY = "calidad_datos_baja"  # data_quality por debajo del minimo configurado
+    STALE_ODDS = "cuota_desactualizada"  # mas antigua que max_odds_age_minutes (desactivado por defecto)
 
 
 @dataclass
@@ -72,7 +74,23 @@ def evaluate_quality_gate(
         return ExclusionReason.INSUFFICIENT_BOOKMAKERS
     if prediction.data_quality < settings.min_data_quality:
         return ExclusionReason.LOW_DATA_QUALITY
+    if settings.max_odds_age_minutes is not None:
+        # `created_at` es cuando se genero ESTA prediccion, capturando el
+        # `market_probability`/`market_odds` vigentes en ese momento (ver
+        # services/prediction_service.py) -- es la marca de frescura real
+        # de la cuota usada, no una fecha inventada.
+        age_minutes = (dt.datetime.utcnow() - prediction.created_at).total_seconds() / 60.0
+        if age_minutes > settings.max_odds_age_minutes:
+            return ExclusionReason.STALE_ODDS
     return None
+
+
+def odds_age_minutes(prediction: Prediction) -> float:
+    """Antigueedad en minutos de la cuota usada por esta prediccion (ver
+    `created_at` en evaluate_quality_gate). Siempre visible en la UI
+    (seccion 12: "cuotas actualizadas hace X minutos"), independientemente
+    de si `max_odds_age_minutes` esta activado para excluir senhales."""
+    return (dt.datetime.utcnow() - prediction.created_at).total_seconds() / 60.0
 
 
 def signal_score(prediction: Prediction) -> float:

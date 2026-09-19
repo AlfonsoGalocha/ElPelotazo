@@ -68,6 +68,9 @@ export interface Prediction {
   market_odds_max: number | null;
   market_odds_median: number | null;
   market_odds_average: number | null;
+  market_quality: "HIGH" | "MEDIUM" | "LOW" | null;
+  odds_age_minutes: number | null;
+  is_stale_odds: boolean;
 }
 
 export const MARKET_DISPLAY_NAMES: Record<string, string> = {

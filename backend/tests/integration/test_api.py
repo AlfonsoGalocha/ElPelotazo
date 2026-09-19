@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, Season
-from backend.app.db.models.matches import Match
+from backend.app.db.models.matches import Match, MatchOdds
 from backend.app.db.models.modeling import Prediction
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.ingestion.odds.provider import FixtureOddsSnapshot
@@ -327,7 +327,9 @@ def test_top_signals_default_window_excludes_far_future_matches(seeded_competiti
     default_match_ids = {p["match"]["id"] for p in default_response.json()}
     assert far_match_id not in default_match_ids
 
-    wide_response = client.get("/predictions/top-signals", params={"limit": 100, "days": 15})
+    wide_response = client.get(
+        "/predictions/top-signals", params={"limit": 100, "days": 15, "scope": "all_upcoming"}
+    )
     wide_match_ids = {p["match"]["id"] for p in wide_response.json()}
     assert far_match_id in wide_match_ids
 
@@ -346,6 +348,128 @@ def test_top_signals_default_window_excludes_far_future_matches(seeded_competiti
     )
     other_day_match_ids = {p["match"]["id"] for p in other_day_response.json()}
     assert far_match_id not in other_day_match_ids
+
+
+def test_top_signals_default_scope_excludes_next_round_even_with_higher_edge(seeded_competition_code):
+    """Acceptance criteria 1-2 del pedido de revision integral: un partido
+    de la jornada SIGUIENTE no debe aparecer en 'Mejores señales' por
+    defecto ni aunque tenga mas edge que uno de la jornada actual -- el
+    filtro es por JORNADA (matchday real), no por ventana de dias ni por
+    ranking. `scope=all_upcoming` si se quiere ver de todos modos."""
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        season = db.query(Match).filter_by(competition_id=comp.id).first().season_id
+
+        current_round_match = Match(
+            provider="integration_test_manual",
+            provider_id="current-round-fixture",
+            competition_id=comp.id,
+            season_id=season,
+            kickoff_utc=dt.datetime.utcnow() + dt.timedelta(days=1),
+            home_team_id=5,
+            away_team_id=6,
+            status="scheduled",
+            matchday=10,
+        )
+        next_round_match = Match(
+            provider="integration_test_manual",
+            provider_id="next-round-fixture",
+            competition_id=comp.id,
+            season_id=season,
+            kickoff_utc=dt.datetime.utcnow() + dt.timedelta(days=3),
+            home_team_id=7,
+            away_team_id=8,
+            status="scheduled",
+            matchday=11,
+        )
+        db.add_all([current_round_match, next_round_match])
+        db.flush()
+        current_round_match_id = current_round_match.id
+        next_round_match_id = next_round_match.id
+        current_round_kickoff = current_round_match.kickoff_utc
+        next_round_kickoff = next_round_match.kickoff_utc
+
+        snapshots = [
+            FixtureOddsSnapshot(
+                home_team_raw="IntegrationTeam5",
+                away_team_raw="IntegrationTeam6",
+                commence_time=current_round_kickoff.replace(tzinfo=dt.timezone.utc),
+                odds=[
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+                ],
+            ),
+            FixtureOddsSnapshot(
+                home_team_raw="IntegrationTeam7",
+                away_team_raw="IntegrationTeam8",
+                commence_time=next_round_kickoff.replace(tzinfo=dt.timezone.utc),
+                odds=[
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+                ],
+            ),
+        ]
+        attach_odds_to_scheduled_matches(db, _FakeOddsProvider(snapshots), seeded_competition_code)
+
+    with session_scope() as db:
+        generate_predictions_for_competition(db, seeded_competition_code, current_round_kickoff.date())
+        generate_predictions_for_competition(db, seeded_competition_code, next_round_kickoff.date())
+
+    # El partido de la jornada SIGUIENTE se fuerza a tener mucho mas edge
+    # que el de la jornada actual, para probar que aun asi no aparece por
+    # defecto: el filtro es por jornada, nunca "el que tenga mas edge gana".
+    with session_scope() as db:
+        db.query(Prediction).filter(Prediction.match_id == next_round_match_id).update(
+            {"edge": 0.40}, synchronize_session=False
+        )
+        db.query(Prediction).filter(Prediction.match_id == current_round_match_id).update(
+            {"edge": 0.05}, synchronize_session=False
+        )
+
+    client = TestClient(app)
+    default_response = client.get(
+        "/predictions/top-signals", params={"limit": 100, "competition_code": seeded_competition_code}
+    )
+    assert default_response.status_code == 200
+    default_match_ids = {p["match"]["id"] for p in default_response.json()}
+    assert current_round_match_id in default_match_ids
+    assert next_round_match_id not in default_match_ids
+
+    all_upcoming_response = client.get(
+        "/predictions/top-signals",
+        params={
+            "limit": 100,
+            "competition_code": seeded_competition_code,
+            "scope": "all_upcoming",
+            "days": 10,
+        },
+    )
+    all_upcoming_match_ids = {p["match"]["id"] for p in all_upcoming_response.json()}
+    assert next_round_match_id in all_upcoming_match_ids
+
+    next_round_response = client.get(
+        "/predictions/top-signals",
+        params={"limit": 100, "competition_code": seeded_competition_code, "scope": "next_round"},
+    )
+    next_round_match_ids = {p["match"]["id"] for p in next_round_response.json()}
+    assert next_round_match_id in next_round_match_ids
+    assert current_round_match_id not in next_round_match_ids
+
+    # Limpieza: `seeded_competition_code` es una fixture module-scoped
+    # compartida por muchos otros tests que dependen del comportamiento
+    # SIN jornadas asignadas (fallback por fecha). Anhadir aqui partidos
+    # con `matchday` real cambia la "jornada actual" de la competicion
+    # para el resto del modulo si no se revierte.
+    with session_scope() as db:
+        db.query(Prediction).filter(
+            Prediction.match_id.in_([current_round_match_id, next_round_match_id])
+        ).delete(synchronize_session=False)
+        db.query(MatchOdds).filter(
+            MatchOdds.match_id.in_([current_round_match_id, next_round_match_id])
+        ).delete(synchronize_session=False)
+        db.query(Match).filter(Match.id.in_([current_round_match_id, next_round_match_id])).delete(
+            synchronize_session=False
+        )
 
 
 def test_top_signals_sort_by_edge_orders_by_edge_not_score(seeded_competition_code):
@@ -373,7 +497,7 @@ def test_top_signals_sort_by_edge_orders_by_edge_not_score(seeded_competition_co
     client = TestClient(app)
     response = client.get(
         "/predictions/top-signals",
-        params={"limit": 100, "days": 30, "sort_by": "edge"},
+        params={"limit": 100, "days": 30, "scope": "all_upcoming", "sort_by": "edge"},
     )
     assert response.status_code == 200
     ordered_ids = [p["id"] for p in response.json() if p["id"] in (low_edge_id, high_edge_id)]
@@ -410,7 +534,7 @@ def test_top_signals_filters_by_fair_odds_range(seeded_competition_code):
     client = TestClient(app)
     response = client.get(
         "/predictions/top-signals",
-        params={"limit": 100, "days": 30, "min_fair_odds": 1.0, "max_fair_odds": 2.0},
+        params={"limit": 100, "days": 30, "scope": "all_upcoming", "min_fair_odds": 1.0, "max_fair_odds": 2.0},
     )
     assert response.status_code == 200
     returned_ids = {p["id"] for p in response.json()}

@@ -1,6 +1,14 @@
-import { getTopSignals } from "@/lib/api";
+import { getCompetitions, getTopSignals } from "@/lib/api";
+import type { SignalScope } from "@/lib/api";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
+import MarketQualityBadge from "@/components/MarketQualityBadge";
+
+const SCOPE_LABELS: Record<SignalScope, string> = {
+  current_round: "Jornada actual",
+  next_round: "Próxima jornada",
+  all_upcoming: "Todas las próximas",
+};
 
 export default async function TopSignalsPage({
   searchParams,
@@ -8,16 +16,30 @@ export default async function TopSignalsPage({
   searchParams: {
     date?: string;
     sort_by?: "score" | "edge";
+    scope?: SignalScope;
+    competition_code?: string;
+    days?: string;
     min_fair_odds?: string;
     max_fair_odds?: string;
   };
 }) {
-  const { date } = searchParams;
+  const { date, competition_code: competitionCode } = searchParams;
   const sortBy = searchParams.sort_by === "edge" ? "edge" : "score";
+  // `date` tiene prioridad sobre `scope` (ver backend); mostrarlo como su
+  // propio modo evita que el selector de jornada contradiga al de fecha.
+  const scope: SignalScope = date ? "all_upcoming" : (searchParams.scope ?? "current_round");
+  const days = searchParams.days ? Number(searchParams.days) : 4;
   const minFairOdds = searchParams.min_fair_odds ? Number(searchParams.min_fair_odds) : undefined;
   const maxFairOdds = searchParams.max_fair_odds ? Number(searchParams.max_fair_odds) : undefined;
   const hasFairOddsFilter = minFairOdds !== undefined || maxFairOdds !== undefined;
-  const predictions = await getTopSignals({ limit: 30, date, sortBy, minFairOdds, maxFairOdds }).catch(() => []);
+  const hasAnyFilter = Boolean(date) || hasFairOddsFilter || Boolean(competitionCode) || scope !== "current_round";
+
+  const [predictions, competitions] = await Promise.all([
+    getTopSignals({ limit: 30, date, sortBy, scope, days, competitionCode, minFairOdds, maxFairOdds }).catch(
+      () => []
+    ),
+    getCompetitions().catch(() => []),
+  ]);
 
   return (
     <div>
@@ -29,11 +51,14 @@ export default async function TopSignalsPage({
               day: "2-digit",
               month: "short",
             })}.`
-          : "De los próximos 4 días."}{" "}
-        Solo predicciones con mercado real y válido (cuota &gt; 1.0 y &le; 6.0, edge no
-        negativo, al menos una casa de apuestas respaldando el consenso) — un edge grande en un
-        resultado muy improbable (cuota justa 8, mercado a 15) no es una predicción práctica para
-        destacar, aunque matemáticamente haya diferencia.{" "}
+          : scope === "all_upcoming"
+            ? `De los próximos ${days} días (sin restricción de jornada).`
+            : `${SCOPE_LABELS[scope]} de cada competición — nunca un partido de otra jornada aunque tenga más edge.`}{" "}
+        Solo predicciones con mercado real y válido (cuota entre 1.45 y 6.0, edge no
+        negativo, al menos una casa de apuestas respaldando el consenso) — ni una cuota irrisoria
+        (1.02, edge casi nulo) ni un edge grande en un resultado muy improbable (cuota justa 8,
+        mercado a 15) son predicciones prácticas para destacar, aunque matemáticamente haya
+        diferencia.{" "}
         {sortBy === "edge"
           ? "Ordenado por edge de mayor a menor."
           : "Puntuación = probabilidad²× edge × confianza × calidad de datos — una cuota irrisoria (ej. 1.02) con edge casi nulo no sube aquí aunque la probabilidad del modelo sea altísima. La confianza ya incluye cuántas casas respaldan la cuota: un consenso de una única casa pesa menos que el de 5+."}{" "}
@@ -45,7 +70,48 @@ export default async function TopSignalsPage({
       </p>
 
       <form className="mb-6 flex flex-wrap items-center gap-2 text-sm text-slate-400">
-        <label htmlFor="date">Filtrar por día:</label>
+        <label htmlFor="scope">Jornada:</label>
+        <select
+          id="scope"
+          name="scope"
+          defaultValue={scope}
+          className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+        >
+          <option value="current_round">Jornada actual</option>
+          <option value="next_round">Próxima jornada</option>
+          <option value="all_upcoming">Todas las próximas</option>
+        </select>
+        <label htmlFor="days" className="ml-1">
+          (días si &quot;todas&quot;):
+        </label>
+        <input
+          id="days"
+          type="number"
+          name="days"
+          min="1"
+          max="30"
+          defaultValue={searchParams.days ?? "4"}
+          className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+        />
+        <label htmlFor="competition_code" className="ml-2">
+          Competición:
+        </label>
+        <select
+          id="competition_code"
+          name="competition_code"
+          defaultValue={competitionCode ?? ""}
+          className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+        >
+          <option value="">Todas</option>
+          {competitions.map((c) => (
+            <option key={c.code} value={c.code}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <label htmlFor="date" className="ml-2">
+          O fecha concreta:
+        </label>
         <input
           id="date"
           type="date"
@@ -92,11 +158,8 @@ export default async function TopSignalsPage({
         <button type="submit" className="rounded border border-surface-border px-3 py-1 hover:bg-surface-raised">
           Aplicar
         </button>
-        {(date || hasFairOddsFilter) && (
-          <a
-            href={`/top-signals${sortBy === "edge" ? "?sort_by=edge" : ""}`}
-            className="text-slate-500 underline hover:text-slate-300"
-          >
+        {hasAnyFilter && (
+          <a href="/top-signals" className="text-slate-500 underline hover:text-slate-300">
             Quitar filtros
           </a>
         )}
@@ -116,6 +179,8 @@ export default async function TopSignalsPage({
               <th className="px-3 py-2">Edge</th>
               <th className="px-3 py-2">Cuota justa</th>
               <th className="px-3 py-2">Calidad de datos</th>
+              <th className="px-3 py-2">Calidad de mercado</th>
+              <th className="px-3 py-2">Cuota actualizada</th>
             </tr>
           </thead>
           <tbody>
@@ -145,13 +210,21 @@ export default async function TopSignalsPage({
                 <td className="px-3 py-2">
                   <SignalBadge tier={p.signal_tier} />
                 </td>
+                <td className="px-3 py-2">
+                  <MarketQualityBadge quality={p.market_quality} />
+                </td>
+                <td className="px-3 py-2 text-slate-400">
+                  {p.is_stale_odds && <span className="mr-1 text-amber-400">⚠</span>}
+                  {p.odds_age_minutes !== null ? `hace ${Math.round(p.odds_age_minutes)} min` : "—"}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
         {predictions.length === 0 && (
           <div className="p-6 text-sm text-slate-500">
-            No hay señales con mercado válido todavía. Ejecuta{" "}
+            No hay señales con mercado válido todavía para este filtro. Prueba con &quot;Todas las
+            próximas&quot; o ejecuta{" "}
             <code className="rounded bg-black/40 px-1 py-0.5">football-edge update-odds</code>.
           </div>
         )}

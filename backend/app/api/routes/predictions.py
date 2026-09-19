@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session
 from backend.app.db.database import get_db
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
+from backend.app.config.settings import get_settings
 from backend.app.prediction.confidence import signal_tier
-from backend.app.prediction.ranking import rank_signals
+from backend.app.prediction.market_quality import market_quality_tier
+from backend.app.prediction.ranking import odds_age_minutes, rank_signals
 from backend.app.schemas.prediction import CurrentRoundPredictionsOut, PredictionOut
-from backend.app.services.round_service import get_current_round
+from backend.app.services.round_service import get_current_round, get_next_round
 from backend.app.utils.logging import get_logger
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
@@ -19,6 +21,9 @@ logger = get_logger(__name__)
 
 
 def serialize_prediction(prediction: Prediction) -> dict:
+    settings = get_settings()
+    age_minutes = odds_age_minutes(prediction)
+    is_stale = settings.max_odds_age_minutes is not None and age_minutes > settings.max_odds_age_minutes
     return {
         "id": prediction.id,
         "match": prediction.match,
@@ -45,6 +50,19 @@ def serialize_prediction(prediction: Prediction) -> dict:
         "market_odds_max": prediction.market_odds_max,
         "market_odds_median": prediction.market_odds_median,
         "market_odds_average": prediction.market_odds_average,
+        "market_quality": (
+            market_quality_tier(
+                prediction.bookmakers_used,
+                prediction.market_odds_min,
+                prediction.market_odds_max,
+                prediction.market_odds_median,
+                settings,
+            )
+            if prediction.bookmakers_used is not None
+            else None
+        ),
+        "odds_age_minutes": round(age_minutes, 1),
+        "is_stale_odds": is_stale,
     }
 
 
@@ -115,6 +133,29 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
     }
 
 
+def _resolve_scope_match_ids(db: Session, scope: str, competition_code: str | None) -> list[int]:
+    """`scope="current_round"` (por defecto) o `"next_round"`: junta los
+    `match_ids` de la jornada correspondiente de CADA competicion conocida
+    (o solo de `competition_code` si se especifica), usando
+    `services/round_service.py` -- la MISMA logica que `/current-round`,
+    nunca una ventana de dias generica. Esto es lo que evita que un
+    partido de la jornada siguiente aparezca en "Mejores señales" solo por
+    tener mas edge (seccion 1/acceptance criteria 1-2): ese partido
+    sencillamente nunca entra en la consulta SQL, no se filtra despues por
+    fecha a ojo."""
+    from backend.app.db.models.core import Competition
+
+    codes = [competition_code] if competition_code else [c.code for c in db.query(Competition.code).all()]
+    getter = get_current_round if scope == "current_round" else get_next_round
+
+    match_ids: list[int] = []
+    for code in codes:
+        round_info = getter(db, code)
+        if round_info is not None:
+            match_ids.extend(round_info.match_ids)
+    return match_ids
+
+
 def _base_signal_query(
     db: Session,
     market_family: str | None,
@@ -123,29 +164,36 @@ def _base_signal_query(
     date: dt.date | None = None,
     min_fair_odds: float | None = None,
     max_fair_odds: float | None = None,
+    scope: str = "current_round",
+    competition_code: str | None = None,
 ):
-    """`days`: sin limite superior, "las mejores predicciones" puede mezclar
-    partidos de jornadas MUY distintas entre si (una de esta semana, otra
-    dentro de 3), lo que parece un error de datos aunque no lo sea (dos
-    partidos del mismo equipo en jornadas distintas es normal, pero
-    mostrarlos juntos sin fecha visible confunde). Por defecto se limita a
-    los proximos `days` dias — "las mejores predicciones DE AHORA", no
-    "de cualquier fecha futura". `None` quita el limite.
+    """`scope` decide QUE VENTANA de partidos se considera (seccion 1 de la
+    revision de arquitectura), en este orden de prioridad:
 
-    `date`: filtro alternativo a `days`, para un dia CONCRETO (p.ej. "solo
-    el sabado") en vez de una ventana relativa a ahora. Si se da, tiene
-    prioridad sobre `days` -- un dia concreto puede caer fuera de la
-    ventana por defecto de 4 dias y aun asi ser justo lo que se pide.
+    1. `date`: un dia CONCRETO (p.ej. "solo el sabado"). Prioridad maxima
+       -- puede caer fuera de la jornada actual y aun asi ser justo lo
+       que se pide.
+    2. `scope="current_round"` (POR DEFECTO): solo partidos de la JORNADA
+       ACTUAL de cada competicion (`round_service.get_current_round`),
+       nunca "los proximos N dias" -- una ventana de dias puede mezclar
+       dos jornadas o dejar fuera partidos tardios de la jornada en curso.
+       Este es el default pedido explicitamente: "Mejores señales" nunca
+       debe mostrar un partido de la jornada siguiente por tener mas edge.
+    3. `scope="next_round"`: la jornada INMEDIATAMENTE posterior.
+    4. `scope="all_upcoming"`: vuelve al comportamiento anterior, una
+       ventana relativa de `days` dias (o sin limite si `days=None`) --
+       util para explorar mas alla de la jornada actual explicitamente.
+
+    `competition_code`: restringe a una unica competicion; sin el, se
+    consideran las 5 ligas del MVP a la vez (cada una con su propia
+    jornada actual, que no tiene por que coincidir en fecha con las otras).
 
     `min_fair_odds`/`max_fair_odds`: filtro por CUOTA JUSTA del modelo
     (`fair_odds = 1/model_probability`, ver prediction/fair_odds.py), no
     por la cuota de mercado -- es "que probabilidad ve el modelo", no "que
-    paga la casa". Pedido explicito de usuario para poder acotar, p.ej.,
-    "solo predicciones entre cuota justa 1 y 2" (favoritos claros segun el
-    modelo) en vez de depender solo del filtro de MAX_SIGNAL_ODDS (que
-    limita la cuota de MERCADO, pensado para evitar tiros muy largos, no
-    para segmentar por rango). Ambos filtros son independientes y se
-    pueden combinar."""
+    paga la casa". Independiente de MAX_SIGNAL_ODDS (que limita la cuota
+    de MERCADO para evitar tiros muy largos, no para segmentar por rango).
+    """
     query = db.query(Prediction).join(Match, Match.id == Prediction.match_id)
     if upcoming_only:
         query = query.filter(Match.status == "scheduled")
@@ -153,10 +201,18 @@ def _base_signal_query(
             day_start = dt.datetime.combine(date, dt.time.min)
             day_end = day_start + dt.timedelta(days=1)
             query = query.filter(Match.kickoff_utc >= day_start).filter(Match.kickoff_utc < day_end)
-        else:
+        elif scope == "all_upcoming":
             query = query.filter(Match.kickoff_utc >= dt.datetime.utcnow())
             if days is not None:
                 query = query.filter(Match.kickoff_utc <= dt.datetime.utcnow() + dt.timedelta(days=days))
+        else:
+            match_ids = _resolve_scope_match_ids(db, scope, competition_code)
+            query = query.filter(Prediction.match_id.in_(match_ids))
+    if competition_code:
+        from backend.app.db.models.core import Competition
+
+        competition = db.query(Competition).filter_by(code=competition_code).one_or_none()
+        query = query.filter(Match.competition_id == (competition.id if competition else -1))
     if market_family:
         prefixes = {"cards": "cards_", "corners": "corners_"}
         if market_family == "goals":
@@ -172,13 +228,25 @@ def _base_signal_query(
     return query
 
 
+SCOPE_QUERY = Query(
+    "current_round",
+    pattern="^(current_round|next_round|all_upcoming)$",
+    description=(
+        "'current_round' (por defecto): solo la jornada actual de cada competicion. "
+        "'next_round': la siguiente jornada. 'all_upcoming': ventana de `days` dias, sin restriccion de jornada."
+    ),
+)
+
+
 @router.get("/top-signals", response_model=list[PredictionOut])
 def top_signals(
     limit: int = Query(20, ge=1, le=100),
     market_family: str | None = Query(None, description="'goals', 'cards' o 'corners'"),
     upcoming_only: bool = Query(True),
-    days: int = Query(4, ge=1, le=30, description="Ventana de dias hacia adelante (ignorado si se da `date`)"),
-    date: dt.date | None = Query(None, description="Filtrar a un dia concreto (YYYY-MM-DD) en vez de una ventana"),
+    scope: str = SCOPE_QUERY,
+    competition_code: str | None = Query(None, description="Restringe a una competicion; sin ella, las 5 del MVP"),
+    days: int = Query(4, ge=1, le=30, description="Solo con scope='all_upcoming'"),
+    date: dt.date | None = Query(None, description="Filtrar a un dia concreto (YYYY-MM-DD); tiene prioridad sobre `scope`"),
     sort_by: str = Query(
         "score", pattern="^(score|edge)$", description="'score' (por defecto) o 'edge' (de mayor a menor)"
     ),
@@ -187,12 +255,17 @@ def top_signals(
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """"Mejores señales": ranking transparente que SOLO considera
-    predicciones con mercado real (ver prediction/ranking.py) dentro de los
-    proximos `days` dias, o de un `date` concreto si se especifica. Una
-    prediccion sin cuota de mercado, con cuota invalida, sin evidencia de
-    casas de apuestas suficiente, o con edge negativo/ausente NUNCA entra
-    aqui — puede existir (ver `/predictions/model-only`), pero no compite
-    en este ranking (seccion 2/7 de la revision de arquitectura).
+    predicciones con mercado real (ver prediction/ranking.py) de la
+    JORNADA ACTUAL de cada competicion por defecto (`scope=current_round`,
+    ver `services/round_service.py`) -- nunca "un partido de la jornada
+    siguiente porque tiene mas edge" (seccion 1/acceptance criteria 1-2).
+    Usa `scope=all_upcoming` para volver a una ventana de dias, o `date`
+    para un dia concreto. Una prediccion sin cuota de mercado, con cuota
+    invalida (incluida una cuota irrisoria tipo 1.02, ver MIN_SIGNAL_ODDS),
+    sin evidencia de casas de apuestas suficiente, o con edge
+    negativo/ausente NUNCA entra aqui — puede existir (ver
+    `/predictions/model-only`), pero no compite en este ranking (seccion
+    2/7 de la revision de arquitectura).
 
     `sort_by`: el filtro de calidad (que decide QUE entra) es siempre el
     mismo; `sort_by` solo cambia el ORDEN dentro de lo que ya paso el
@@ -208,7 +281,7 @@ def top_signals(
     rango (p.ej. "solo entre 1 y 2" = favoritos claros segun el modelo).
     """
     candidates = _base_signal_query(
-        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds
+        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
     ).all()
     included, excluded = rank_signals(candidates)
     if excluded:
@@ -229,27 +302,29 @@ def best_predictions(
         None, description="'goals', 'cards' o 'corners'; omitir para mezclar todas"
     ),
     upcoming_only: bool = Query(True),
-    days: int = Query(4, ge=1, le=30, description="Ventana de dias hacia adelante (ignorado si se da `date`)"),
-    date: dt.date | None = Query(None, description="Filtrar a un dia concreto (YYYY-MM-DD) en vez de una ventana"),
+    scope: str = SCOPE_QUERY,
+    competition_code: str | None = Query(None),
+    days: int = Query(4, ge=1, le=30, description="Solo con scope='all_upcoming'"),
+    date: dt.date | None = Query(None, description="Filtrar a un dia concreto (YYYY-MM-DD); tiene prioridad sobre `scope`"),
     min_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MINIMA del modelo"),
     max_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MAXIMA del modelo"),
     db: Session = Depends(get_db),
 ) -> list[dict]:
-    """"Las 5 mejores predicciones" (widget de portada), dentro de los
-    proximos `days` dias, o de un `date` concreto — nunca "cualquier fecha
-    futura": mezclar partidos de jornadas muy distintas entre si (sin fecha
-    visible en el widget) parece un error de datos aunque no lo sea. Mismo
-    criterio que `/top-signals` (solo mercado valido, mismo scoring), con
-    un `limit` mas pequenho pensado para un resumen. Ver
-    prediction/ranking.py para el filtro de calidad y la formula de
-    puntuacion documentados.
+    """"Las 5 mejores predicciones" (widget de portada), de la JORNADA
+    ACTUAL por defecto (`scope=current_round`, ver `/predictions/top-signals`
+    para la explicacion completa) — nunca "cualquier fecha futura": mezclar
+    partidos de jornadas muy distintas entre si (sin fecha visible en el
+    widget) parece un error de datos aunque no lo sea. Mismo criterio que
+    `/top-signals` (solo mercado valido, mismo scoring), con un `limit` mas
+    pequenho pensado para un resumen. Ver prediction/ranking.py para el
+    filtro de calidad y la formula de puntuacion documentados.
 
     Predicciones sin mercado (tarjetas/corners, o goles sin odds todavia)
     NUNCA aparecen aqui: usa `/predictions/model-only` para mostrarlas por
     separado, etiquetadas explicitamente como "sin mercado".
     """
     candidates = _base_signal_query(
-        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds
+        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
     ).all()
     included, _ = rank_signals(candidates)
     return [serialize_prediction(s.prediction) for s in included[:limit]]
@@ -259,6 +334,8 @@ def best_predictions(
 def best_predictions_debug(
     market_family: str | None = Query(None),
     upcoming_only: bool = Query(True),
+    scope: str = SCOPE_QUERY,
+    competition_code: str | None = Query(None),
     days: int = Query(4, ge=1, le=30),
     date: dt.date | None = Query(None),
     min_fair_odds: float | None = Query(None, ge=1.0),
@@ -269,7 +346,7 @@ def best_predictions_debug(
     al ranking o no y por que. Pensado para depurar "por que esta senhal no
     aparece" sin tener que adivinar leyendo logs."""
     candidates = _base_signal_query(
-        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds
+        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
     ).all()
     included, excluded = rank_signals(candidates)
     return {
@@ -309,7 +386,9 @@ def model_only_predictions(
     limit: int = Query(20, ge=1, le=100),
     market_family: str | None = Query(None),
     upcoming_only: bool = Query(True),
-    days: int = Query(4, ge=1, le=30),
+    scope: str = SCOPE_QUERY,
+    competition_code: str | None = Query(None),
+    days: int = Query(4, ge=1, le=30, description="Solo con scope='all_upcoming'"),
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """Predicciones del modelo SIN mercado disponible (tarjetas/corners
@@ -318,7 +397,9 @@ def model_only_predictions(
     (seccion 2 de la revision: separar "prediccion del modelo" de "senhal
     con mercado"). El cliente debe etiquetarlas claramente como
     "Predicción del modelo — sin mercado"."""
-    candidates = _base_signal_query(db, market_family, upcoming_only, days).all()
+    candidates = _base_signal_query(
+        db, market_family, upcoming_only, days, None, None, None, scope, competition_code
+    ).all()
     without_market = [p for p in candidates if p.market_odds is None or p.market_probability is None]
     without_market.sort(key=lambda p: abs(p.model_probability - 0.5), reverse=True)
     return [serialize_prediction(p) for p in without_market[:limit]]

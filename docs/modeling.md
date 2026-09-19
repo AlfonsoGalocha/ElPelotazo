@@ -117,6 +117,43 @@ absoluto sea bajo). Por defecto `6.0` (cuotas por encima implican
 probabilidad implicita < ~17%) — ajustable a tu propio criterio de
 riesgo, o `None` para desactivarlo.
 
+**`MIN_SIGNAL_ODDS=1.45` (2026-09-19, bug real corregido)**: antes era
+`1.01`, lo que en la practica no excluia nada (cualquier cuota > 1.0 se
+consideraba "valida"). Una cuota 1.02 (modelo ~98%, edge practicamente
+nulo) SOLO quedaba penalizada por el scoring (`model_probability^2 *
+edge`), no excluida — si un dia no habia ninguna otra senhal candidata,
+esa cuota irrisoria podia colarse igual en el top-N, exactamente el
+mismo problema (simetrico) que resuelve `MAX_SIGNAL_ODDS` en el extremo
+alto. Con `1.45`, una cuota 1.02 se descarta en el filtro DURO, no solo
+en el scoring.
+
+**`MARKET_QUALITY_*` (`prediction/market_quality.py`)**: clasificacion
+HIGH/MEDIUM/LOW de la EVIDENCIA DE MERCADO detras de una cuota (cuantas
+casas + su dispersion), deliberadamente SEPARADA de `confidence`
+(`prediction/confidence.py`, que mide fiabilidad del MODELO — calibracion,
+tamanho de muestra, acuerdo entre modelos, y SI incluye `market_coverage`
+como uno de sus 5 componentes, pero mezclado con el resto). Una senhal
+respaldada por 1 sola casa y otra por 20+ pueden compartir el mismo
+`confidence` si el resto de factores coincide; `market_quality` aisla esa
+diferencia para que sea visible por si sola en la UI. Formula:
+
+```
+dispersion_ratio = (cuota_max - cuota_min) / cuota_mediana
+HIGH:   bookmakers_used >= MARKET_QUALITY_HIGH_MIN_BOOKMAKERS (10)
+        Y dispersion_ratio <= MARKET_QUALITY_MAX_DISPERSION_RATIO (0.15)
+MEDIUM: bookmakers_used >= MARKET_QUALITY_MEDIUM_MIN_BOOKMAKERS (4),
+        o >= el minimo de HIGH pero con demasiada dispersion
+LOW:    resto de casos (incluido sin mercado)
+```
+
+**Frescura de cuotas (`MAX_ODDS_AGE_MINUTES`)**: `Prediction.created_at`
+es el momento en que se genero esa prediccion concreta, capturando el
+`market_probability`/`market_odds` vigentes en ese instante (no se
+inventa una fecha de "actualizacion" aparte) — `odds_age_minutes` en la
+respuesta de la API es siempre visible; `MAX_ODDS_AGE_MINUTES` (`None`
+por defecto, sin excluir nada) activa la exclusion dura
+(`ExclusionReason.STALE_ODDS`) si se fija un entero.
+
 ## Jornada actual (`services/round_service.py`)
 
 La UI principal muestra la jornada en curso de cada liga, no simplemente
@@ -128,6 +165,24 @@ verificado real y consistente en las 5 ligas del MVP) — el dataset
 historico no trae jornada. Si un partido programado no tiene `matchday`
 todavia (fixtures ingeridos antes de este cambio), se cae a un fallback
 explicito por fecha en vez de fingir una jornada real.
+
+**`get_next_round()`**: misma logica, para la jornada INMEDIATAMENTE
+posterior a la actual — `None` si la actual es un fallback (no se puede
+inventar una "siguiente jornada" sin matchday real) o si la actual es la
+ultima programada.
+
+**`scope` en `/predictions/top-signals`, `/best`, `/best/debug` y
+`/model-only`** (2026-09-19, correccion central de esta revision): por
+DEFECTO estos endpoints ahora usan `scope=current_round`, que restringe la
+consulta SQL a los `match_ids` de la jornada actual de CADA competicion
+(union de las 5 ligas del MVP, o solo una si se pasa `competition_code`)
+— nunca una ventana de dias generica. Antes, el default era `days=4`
+(una ventana relativa a "ahora"): un partido de la jornada siguiente
+podia caer dentro de esos 4 dias y aparecer en "Mejores señales" solo por
+tener mas edge, exactamente el bug reportado. `scope=next_round` para la
+jornada siguiente; `scope=all_upcoming` (+ `days`) para volver al
+comportamiento anterior explicitamente; `date` (un dia concreto) sigue
+teniendo prioridad maxima sobre `scope` en cualquier caso.
 
 ## Cerrar el ciclo: resultados reales -> reentrenar -> evaluar
 
