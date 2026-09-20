@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from backend.app.config.settings import Settings
 from backend.app.db.models.modeling import Prediction
 from backend.app.prediction.ranking import (
@@ -162,6 +164,28 @@ def test_rank_signals_orders_by_score_descending():
     included, _ = rank_signals([low, high])
 
     assert [s.prediction.match_id for s in included] == [2, 1]
+
+
+def test_signal_score_penalizes_low_market_quality_tier():
+    """Seccion 1/18 del brief: una cuota outlier/poco respaldada no debe
+    poder ganar el ranking solo por probabilidad/edge -- `market_quality`
+    (numero de casas Y dispersion entre ellas) es un factor propio del
+    `signal_score`, no solo un componente diluido dentro de `confidence`."""
+    high_quality = _prediction(
+        bookmakers_used=10, market_odds_min=1.80, market_odds_max=1.85, market_odds_median=1.82
+    )
+    low_quality = _prediction(
+        bookmakers_used=1, market_odds_min=1.82, market_odds_max=1.82, market_odds_median=1.82
+    )
+    assert signal_score(low_quality) < signal_score(high_quality)
+
+
+def test_signal_score_market_track_record_defaults_to_neutral():
+    """Sin historico (parametro no pasado), un mercado nuevo no se penaliza
+    por falta de dato (seccion 1: 'no se inventa evidencia negativa')."""
+    prediction = _prediction()
+    assert signal_score(prediction) == signal_score(prediction, market_track_record=1.0)
+    assert signal_score(prediction, market_track_record=0.5) == pytest.approx(signal_score(prediction) * 0.5)
 
 
 def test_rank_signals_excludes_cuota_1_02_even_with_extreme_probability():

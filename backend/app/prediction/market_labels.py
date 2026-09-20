@@ -13,6 +13,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+MarketStatus = str  # "CORE" | "FUTURE" -- ver seccion 26/CompetitionConfig
+
 
 @dataclass(frozen=True)
 class MarketSpec:
@@ -75,6 +77,76 @@ DOUBLE_CHANCE_COMPONENTS: dict[str, tuple[str, str]] = {
     "double_chance_x2": ("draw", "away_win"),
     "double_chance_12": ("home_win", "away_win"),
 }
+
+# Grupos de mercados MUTUAMENTE EXCLUYENTES y EXHAUSTIVOS (sus probabilidades
+# reales suman exactamente 1): usados para (a) el test de consistencia y
+# (b) `renormalize_mutually_exclusive_groups` mas abajo.
+#
+# RAIZ DEL PROBLEMA (seccion 2 de la revision de arquitectura, verificada
+# leyendo el codigo, no asumida): `probability_from_score_matrix` (mas abajo)
+# es internamente consistente por construccion -- todas las probabilidades
+# de un grupo salen de particionar LA MISMA matriz conjunta de marcador, asi
+# que su suma es 1 por definicion matematica. Pero `MarketClassifierModel`
+# (models/goals/ml_classifier.py) entrena un `LogisticRegression` INDEPENDIENTE
+# por cada mercado (uno para "home_win", otro para "draw", otro para
+# "away_win", otro para "over_2_5", otro para "under_2_5"...), cada uno
+# optimizando SU PROPIO log loss sin ninguna restriccion conjunta. El
+# ensemble (`models/ensemble/ensemble.py`) mezcla esa probabilidad ML con la
+# estadistica usando un peso `w` APRENDIDO POR MERCADO por separado
+# (`learn_ensemble_weight`, en `services/model_service.py`): nada garantiza
+# que los pesos de "home_win"/"draw"/"away_win" (o de "over_2_5"/"under_2_5")
+# sean iguales entre si, asi que la mezcla final puede (y en la practica
+# ocurre) dejar de sumar 1 exactamente en cuanto el peso ML es > 0 para
+# alguno de los mercados del grupo.
+#
+# Esto NO es un caso raro de floating point: es estructural, y crece con la
+# discrepancia entre el modelo estadistico y el clasificador ML.
+#
+# FIX (no es "esconder uno de los dos", es forzar la restriccion matematica
+# real -- ver `renormalize_mutually_exclusive_groups`): proyectar el vector
+# de probabilidades del grupo sobre el simplex (sum=1) dividiendo cada una
+# por la suma del grupo, PROPORCIONALMENTE. Esto conserva toda la
+# informacion relativa que aporta el ensemble (que seleccion es mas probable
+# que otra, y por cuanto) mientras restaura la restriccion que el modelo
+# conjunto de marcador ya cumplia. La solucion arquitectonica completa
+# (un clasificador multinomial conjunto restringido al simplex, en vez de
+# clasificadores binarios independientes) queda documentada como trabajo
+# futuro en docs/architecture_audit.md: es la correccion definitiva, pero
+# esta renormalizacion es matematicamente principiada (no un parche
+# cosmetico) y corrige el sintoma con el mismo mecanismo causante
+# identificado arriba.
+MUTUALLY_EXCLUSIVE_GROUPS: list[tuple[str, ...]] = [
+    ("home_win", "draw", "away_win"),
+    ("over_2_5", "under_2_5"),
+]
+
+
+def renormalize_mutually_exclusive_groups(
+    probabilities: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    """Proyecta cada grupo de `MUTUALLY_EXCLUSIVE_GROUPS` presente por
+    completo en `probabilities` sobre el simplex (suma=1), fila a fila.
+
+    Deja intactos los mercados que no forman parte de ningun grupo (btts,
+    double_chance derivado, team_over, over_1_5/3_5 sin under complementario
+    todavia en el MVP). Si algun grupo no esta completo en el dict (p.ej.
+    llamando esto sobre un subconjunto de mercados) se ignora sin fallar.
+    """
+    out = dict(probabilities)
+    for group in MUTUALLY_EXCLUSIVE_GROUPS:
+        if not all(key in out for key in group):
+            continue
+        stacked = np.stack([np.asarray(out[key], dtype=float) for key in group], axis=0)
+        group_sum = stacked.sum(axis=0)
+        # group_sum == 0 solo puede pasar si todas las probabilidades del
+        # grupo son 0 para esa fila (degenerado); en ese caso se reparte
+        # uniformemente en vez de dividir por cero.
+        safe_sum = np.where(group_sum > 0, group_sum, 1.0)
+        normalized = stacked / safe_sum
+        normalized = np.where(group_sum > 0, normalized, 1.0 / len(group))
+        for idx, key in enumerate(group):
+            out[key] = normalized[idx]
+    return out
 
 
 def label_for_market(table: pd.DataFrame, market_key: str) -> pd.Series:

@@ -23,6 +23,7 @@ from enum import Enum
 
 from backend.app.config.settings import Settings, get_settings
 from backend.app.db.models.modeling import Prediction
+from backend.app.prediction.market_quality import market_quality_tier
 
 
 class ExclusionReason(str, Enum):
@@ -93,11 +94,31 @@ def odds_age_minutes(prediction: Prediction) -> float:
     return (dt.datetime.utcnow() - prediction.created_at).total_seconds() / 60.0
 
 
-def signal_score(prediction: Prediction) -> float:
+# Penaliza la "MEJOR PREDICCION"/"MEJOR SENHAL" cuando la cuota de consenso
+# esta respaldada por pocas casas o con mucha dispersion entre ellas (ver
+# market_quality.py), ADEMAS de lo que ya aporta `confidence` (que solo mira
+# cuantas casas hay, no si estan de acuerdo entre si). Documentado aqui, no
+# arbitrario: HIGH no penaliza; MEDIUM/LOW SI reducen el score aunque
+# probabilidad/edge/confidence sean identicos, porque la evidencia de
+# mercado detras de la cuota es mas debil.
+MARKET_QUALITY_MULTIPLIER = {"HIGH": 1.0, "MEDIUM": 0.85, "LOW": 0.65}
+
+
+def signal_score(
+    prediction: Prediction,
+    settings: Settings | None = None,
+    market_track_record: float | None = None,
+) -> float:
     """Puntuacion transparente para una senhal QUE YA PASO el filtro duro
-    (siempre tiene mercado/cuota/edge validos en este punto).
+    (siempre tiene mercado/cuota/edge validos en este punto). Es la unica
+    fuente de "MEJOR PREDICCION" (seccion 1 del brief): nunca se elige por
+    mayor probabilidad/edge/cuota en crudo.
 
         score = model_probability^2 * edge * confidence * data_quality
+                * market_quality_multiplier * market_track_record
+
+    Factores y de donde sale cada uno (para poder responder "por que esta
+    senhal fue elegida" sin adivinar, seccion 29):
 
     - `model_probability^2` (no lineal): sin elevarlo al cuadrado, una
       jugada mediocre con mucho edge en puntos porcentuales (p.ej. 55% a
@@ -105,7 +126,13 @@ def signal_score(prediction: Prediction) -> float:
       de alta probabilidad (p.ej. 80% a cuota 1.35, edge~10pp) solo por el
       tamanho bruto del edge — justo lo contrario de "el modelo alto junto
       a la cuota alta" que se busca. El cuadrado castiga mas la
-      probabilidad baja.
+      probabilidad baja. (Se usa `model_probability`, ya renormalizado
+      para consistencia entre mercados excluyentes -- ver market_labels.py
+      -- y NO `calibrated_probability`: adoptar la probabilidad calibrada
+      como la que dirige edge/ranking es una decision que requiere validar
+      out-of-sample que calibrar mejora el ranking, no solo el Brier score;
+      queda como trabajo futuro documentado en
+      docs/architecture_audit.md, no se hace a ciegas aqui.)
     - `edge`: ya filtrado a >= 0 por el quality gate; una cuota 1.02 con
       edge ~0 puntua cerca de cero aunque la probabilidad sea altisima
       (98%): 0.98^2 * ~0 = ~0.
@@ -113,12 +140,38 @@ def signal_score(prediction: Prediction) -> float:
       respaldan la cuota, ver confidence.py) ademas de calibracion,
       tamanho de muestra y acuerdo entre modelos.
     - `data_quality`: informacion disponible sobre los propios equipos.
+    - `market_quality_multiplier`: HIGH/MEDIUM/LOW (ver market_quality.py)
+      segun numero de casas Y DISPERSION entre ellas -- una cuota outlier
+      de una sola casa discrepante no debe destacarse como "mejor senhal"
+      (seccion 18: anomalia OUTLIER) aunque su edge nominal sea grande.
+    - `market_track_record`: opcional, en [0,1], el rendimiento historico
+      observado de ESTE tipo de mercado (p.ej. 1 - error de calibracion
+      historico de "over_2_5" en backtesting/evaluation_service.py). Por
+      defecto 1.0 (neutro): un mercado sin historico suficiente TODAVIA no
+      se penaliza por falta de dato, pero un mercado con historico de mala
+      calibracion si reduce su score. No esta cableado automaticamente en
+      el pipeline de generacion (Fase 4/5, requiere el pipeline de
+      settlement) -- el parametro existe para que backtesting/servicios de
+      historico puedan pasarlo en cuanto haya datos suficientes.
     """
+    settings = settings or get_settings()
+    quality_tier = market_quality_tier(
+        prediction.bookmakers_used,
+        prediction.market_odds_min,
+        prediction.market_odds_max,
+        prediction.market_odds_median,
+        settings,
+    )
+    quality_multiplier = MARKET_QUALITY_MULTIPLIER[quality_tier]
+    track_record = market_track_record if market_track_record is not None else 1.0
+
     return (
         (prediction.model_probability**2)
         * max(prediction.edge or 0.0, 0.0)
         * prediction.confidence
         * prediction.data_quality
+        * quality_multiplier
+        * track_record
     )
 
 

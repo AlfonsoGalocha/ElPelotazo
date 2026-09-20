@@ -52,6 +52,13 @@ class Prediction(Base):
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     model_probability: Mapped[float] = mapped_column(Float)
+    # Probabilidad post-calibracion (IsotonicRegression ajustada en el
+    # holdout de entrenamiento, ver services/model_service.py). Distinta de
+    # `model_probability` a proposito (seccion 9 del brief): se guardan
+    # AMBAS para poder auditar despues cuanto corrigio la calibracion.
+    # `None` cuando no hubo holdout suficiente para calibrar ese mercado
+    # (nunca se inventa un valor) -- ver MIN_CALIBRATION_MATCHES.
+    calibrated_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
     market_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
     market_odds: Mapped[float | None] = mapped_column(Float, nullable=True)
     fair_odds: Mapped[float] = mapped_column(Float)
@@ -76,6 +83,14 @@ class Prediction(Base):
     market_odds_median: Mapped[float | None] = mapped_column(Float, nullable=True)
     market_odds_average: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    # `signal_score` CONGELADO en el momento de generar la prediccion (ver
+    # services/prediction_service.py::generate_predictions_for_competition):
+    # es el mismo numero usado para el ranking cuando la senhal se mostro,
+    # nunca se recalcula con la formula/pesos actuales al leerlo despues
+    # (seccion 1/9 del brief -- "mejor prediccion" debe ser explicable con
+    # los datos que existian entonces, no con criterios de hoy).
+    signal_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+
     model_version: Mapped[ModelVersion] = relationship(back_populates="predictions")
     result: Mapped[PredictionResult | None] = relationship(
         back_populates="prediction", uselist=False, cascade="all, delete-orphan"
@@ -90,7 +105,12 @@ class PredictionResult(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     prediction_id: Mapped[int] = mapped_column(ForeignKey("predictions.id"), unique=True)
-    outcome: Mapped[bool] = mapped_column()  # True si la seleccion se cumplio
+    outcome: Mapped[bool] = mapped_column()  # True si la seleccion se cumplio (= is_correct)
+    # Resultado real LITERAL del partido en el momento de liquidar (p.ej.
+    # "2-1", "over", "btts_yes"), ademas del booleano `outcome` -- para poder
+    # mostrar en el Historico "resultado real: 2-1" y no solo "acertada/fallada"
+    # (seccion 8 del brief). `None` si no se pudo derivar (nunca inventado).
+    actual_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
     settled_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     prediction: Mapped[Prediction] = relationship(back_populates="result")

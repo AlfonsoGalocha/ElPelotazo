@@ -81,6 +81,33 @@ realidad es ruido de datos, no una oportunidad real.
    `median_odds`/`average_odds` en cada `Prediction`, para poder mostrar
    evidencia de mercado y para que `confidence` la pondere.
 
+## Consistencia entre mercados mutuamente excluyentes (2026-09-20)
+
+`prediction/market_labels.py::MUTUALLY_EXCLUSIVE_GROUPS` (`home_win`+
+`draw`+`away_win`; `over_2_5`+`under_2_5`) se fuerza a sumar 1 fila a fila
+DESPUES de mezclar el ensemble estadistico+ML
+(`renormalize_mutually_exclusive_groups`, llamado desde
+`predictor.py::predict_markets_for_table` y desde `services/model_service.py`
+antes de ajustar los calibradores).
+
+**Por que hacia falta**: `MarketClassifierModel` entrena un
+`LogisticRegression` INDEPENDIENTE por mercado, y `learn_ensemble_weight`
+aprende un peso ML tambien independiente por mercado — nada garantiza que
+`over_2_5` y `under_2_5` (o `home_win`/`draw`/`away_win`) sigan sumando 1
+tras la mezcla, aunque la probabilidad puramente estadistica (derivada de
+UNA sola matriz de marcador conjunta) si lo hiciera por construccion. Raiz
+del problema y limites del fix documentados en detalle en
+`docs/architecture_audit.md` (seccion 2): es una proyeccion sobre el
+simplex de probabilidad, matematicamente principiada y no un parche visual
+que "esconde" una de las dos señales — pero la correccion arquitectonica
+completa (un clasificador multinomial conjunto en vez de N binarios
+independientes) queda pendiente como trabajo futuro.
+
+Test de regresion: `backend/tests/unit/test_market_consistency.py`
+(reproduce el ejemplo literal del brief, Over 2.5=80%/Under 2.5=70%
+simultaneos, con un modelo ML de mentira, y confirma que tras el fix la
+suma servida es 1.0).
+
 ## Ranking de senhales (`prediction/ranking.py`)
 
 Dos fases separadas: un filtro DURO configurable (`MIN_SIGNAL_ODDS`,
@@ -90,19 +117,44 @@ sin mercado valido o con datos insuficientes, y un SCORING transparente
 entre las que pasan:
 
 ```
-score = model_probability^2 * max(edge, 0) * confidence * data_quality
+signal_score = model_probability^2 * max(edge, 0) * confidence * data_quality
+             * market_quality_multiplier * market_track_record
 ```
 
 El cuadrado de la probabilidad es deliberado: sin el, una jugada mediocre
 con mucho edge en puntos porcentuales (p.ej. 55% a cuota 3.0) puede
 puntuar por encima de una jugada solida de alta probabilidad (p.ej. 80% a
-cuota 1.35) solo por el tamanho bruto del edge. `/predictions/best` y
-`/predictions/top-signals` ("Mejores señales") usan este mismo scoring;
-`/predictions/model-only` expone, sin competir en el ranking, las
-predicciones sin mercado (goles sin cuota todavia, o tarjetas/corners si
-API-Football no esta configurado — ver docs/data_sources.md, con esa
-fuente activa tarjetas/corners tambien pueden tener mercado real y
-competir con normalidad).
+cuota 1.35) solo por el tamanho bruto del edge.
+
+**Factores anhadidos el 2026-09-20** (antes solo probabilidad/edge/
+confidence/data_quality):
+- `market_quality_multiplier` (HIGH=1.0/MEDIUM=0.85/LOW=0.65,
+  `prediction/market_quality.py`): antes, "cuantas casas respaldan la
+  cuota" solo entraba diluido dentro de `confidence` (uno de 5 componentes
+  al 20%, sin mirar dispersion entre casas). Ahora es un factor propio y
+  explicito, para que una cuota outlier de una sola casa discrepante no
+  pueda ganar el ranking solo por probabilidad/edge nominales altos
+  (seccion 18 del brief: anomalia OUTLIER).
+- `market_track_record` (parametro opcional de `signal_score`, por defecto
+  1.0 = neutro): pensado para el rendimiento historico observado de ESE
+  tipo de mercado. Todavia no cableado automaticamente en el pipeline de
+  generacion — requiere el pipeline de settlement/historico completo (ver
+  `docs/architecture_audit.md`, seccion 6) para calcularlo de forma
+  continua; el parametro existe y esta testeado para no tener que
+  rediseñar la formula cuando se conecte.
+- `calibrated_probability` se guarda (columna nueva en `Prediction`) pero
+  **no** sustituye a `model_probability` dentro de esta formula: adoptarla
+  como la probabilidad que dirige edge/ranking requiere validar
+  out-of-sample que mejora el ranking real, no solo el Brier score del
+  propio holdout de calibracion (circular si se usa para lo mismo).
+  Decision pendiente, documentada, no un olvido.
+
+`/predictions/best` y `/predictions/top-signals` ("Mejores señales") usan
+este mismo scoring; `/predictions/model-only` expone, sin competir en el
+ranking, las predicciones sin mercado (goles sin cuota todavia, o
+tarjetas/corners si API-Football no esta configurado — ver
+docs/data_sources.md, con esa fuente activa tarjetas/corners tambien
+pueden tener mercado real y competir con normalidad).
 
 **`MAX_SIGNAL_ODDS` (2026-09-18, feedback real de usuario)**: unica
 excepcion deliberada a "el filtro duro no juzga calidad de la senhal, solo

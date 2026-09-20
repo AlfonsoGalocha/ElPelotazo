@@ -5,18 +5,24 @@ from __future__ import annotations
 import datetime as dt
 
 import joblib
+import numpy as np
 from sqlalchemy.orm import Session
 
 from backend.app.config.settings import get_settings
 from backend.app.db.models.core import Competition
 from backend.app.db.models.modeling import ModelVersion
 from backend.app.features.goals import build_match_feature_table, feature_columns
+from backend.app.models.calibration.calibrators import IsotonicCalibrator
 from backend.app.models.calibration.metrics import brier_score, log_loss_score
 from backend.app.models.ensemble.ensemble import learn_ensemble_weight
 from backend.app.models.goals.baseline import LeagueAverageBaseline
 from backend.app.models.goals.dixon_coles import DixonColesModel
 from backend.app.models.goals.ml_classifier import MarketClassifierModel
-from backend.app.prediction.market_labels import MARKET_DEFINITIONS, label_for_market
+from backend.app.prediction.market_labels import (
+    MARKET_DEFINITIONS,
+    label_for_market,
+    renormalize_mutually_exclusive_groups,
+)
 from backend.app.prediction.probability import market_probabilities
 from backend.app.prediction.secondary_markets import (
     TotalCountPoissonModel,
@@ -31,6 +37,11 @@ MIN_HOLDOUT_MATCHES = 100  # una temporada en curso con pocos partidos jugados
 # no es un holdout fiable (demasiado ruido estadistico); se usa la ultima
 # temporada COMPLETA en su lugar y la temporada en curso se deja dentro del
 # train (son datos reales validos, solo no sirven para evaluar).
+
+MIN_CALIBRATION_MATCHES = 60  # ajustar un IsotonicRegression con menos
+# puntos que esto sobreajusta al ruido del holdout (seccion 11 del brief):
+# se prefiere NO calibrar (calibrated_probability queda None) a calibrar mal
+# con una muestra insuficiente.
 
 
 def _pick_holdout_season(table) -> str | None:
@@ -79,12 +90,15 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
 
     metrics: dict = {"markets": {}}
     ensemble_weights: dict[str, float] = {}
+    p_ensemble_by_market: dict[str, object] = {}
+    y_true_by_market: dict[str, object] = {}
 
     eval_finished = eval_table.dropna(subset=["home_goals", "away_goals"])
     for market_key in MARKET_DEFINITIONS:
         market_metrics = {}
         if len(eval_finished) > 0:
             y_true = label_for_market(eval_finished, market_key).to_numpy()
+            y_true_by_market[market_key] = y_true
 
             p_baseline = market_probabilities(baseline, eval_finished)[market_key]
             p_dc = market_probabilities(dixon_coles, eval_finished)[market_key]
@@ -106,7 +120,37 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
                 weight, ensemble_loss = learn_ensemble_weight(p_dc, p_ml, y_true)
                 ensemble_weights[market_key] = weight
                 market_metrics["ensemble"] = {"weight_statistical": weight, "log_loss": ensemble_loss}
+                p_ensemble_by_market[market_key] = weight * p_dc + (1 - weight) * p_ml
+            else:
+                p_ensemble_by_market[market_key] = p_dc
         metrics["markets"][market_key] = market_metrics
+
+    # Calibracion (seccion 9/11 del brief): se ajusta sobre la MISMA
+    # probabilidad ensemble RENORMALIZADA (grupos mutuamente excluyentes ya
+    # forzados a sumar 1, ver market_labels.py) que se servira en produccion
+    # -- calibrar sobre la version cruda serviria un `calibrated_probability`
+    # que no corresponde a la probabilidad realmente usada para el edge.
+    # Ajustado SOLO en el holdout (nunca visto por dixon_coles/ml_classifier
+    # durante el fit), igual que `learn_ensemble_weight` -- no hay leakage.
+    calibrators: dict[str, IsotonicCalibrator] = {}
+    if len(eval_finished) >= MIN_CALIBRATION_MATCHES:
+        p_ensemble_by_market = renormalize_mutually_exclusive_groups(p_ensemble_by_market)
+        for market_key, p_ensemble in p_ensemble_by_market.items():
+            y_true = y_true_by_market.get(market_key)
+            if y_true is None or len(set(y_true.tolist())) < 2:
+                continue
+            calibrators[market_key] = IsotonicCalibrator().fit(np.asarray(p_ensemble, dtype=float), y_true)
+        metrics["calibration"] = {
+            "method": "isotonic" if calibrators else None,
+            "n_holdout_matches": len(eval_finished),
+            "markets_calibrated": sorted(calibrators.keys()),
+        }
+    else:
+        metrics["calibration"] = {
+            "method": None,
+            "n_holdout_matches": len(eval_finished),
+            "reason": f"menos de {MIN_CALIBRATION_MATCHES} partidos en el holdout",
+        }
 
     # Tarjetas y corners (seccion 18/19 del roadmap): un unico Poisson sobre
     # el TOTAL del partido por familia de estadistica. Se entrenan y evaluan
@@ -139,6 +183,7 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
             "dixon_coles": dixon_coles,
             "ml_classifier": ml_classifier,
             "ensemble_weights": ensemble_weights,
+            "calibrators": calibrators,
             "cards_model": secondary_models["cards"],
             "corners_model": secondary_models["corners"],
         },
@@ -155,7 +200,7 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
         hyperparameters={"holdout_season": holdout_season},
         metrics=metrics,
         dataset_version=f"{competition_code}:{len(finished)}_matches",
-        calibration_method=None,
+        calibration_method="isotonic" if calibrators else None,
         artifact_path=str(artifact_path),
     )
     db.add(model_version)

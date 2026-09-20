@@ -19,7 +19,10 @@ from backend.app.prediction.data_quality import compute_data_quality
 from backend.app.prediction.edge import compute_edge, compute_expected_value
 from backend.app.prediction.explanation import explain_logistic_pipeline, explain_statistical_inputs
 from backend.app.prediction.fair_odds import fair_odds
-from backend.app.prediction.market_labels import MARKET_DEFINITIONS
+from backend.app.prediction.market_labels import (
+    MARKET_DEFINITIONS,
+    renormalize_mutually_exclusive_groups,
+)
 from backend.app.prediction.probability import market_probabilities
 from backend.app.prediction.secondary_markets import (
     SECONDARY_MARKET_DEFINITIONS,
@@ -54,6 +57,7 @@ class MarketPredictionOutput:
     market_odds_max: float | None = None
     market_odds_median: float | None = None
     market_odds_average: float | None = None
+    calibrated_probability: float | None = None
 
 
 def predict_markets_for_table(
@@ -63,25 +67,46 @@ def predict_markets_for_table(
     ensemble_weights: dict[str, float] | None = None,
     calibration_errors: dict[str, float] | None = None,
     market_quotes: dict[tuple[int, str], dict] | None = None,
+    calibrators: dict[str, object] | None = None,
 ) -> list[MarketPredictionOutput]:
-    """`market_quotes`: opcional, {(match_id, market_key): {"market_probability", "market_odds", "vig_removed"}}."""
+    """`market_quotes`: opcional, {(match_id, market_key): {"market_probability", "market_odds", "vig_removed"}}.
+
+    `calibrators`: opcional, {market_key: objeto con `.transform(np.ndarray) -> np.ndarray`}
+    (ver models/calibration/calibrators.py), ajustado en el holdout de
+    entrenamiento (nunca sobre estos mismos datos). Si no se provee para un
+    mercado, `calibrated_probability` queda `None` en vez de inventarse.
+    """
     stat_probs = market_probabilities(statistical_model, table)
     ml_probs = ml_model.predict_market_probabilities(table) if ml_model is not None else {}
 
-    outputs: list[MarketPredictionOutput] = []
+    # PASO 1: probabilidad "cruda" del ensemble por mercado (posiblemente
+    # inconsistente entre mercados mutuamente excluyentes -- ver
+    # market_labels.py::MUTUALLY_EXCLUSIVE_GROUPS para la raiz del problema).
+    p_model_by_market: dict[str, np.ndarray] = {}
+    model_agreement_by_market: dict[str, np.ndarray] = {}
     for market_key in MARKET_DEFINITIONS:
         p_stat = stat_probs[market_key]
         p_ml = ml_probs.get(market_key)
 
         if p_ml is not None and ensemble_weights and market_key in ensemble_weights:
             w = ensemble_weights[market_key]
-            p_model = w * p_stat + (1 - w) * p_ml
-            model_agreement = 1.0 - np.abs(p_stat - p_ml)
+            p_model_by_market[market_key] = w * p_stat + (1 - w) * p_ml
+            model_agreement_by_market[market_key] = 1.0 - np.abs(p_stat - p_ml)
         else:
-            p_model = p_stat
-            model_agreement = np.full(len(table), np.nan)
+            p_model_by_market[market_key] = p_stat
+            model_agreement_by_market[market_key] = np.full(len(table), np.nan)
 
+    # PASO 2: forzar que los grupos mutuamente excluyentes vuelvan a sumar 1
+    # (correccion de raiz documentada en market_labels.py, no un parche de UI).
+    p_model_by_market = renormalize_mutually_exclusive_groups(p_model_by_market)
+
+    outputs: list[MarketPredictionOutput] = []
+    for market_key in MARKET_DEFINITIONS:
+        p_model = p_model_by_market[market_key]
+        model_agreement = model_agreement_by_market[market_key]
         calibration_error = (calibration_errors or {}).get(market_key)
+        calibrator = (calibrators or {}).get(market_key)
+        calibrated_probs = calibrator.transform(np.asarray(p_model, dtype=float)) if calibrator is not None else None
 
         for i, (_, row) in enumerate(table.iterrows()):
             quote = (market_quotes or {}).get((row["match_id"], market_key))
@@ -135,6 +160,7 @@ def predict_markets_for_table(
                     market_odds_max=quote.get("market_odds_max") if quote else None,
                     market_odds_median=quote.get("market_odds_median") if quote else None,
                     market_odds_average=quote.get("market_odds_average") if quote else None,
+                    calibrated_probability=float(calibrated_probs[i]) if calibrated_probs is not None else None,
                 )
             )
     return outputs
