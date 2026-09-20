@@ -20,10 +20,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <SearchBar />
             <nav className="flex gap-5 text-sm text-slate-400">
               <Link href="/" className="hover:text-slate-100">
-                Próximos partidos
+                Inicio
               </Link>
               <Link href="/top-signals" className="hover:text-slate-100">
-                Mejores señales
+                Señales
+              </Link>
+              <Link href="/history" className="hover:text-slate-100">
+                Histórico
+              </Link>
+              <Link href="/model" className="hover:text-slate-100">
+                Modelo
               </Link>
             </nav>
           </div>

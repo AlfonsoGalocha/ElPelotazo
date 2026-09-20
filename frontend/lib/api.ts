@@ -1,4 +1,13 @@
-import type { Competition, Match, Prediction, RoundInfo, SignalDetail } from "@/types";
+import type {
+  BestOfDay,
+  Competition,
+  Match,
+  MatchHistory,
+  ModelPerformanceReport,
+  Prediction,
+  RoundInfo,
+  SignalDetail,
+} from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -125,4 +134,43 @@ export interface CurrentRoundPredictions {
 // `predictions` vacio (caso normal, no un error).
 export function getCurrentRoundPredictions(competitionCode: string): Promise<CurrentRoundPredictions> {
   return apiFetch<CurrentRoundPredictions>(`/predictions/current-round?competition_code=${competitionCode}`);
+}
+
+// Fase 3 (seccion 16): "mejor señal del dia", filtro MAS estricto del
+// sistema. `prediction` es `null` cuando ninguna candidata cumple TODOS
+// los requisitos minimos -- nunca se rebaja el filtro para forzar una.
+export function getBestOfDay(competitionCode?: string): Promise<BestOfDay> {
+  const qs = new URLSearchParams();
+  if (competitionCode) qs.set("competition_code", competitionCode);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetch<BestOfDay>(`/predictions/best-of-day${suffix}`);
+}
+
+// Fase 4: partidos FINALIZADOS (Match.status, nunca por fecha).
+export function getFinishedFixtures(competitionCode?: string, limit = 50): Promise<Match[]> {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (competitionCode) qs.set("competition_code", competitionCode);
+  return apiFetch<Match[]>(`/matches/fixtures/finished?${qs.toString()}`);
+}
+
+// Fase 4: "Historico" -- partidos finalizados con TODAS sus predicciones
+// y el resultado real (liquidado por el backend, nunca inferido aqui).
+export function getHistory(competitionCode?: string, limit = 30): Promise<MatchHistory[]> {
+  const qs = new URLSearchParams({ limit: String(limit) });
+  if (competitionCode) qs.set("competition_code", competitionCode);
+  return apiFetch<MatchHistory[]>(`/history?${qs.toString()}`);
+}
+
+export function getHistoryDetail(matchId: number): Promise<MatchHistory> {
+  return apiFetch<MatchHistory>(`/history/${matchId}`);
+}
+
+// Fase 5: rendimiento REAL del modelo (solo predicciones ya liquidadas),
+// segmentado por competicion/mercado/version de modelo.
+export function getModelPerformance(competitionCode?: string, market?: string): Promise<ModelPerformanceReport> {
+  const qs = new URLSearchParams();
+  if (competitionCode) qs.set("competition_code", competitionCode);
+  if (market) qs.set("market", market);
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return apiFetch<ModelPerformanceReport>(`/models/performance${suffix}`);
 }

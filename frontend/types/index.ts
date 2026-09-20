@@ -71,6 +71,82 @@ export interface Prediction {
   market_quality: "HIGH" | "MEDIUM" | "LOW" | null;
   odds_age_minutes: number | null;
   is_stale_odds: boolean;
+  // Fase 3 (seccion 18): etiquetas de anomalia calculadas contra las demas
+  // predicciones del MISMO partido (ver backend/app/prediction/anomaly.py).
+  anomaly_flags: AnomalyFlag[];
+  // Fase 3 (seccion 1): true cuando es la de mayor signal_score entre las
+  // que pasan el filtro duro y no tienen CONTRADICCION, para su partido.
+  is_best_prediction: boolean;
+}
+
+export type AnomalyFlag =
+  | "CONTRADICCION"
+  | "SENAL_BAJA_FIABILIDAD"
+  | "OUTLIER"
+  | "HIGH_PROBABILITY_LOW_VALUE";
+
+// Fase 4: prediccion de un partido YA FINALIZADO, con el resultado real
+// (liquidado por backend/app/services/evaluation_service.py, nunca
+// inferido en el frontend).
+export interface HistoryPrediction extends Prediction {
+  actual_result: string | null;
+  is_correct: boolean | null;
+  settled_at: string | null;
+}
+
+export interface MatchHistory {
+  match: Match;
+  predictions: HistoryPrediction[];
+  best_prediction_id: number | null;
+}
+
+// Fase 3 (seccion 16): respuesta de /predictions/best-of-day.
+export interface BestOfDay {
+  prediction: Prediction | null;
+  explanation: string[];
+}
+
+// Fase 5 (seccion 10/11): un segmento de /models/performance.
+export interface PerformanceBucket {
+  range?: string;
+  edge_range_pp?: string;
+  n: number;
+  predicted_probability_mean?: number;
+  empirical_frequency?: number;
+  average_edge_pp?: number;
+  hit_rate?: number;
+  brier_score?: number;
+  roi?: number;
+}
+
+export interface PerformanceSegment {
+  competition_code: string;
+  market: string;
+  model_version_id: number;
+  n_settled: number;
+  model_quality: {
+    n_predictions: number;
+    brier_score: number;
+    log_loss: number;
+    expected_calibration_error: number;
+    reliability_curve: unknown;
+    accuracy_secondary_only: number;
+  };
+  market_strategy: {
+    n_opportunities: number;
+    n_bets: number;
+    total_staked?: number;
+    total_pnl?: number;
+    roi?: number;
+    average_edge?: number;
+    max_drawdown?: number;
+  } | null;
+  performance_by_probability_bucket: PerformanceBucket[];
+  performance_by_edge_bucket: PerformanceBucket[];
+}
+
+export interface ModelPerformanceReport {
+  segments: PerformanceSegment[];
 }
 
 export interface BookmakerOdds {

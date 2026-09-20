@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getCompetitions, getCurrentRoundPredictions, getModelOnlyPredictions } from "@/lib/api";
 import type { Prediction } from "@/types";
 import MatchCard from "@/components/MatchCard";
+import BestOfDayWidget from "@/components/BestOfDayWidget";
 import BestPredictionsWidget from "@/components/BestPredictionsWidget";
 import ModelOnlySection from "@/components/ModelOnlySection";
 
@@ -74,6 +75,7 @@ export default async function TodayPage() {
         </p>
       </div>
 
+      <BestOfDayWidget />
       <BestPredictionsWidget />
 
       {error && (

@@ -1,5 +1,6 @@
 import type { Prediction } from "@/types";
 import { MARKET_DISPLAY_NAMES } from "@/types";
+import AnomalyBadges from "./AnomalyBadge";
 import SignalBadge from "./SignalBadge";
 
 function pct(value: number | null): string {
@@ -36,7 +37,22 @@ export default function PredictionRow({ prediction }: { prediction: Prediction }
   return (
     <div className="grid grid-cols-7 items-center gap-2 border-b border-surface-border py-2 text-sm last:border-0">
       <div className="col-span-2 font-medium text-slate-200">
-        {MARKET_DISPLAY_NAMES[prediction.market] ?? prediction.market}
+        <div className="flex items-center gap-1.5">
+          {prediction.is_best_prediction && (
+            <span
+              className="text-amber-400"
+              title="Mejor prediccion de este partido (mayor signal_score entre las validas)"
+            >
+              ★
+            </span>
+          )}
+          {MARKET_DISPLAY_NAMES[prediction.market] ?? prediction.market}
+        </div>
+        {prediction.anomaly_flags?.length > 0 && (
+          <div className="mt-1">
+            <AnomalyBadges flags={prediction.anomaly_flags} />
+          </div>
+        )}
       </div>
       <div className="text-slate-300">
         <div className="text-[10px] uppercase text-slate-500">Modelo</div>
