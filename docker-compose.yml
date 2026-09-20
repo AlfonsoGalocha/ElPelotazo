@@ -28,8 +28,12 @@ services:
       DATABASE_URL: postgresql+psycopg://football:football@postgres:5432/football_edge
       APP_ENV: production
       LOG_LEVEL: INFO
+    # Puerto configurable: si el 8000 del host ya esta ocupado (p.ej. un
+    # 'uvicorn' suelto de una prueba anterior), pon BACKEND_PORT=8001 (o el
+    # que sea) en tu .env -- sin tocar este fichero. docker compose lee
+    # ese .env automaticamente para sustituir variables aqui.
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,9 +46,16 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
+        # OJO: esto se hornea DENTRO del build del frontend (Next.js lee
+        # NEXT_PUBLIC_* en tiempo de compilacion, no de arranque) -- si
+        # cambias BACKEND_PORT arriba, pon aqui el MISMO puerto
+        # (NEXT_PUBLIC_API_URL=http://localhost:<BACKEND_PORT> en tu .env)
+        # y reconstruye con 'docker compose build frontend'.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    # Mismo mecanismo que el backend: FRONTEND_PORT en tu .env si el 3000
+    # tambien estuviera ocupado.
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       - backend
 
