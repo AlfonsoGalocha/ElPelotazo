@@ -5,8 +5,13 @@ services:
       POSTGRES_USER: football
       POSTGRES_PASSWORD: football
       POSTGRES_DB: football_edge
-    ports:
-      - "5432:5432"
+    # Sin mapeo de puerto a host a proposito: solo `backend`/`scheduler` lo
+    # usan, y lo hacen dentro de la red interna de Docker (host `postgres`,
+    # puerto 5432 "de contenedor a contenedor", nunca expuesto en tu
+    # maquina). Evita el choque tipico con un Postgres del sistema o de
+    # otro proyecto ya escuchando en localhost:5432. Si necesitas conectar
+    # un cliente SQL desde fuera de Docker para depurar, anhade
+    # temporalmente `ports: ["5433:5432"]` (puerto distinto en el host).
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
