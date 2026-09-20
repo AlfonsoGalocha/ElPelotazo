@@ -80,6 +80,13 @@ services:
   # una API externa caida un rato) no debe tumbar el contenedor: `|| true`
   # deja que el bucle siga y lo reintente en la siguiente vuelta.
   scheduler:
+    # Desactiva el HEALTHCHECK heredado del Dockerfile de `backend` (hace
+    # 'curl http://localhost:8000/health', pensado para el servidor web).
+    # Este contenedor no sirve nada en el 8000 -- solo corre el bucle de
+    # refresh -- asi que ese healthcheck fallaria siempre y marcaria el
+    # contenedor como "unhealthy" aunque funcione perfectamente.
+    healthcheck:
+      disable: true
     build:
       context: .
       dockerfile: backend/Dockerfile
