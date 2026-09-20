@@ -73,6 +73,32 @@ football-edge reset-scheduled        # borra solo partidos "scheduled" (no toca 
 football-edge refresh --skip-historical
 ```
 
+## Refresco automatico cada hora
+
+Un partido no aparece en "Histórico" en tiempo real: aparece en cuanto el
+pipeline vuelve a comprobar su estado (`Match.status == "finished"`, ver
+`docs/data_sources.md`). Si no automatizas nada, eso solo pasa cuando
+ejecutas `football-edge refresh` a mano. Dos formas de dejarlo en
+automatico (elige una segun como despliegues):
+
+**Docker Compose** (recomendado si ya usas `docker-compose.yml`): ya
+incluye un servicio `scheduler` que corre `football-edge refresh
+--skip-historical` en bucle cada hora contra la misma base de datos que
+`backend` — no hace falta nada mas, arranca solo con `docker compose up`.
+
+**venv local / servidor sin Docker**: usa cron. Con `crontab -e`, anhade
+(ajusta la ruta al repo y al `.venv`):
+
+```cron
+0 * * * * cd /ruta/al/repo && .venv/bin/football-edge refresh --skip-historical >> logs/refresh.log 2>&1
+```
+
+`--skip-historical` es importante: sin el, cada ejecucion horaria volveria
+a descargar temporadas enteras de resultados pasados (lento e innecesario,
+esos datos no cambian hora a hora). Con el, cada pasada solo trae fixtures
+nuevos, cuotas, liquida (`evaluate`/settle) los partidos recien terminados,
+y regenera predicciones de los proximos partidos.
+
 ## Datos reales
 
 El contenedor donde se desarrollo este proyecto tiene el egress de red

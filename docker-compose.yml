@@ -43,5 +43,38 @@ services:
     depends_on:
       - backend
 
+  # Refresca fixtures/cuotas/predicciones y liquida (settle) los partidos
+  # que hayan terminado cada hora -- ver docs/data_sources.md#refresco-horario.
+  # Reusa la MISMA imagen que `backend` (mismo codigo, mismas dependencias),
+  # solo cambia el comando: en vez de sevir la API, corre en bucle
+  # `football-edge refresh --skip-historical`. `--skip-historical` se salta
+  # la descarga de resultados de temporadas pasadas (pesada, no cambia hora
+  # a hora); el resto de pasos (fixtures, cuotas, evaluate/settle,
+  # predicciones) SI conviene repetirlos cada hora. Un fallo puntual (p.ej.
+  # una API externa caida un rato) no debe tumbar el contenedor: `|| true`
+  # deja que el bucle siga y lo reintente en la siguiente vuelta.
+  scheduler:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://football:football@postgres:5432/football_edge
+      APP_ENV: production
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./models:/srv/models
+      - ./data:/srv/data
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        while true; do
+          echo "[scheduler] $(date -u +%FT%TZ) -- football-edge refresh --skip-historical";
+          football-edge refresh --skip-historical || echo "[scheduler] fallo esta vuelta, se reintenta en 1h";
+          sleep 3600;
+        done
+
 volumes:
   postgres_data:
