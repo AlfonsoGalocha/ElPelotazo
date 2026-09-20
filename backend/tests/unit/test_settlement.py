@@ -288,6 +288,32 @@ def test_high_probability_low_value_flag_distinguishes_from_best_value():
     assert HIGH_PROBABILITY_LOW_VALUE not in flags_b
 
 
+def test_model_performance_endpoint_uses_only_settled_predictions():
+    """Fase 5: `/models/performance` se calcula SOLO sobre predicciones ya
+    liquidadas -- antes de liquidar no debe aparecer ningun segmento para
+    esta competicion; despues, si."""
+    match_id = _setup_finished_match("settlement_test_league_g", home_goals=2, away_goals=2, seed=7)
+
+    before = client.get(
+        "/models/performance", params={"competition_code": "settlement_test_league_g"}
+    ).json()
+    assert before["segments"] == []
+
+    with session_scope() as db:
+        settle_finished_predictions(db, competition_code="settlement_test_league_g")
+
+    after = client.get(
+        "/models/performance", params={"competition_code": "settlement_test_league_g"}
+    ).json()
+    assert len(after["segments"]) > 0
+    for segment in after["segments"]:
+        assert segment["competition_code"] == "settlement_test_league_g"
+        assert segment["n_settled"] > 0
+        assert "reliability_curve" in segment["model_quality"]
+        assert isinstance(segment["performance_by_probability_bucket"], list)
+    assert match_id  # sanity: el partido existe y se uso para liquidar
+
+
 def test_outlier_market_quality_does_not_dominate_best_selection():
     """Seccion 18: una cuota respaldada por 1 sola casa (LOW quality) se
     etiqueta OUTLIER y su `signal_score` se penaliza vs una cuota HIGH con

@@ -30,8 +30,14 @@ from sqlalchemy.orm import Session
 
 import datetime as dt
 
-from backend.app.backtesting.metrics import market_strategy_metrics, model_quality_metrics
+from backend.app.backtesting.metrics import (
+    market_strategy_metrics,
+    model_quality_metrics,
+    performance_by_edge_bucket,
+    performance_by_probability_bucket,
+)
 from backend.app.db.models.core import Competition
+from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.features.goals import build_match_feature_table
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS, label_for_market
@@ -190,4 +196,69 @@ def evaluate_settled_predictions(db: Session, competition_code: str | None = Non
         if market_reports:
             report["competitions"][competition.code] = market_reports
 
+    return report
+
+
+def real_performance_report(
+    db: Session,
+    competition_code: str | None = None,
+    market: str | None = None,
+    model_version_id: int | None = None,
+) -> dict:
+    """Fase 5 (seccion 10/11 del brief): metricas de `backtesting/metrics.py`
+    aplicadas contra predicciones REALMENTE liquidadas
+    (`PredictionResult`, ver `settle_finished_predictions`), no contra un
+    backtest sintetico. Segmentado por competicion/mercado/version de
+    modelo (los filtros que recibe esta funcion); el desglose por rango de
+    cuota/probabilidad/edge lo dan `performance_by_probability_bucket` y
+    `performance_by_edge_bucket`, que ya vienen incluidos por segmento.
+
+    Solo usa predicciones YA LIQUIDADAS (con `PredictionResult`) -- nunca
+    mezcla predicciones pendientes de resolver, que no tienen resultado
+    real todavia.
+    """
+    query = (
+        db.query(Prediction, PredictionResult, Competition, Match)
+        .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
+        .join(Match, Match.id == Prediction.match_id)
+        .join(Competition, Competition.id == Match.competition_id)
+    )
+    if competition_code:
+        query = query.filter(Competition.code == competition_code)
+    if market:
+        query = query.filter(Prediction.market == market)
+    if model_version_id:
+        query = query.filter(Prediction.model_version_id == model_version_id)
+
+    rows = query.all()
+    segments: dict[tuple[str, str, int], list[tuple[Prediction, PredictionResult]]] = defaultdict(list)
+    for prediction, result, competition, _match in rows:
+        segments[(competition.code, prediction.market, prediction.model_version_id)].append((prediction, result))
+
+    report: dict = {"segments": []}
+    for (comp_code, market_key, model_version), items in segments.items():
+        y_true = np.array([bool(r.outcome) for _p, r in items])
+        y_prob = np.array([p.model_probability for p, _r in items])
+        odds = np.array([p.market_odds if p.market_odds is not None else np.nan for p, _r in items])
+
+        quality = model_quality_metrics(y_true, y_prob)
+        has_odds = ~np.isnan(odds)
+        strategy = market_strategy_metrics(y_true[has_odds], y_prob[has_odds], odds[has_odds]) if has_odds.any() else None
+        by_probability = performance_by_probability_bucket(y_true, y_prob)
+        by_edge = performance_by_edge_bucket(y_true, y_prob, odds) if has_odds.any() else []
+
+        report["segments"].append(
+            {
+                "competition_code": comp_code,
+                "market": market_key,
+                "model_version_id": model_version,
+                "n_settled": len(items),
+                "model_quality": quality,
+                "market_strategy": strategy,
+                "performance_by_probability_bucket": by_probability,
+                "performance_by_edge_bucket": by_edge,
+            }
+        )
+
+    report["segments"].sort(key=lambda s: (s["competition_code"], s["market"]))
     return report
