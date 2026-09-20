@@ -325,3 +325,152 @@ existente cambio de forma), asi que no se ejecuto `npm run build` — no
 deberia haber ningun impacto, pero queda pendiente confirmarlo en la
 proxima sesion antes de anhadir los endpoints nuevos de Fase 3/4 que si
 tocaran el contrato.
+
+## 8. Fase 3-8 (sesion siguiente, 2026-09-20): que se completo
+
+Esta sesion retomo el punto exacto donde quedo la seccion 6 y completo
+Fase 3 a Fase 7 en el orden sugerido, mas esta Fase 8 (cierre). Resumen
+por fase, con puntero exacto de codigo para cada pieza:
+
+**Fase 3 — mejor prediccion / mejor senhal del dia / anomalias**
+(`backend/app/prediction/anomaly.py`, nuevo modulo):
+- `compute_anomaly_flags(prediction, match_predictions, settings)`:
+  CONTRADICCION (misma logica de grupo mutuamente excluyente que
+  `market_labels.MUTUALLY_EXCLUSIVE_GROUPS`, red de seguridad ahora que
+  el fix de renormalizacion deberia hacerla casi imposible),
+  SENAL_BAJA_FIABILIDAD (`confidence`/`data_quality` < 0.4),
+  OUTLIER (`market_quality_tier` == LOW), HIGH_PROBABILITY_LOW_VALUE
+  (`model_probability >= 0.75` y `edge < 0.03`). Umbrales documentados en
+  el docstring del modulo, no repartidos por el codigo.
+- `best_prediction_per_match(predictions_by_match)`: usa `rank_signals`
+  (filtro duro) + excluye CONTRADICCION, nunca elige por probabilidad/
+  edge/cuota en crudo.
+- `/predictions/top-signals` y `/predictions/best`
+  (`backend/app/api/routes/predictions.py`) excluyen ahora cualquier
+  prediccion con CONTRADICCION (nunca Over y Under como señales fuertes a
+  la vez, seccion 2).
+- Nuevo `/predictions/best-of-day`: filtro MAS estricto (edge minimo =
+  2x el umbral general, calibracion disponible, sin contradiccion), con
+  cada requisito trazable en `explanation`; devuelve `prediction: null`
+  cuando nadie lo cumple (nunca se rebaja el filtro para forzar un
+  resultado).
+- `/matches/{id}/predictions` expone `anomaly_flags`/`is_best_prediction`
+  por prediccion (`backend/app/api/routes/matches.py`).
+
+**Fase 4 — settlement / Historico**
+(`backend/app/services/evaluation_service.py::settle_finished_predictions`):
+- Crea `PredictionResult` (tabla YA EXISTENTE desde Fase 2, nunca usada
+  hasta ahora) para cada `Prediction` de un partido `status="finished"`
+  sin resultado todavia. Idempotente (no duplica si se llama dos veces).
+  **Nunca** toca los campos predictivos de `Prediction` -- solo INSERTA
+  una fila en la tabla separada `prediction_results` (relacion 1-a-1).
+  `actual_result` es el marcador literal (`"2-1"`), no una interpretacion
+  por mercado (mas simple y siempre derivable, sin inventar nada).
+- Cableado en el comando `evaluate` del CLI (`backend/app/cli.py`), que ya
+  estaba dentro de `refresh` -- ningun comando nuevo que acordarse de
+  ejecutar.
+- Endpoints nuevos: `/matches/fixtures/finished` (filtra por
+  `Match.status`, nunca por fecha), `/history`, `/history/{match_id}`
+  (`backend/app/api/routes/history.py`).
+- Frontend: `frontend/app/history/page.tsx` (listado con mejor prediccion
+  + ACERTADA/FALLADA/sin resolver) y `frontend/app/history/[id]/page.tsx`
+  (detalle: TODAS las predicciones del partido vs la realidad).
+
+**Fase 5 — metricas/calibracion reales**
+(`backend/app/services/evaluation_service.py::real_performance_report`):
+- Reusa integramente `backtesting/metrics.py`
+  (`model_quality_metrics`, `performance_by_probability_bucket`,
+  `performance_by_edge_bucket`, `market_strategy_metrics`), pero
+  aplicado SOLO sobre predicciones con `PredictionResult` (liquidadas),
+  segmentado por competicion/mercado/version de modelo.
+- Endpoint `GET /models/performance` (`backend/app/api/routes/models.py`,
+  declarado ANTES de `/models/{model_id}` a proposito para no colisionar
+  con la ruta de id entero).
+- Frontend: `frontend/app/model/page.tsx` -- curva de calibracion
+  predicho-vs-real por bucket, resultado real por rango de edge, ROI
+  hipotetico, sin libreria de graficos nueva (tablas + barras CSS con la
+  misma paleta del resto del tablero).
+- `market_track_record` (parametro de `signal_score`, Fase 2) **sigue sin
+  cablearse automaticamente**: ahora que `/models/performance` existe,
+  conectar "1 - error de calibracion historico del mercado" es una
+  llamada mas, no un rediseño -- se dejo fuera de esta sesion por acotar
+  alcance (habria significado recalcular y cachear ese numero en el
+  pipeline de generacion de predicciones, un cambio con mas superficie
+  que las fases pedidas explicitamente).
+
+**Fase 6 — frontend/UX**:
+- Nav Inicio/Señales/Histórico/Modelo (`frontend/app/layout.tsx`).
+- `frontend/components/BestOfDayWidget.tsx` en Inicio (usa
+  `/predictions/best-of-day`, muestra honestamente "ninguna" cuando no
+  hay candidata).
+- `frontend/components/AnomalyBadge.tsx`: badges de las 4 anomalias de
+  Fase 3, integrados en `PredictionRow.tsx` junto a la estrella ★ de
+  "mejor prediccion del partido".
+- Colores solo transmiten estado (ambar=aviso, verde/rojo=acertada/
+  fallada real, nunca "todo verde" por edge positivo).
+- Auditoria de copy: no se encontro (ni se anhadio) "segura"/"ganadora"/
+  "100% segura" en ningun texto del frontend (`grep -rniE` limpio antes
+  y despues del cambio).
+- **No hecho** (fuera del alcance pedido, no roto): rediseño visual
+  completo de las cards existentes (`MatchCard`/`PredictionRow` ya tenian
+  jerarquia razonable de una sesion anterior); esta sesion extendio esos
+  componentes en vez de rehacerlos, para no arriesgar regresiones
+  visuales sin pedido explicito de rediseño total.
+
+**Fase 7 — tests**: +19 tests nuevos en total sobre los 160 de cierre de
+Fase 2 (`test_settlement.py`: 9; `test_signal_exclusions.py`: 2; el resto
+de items de la seccion 27 del brief -- jornada actual vs futura, snapshots
+de cuotas -- ya tenian cobertura preexistente en `test_round_service.py` /
+`test_data_service_odds_preservation.py`, confirmado leyendo esos ficheros
+en vez de duplicar tests). **171 passed, 0 failed** al cierre de esta
+sesion.
+
+**No leakage / inmutabilidad (verificado, no solo documentado)**:
+`test_settlement_never_mutates_predictive_fields_of_prediction` congela
+`model_probability`/`edge`/`signal_score`/`market_odds`/`model_version_id`
+ANTES de liquidar y comprueba que son bit-a-bit iguales despues -- el
+mecanismo de inmutabilidad no es solo el diseño de esquema (tabla
+`prediction_results` separada, 1-a-1, sin UPDATE posible sobre
+`Prediction`), esta comprobado en un test real end-to-end usando el
+pipeline de entrenamiento/prediccion real, no un mock.
+
+**Fase 8 — build final**: `cd backend && pytest -q` → **171 passed**, 0
+failed (solo warnings preexistentes de `datetime.utcnow()` y de
+`FutureWarning`/`UserWarning` de pandas/sklearn, ninguno introducido por
+este cambio). `cd frontend && npm run build` → compila limpio, 8 rutas
+(`/`, `/history`, `/history/[id]`, `/matches/[id]`, `/model`,
+`/signals/[id]`, `/top-signals`, `/_not-found`).
+
+## 9. Que queda deferido (para una sesion futura)
+
+En el mismo orden de prioridad que dejaria el equipo si se retomara hoy:
+
+1. **`market_track_record` sin cablear automaticamente** (ver seccion 5
+   de este documento): el endpoint `/models/performance` ya da todo lo
+   necesario (Brier/calibracion real por mercado); falta que
+   `services/prediction_service.py::generate_predictions_for_competition`
+   consulte ese historico al generar cada prediccion nueva y se lo pase a
+   `signal_score`. Requiere decidir una ventana temporal razonable (¿ultimos
+   N partidos liquidados de ese mercado? ¿esa competicion o todas?) antes
+   de implementarlo -- no es solo mecanica, es una decision de producto
+   pequenha pero real.
+2. **Refactor arquitectonico del clasificador multinomial conjunto**
+   (ver seccion 6, punto 6, sin cambios: sigue sin ser urgente).
+3. **`CompetitionConfig` centralizado / tiers CORE-vs-EXPERIMENTAL** (ver
+   seccion 6, punto 7, sin cambios: sigue sin abordarse).
+4. **Corners/Cards/Asian Handicap/Draw No Bet siguen FUTURE-tier**, sin
+   cambios respecto a la tabla de la seccion 5 (decision de producto de
+   2026-09-18, no revisada ni cuestionada esta sesion: ninguna de esas
+   fuentes de cuota nuevas se ha vuelto viable, no se ha buscado una
+   razon para anhadirlas).
+5. **Rediseño visual completo del frontend** (seccion 25 del brief, mas
+   alla de lo ya hecho en Fase 6): esta sesion prioriza extender
+   componentes existentes (badges, widget nuevo, paginas nuevas) sobre
+   rehacer la jerarquia visual de cero, que no se pidio explicitamente y
+   habria sido mas riesgo que valor dado el tiempo disponible.
+6. **Segmentacion adicional de `/models/performance`** por rango de cuota
+   explicito (hoy segmenta por competicion/mercado/version de modelo, y
+   cada segmento YA incluye desglose por bucket de probabilidad/edge --
+   falta un filtro de query explicito `odds_min`/`odds_max` si se quiere
+   acotar el propio segmento por rango de cuota, no solo ver el
+   desglose).
