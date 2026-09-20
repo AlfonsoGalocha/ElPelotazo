@@ -63,3 +63,21 @@ class ExcludedSignalOut(BaseModel):
 class CurrentRoundPredictionsOut(BaseModel):
     round: RoundOut | None
     predictions: list[PredictionOut]
+
+
+class BookmakerOddsOut(BaseModel):
+    bookmaker: str
+    price: float
+    snapshot_type: str
+    diff_from_consensus: float | None  # price - market_odds_median (positivo = mejor que el consenso)
+    is_outlier: bool  # descartada del consenso por market/consensus.py (MAD), ver Prediction.market_probability_source
+
+
+class SignalDetailOut(PredictionOut):
+    """Extiende `PredictionOut` con el desglose bookmaker-por-bookmaker y
+    una explicacion en lenguaje llano de por que esta senhal aparece
+    (seccion 16/17 del pedido de revision integral) -- nunca lenguaje de
+    certeza ("apuesta segura", "ganadora", "100%"), solo los numeros."""
+
+    bookmaker_odds: list[BookmakerOddsOut]
+    explanation_summary: list[str]

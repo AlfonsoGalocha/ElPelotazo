@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from backend.app.backtesting.calibration import calibration_report_for_table, compare_calibration
+from backend.app.features.goals import build_match_feature_table
 from backend.app.models.calibration.calibrators import IsotonicCalibrator
 from backend.app.models.calibration.metrics import (
     brier_score,
@@ -9,6 +11,8 @@ from backend.app.models.calibration.metrics import (
     log_loss_score,
     reliability_curve,
 )
+from backend.app.models.goals.dixon_coles import DixonColesModel
+from backend.tests.fixtures.synthetic import generate_synthetic_matches
 
 
 def test_brier_score_perfect_predictions_is_zero():
@@ -38,6 +42,50 @@ def test_reliability_curve_reports_sample_sizes():
     assert sum(p["n"] for p in curve) == 200
     for point in curve:
         assert abs(point["predicted_probability"] - point["empirical_frequency"]) < 0.35
+
+
+def test_compare_calibration_reports_before_and_after_on_disjoint_split():
+    rng = np.random.default_rng(2)
+    n = 2000
+    true_prob = rng.uniform(0, 1, size=n)
+    y_true = rng.uniform(0, 1, size=n) < true_prob
+    miscalibrated = np.clip(true_prob * 1.8 - 0.4, 0.01, 0.99)
+
+    report = compare_calibration(y_true, miscalibrated, method="isotonic", validation_fraction=0.3)
+    assert report["method"] == "isotonic"
+    assert report["n_validation"] + report["n_test"] == n
+    assert report["after"]["expected_calibration_error"] <= report["before"]["expected_calibration_error"]
+
+
+def test_compare_calibration_reports_error_for_tiny_samples():
+    y_true = np.array([True, False, True])
+    y_prob = np.array([0.6, 0.4, 0.7])
+    report = compare_calibration(y_true, y_prob)
+    assert "error" in report
+
+
+def test_calibration_report_for_table_uses_out_of_fold_probabilities():
+    """`calibration_report_for_table` NUNCA debe evaluar sobre
+    probabilidades in-sample (el modelo entrenado con esos mismos
+    partidos): usa las predicciones OUT-OF-FOLD del backtest walk-forward,
+    para que la comparacion raw-vs-calibrado sea honesta. Antes de este
+    cambio, `compare_calibration` existia pero nada la invocaba en todo
+    el proyecto."""
+    matches = generate_synthetic_matches(n_teams=8, n_seasons=5, seed=11)
+    table = build_match_feature_table(matches)
+
+    report = calibration_report_for_table(table, DixonColesModel, "over_2_5", method="isotonic")
+    assert "error" not in report
+    assert report["market"] == "over_2_5"
+    assert report["n_folds"] > 0
+    assert "before" in report and "after" in report
+
+
+def test_calibration_report_for_table_reports_error_when_no_folds():
+    matches = generate_synthetic_matches(n_teams=4, n_seasons=1, seed=1)
+    table = build_match_feature_table(matches)
+    report = calibration_report_for_table(table, DixonColesModel, "over_2_5", min_train_seasons=2)
+    assert "error" in report
 
 
 def test_isotonic_calibration_improves_a_badly_calibrated_model():

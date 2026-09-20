@@ -12,7 +12,7 @@ from backend.app.config.settings import get_settings
 from backend.app.prediction.confidence import signal_tier
 from backend.app.prediction.market_quality import market_quality_tier
 from backend.app.prediction.ranking import odds_age_minutes, rank_signals
-from backend.app.schemas.prediction import CurrentRoundPredictionsOut, PredictionOut
+from backend.app.schemas.prediction import CurrentRoundPredictionsOut, PredictionOut, SignalDetailOut
 from backend.app.services.round_service import get_current_round, get_next_round
 from backend.app.utils.logging import get_logger
 
@@ -166,6 +166,8 @@ def _base_signal_query(
     max_fair_odds: float | None = None,
     scope: str = "current_round",
     competition_code: str | None = None,
+    min_edge_pp: float | None = None,
+    min_bookmakers: int | None = None,
 ):
     """`scope` decide QUE VENTANA de partidos se considera (seccion 1 de la
     revision de arquitectura), en este orden de prioridad:
@@ -225,8 +227,45 @@ def _base_signal_query(
         query = query.filter(Prediction.fair_odds >= min_fair_odds)
     if max_fair_odds is not None:
         query = query.filter(Prediction.fair_odds <= max_fair_odds)
+    if min_edge_pp is not None:
+        # `min_edge_pp` aqui se recibe en PUNTOS PORCENTUALES (p.ej. 5 =
+        # 5pp), pensado para un slider de frontend -- `Prediction.edge` se
+        # almacena como fraccion (0.05), igual que `Settings.min_edge_pp`
+        # (el umbral del filtro DURO, en fraccion pese al nombre). Este
+        # filtro es un AJUSTE FINO adicional por request, nunca sustituye
+        # al filtro duro de `evaluate_quality_gate`.
+        query = query.filter(Prediction.edge >= min_edge_pp / 100.0)
+    if min_bookmakers is not None:
+        query = query.filter(Prediction.bookmakers_used >= min_bookmakers)
     return query
 
+
+def _filter_by_quality(included: list, quality: str | None, settings) -> list:
+    """`quality`: "HIGH"|"MEDIUM"|"LOW" para quedarse SOLO con esa calidad
+    de mercado, o `None`/"ALL" para no filtrar (ver prediction/market_quality.py).
+    Post-filtro en Python (no en SQL): la calidad se deriva de varios
+    campos ya persistidos, no es una columna propia."""
+    if not quality or quality == "ALL":
+        return included
+    return [
+        s
+        for s in included
+        if market_quality_tier(
+            s.prediction.bookmakers_used,
+            s.prediction.market_odds_min,
+            s.prediction.market_odds_max,
+            s.prediction.market_odds_median,
+            settings,
+        )
+        == quality
+    ]
+
+
+QUALITY_QUERY = Query(
+    None,
+    pattern="^(HIGH|MEDIUM|LOW|ALL)$",
+    description="Filtra por calidad de MERCADO (ver prediction/market_quality.py); omitir o 'ALL' = sin filtrar.",
+)
 
 SCOPE_QUERY = Query(
     "current_round",
@@ -252,6 +291,9 @@ def top_signals(
     ),
     min_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MINIMA del modelo (1/model_probability)"),
     max_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MAXIMA del modelo (1/model_probability)"),
+    min_edge: float | None = Query(None, ge=0.0, description="Edge minimo en PUNTOS PORCENTUALES (ej. 5 = 5pp)"),
+    min_bookmakers: int | None = Query(None, ge=1, description="Numero minimo de casas respaldando la cuota"),
+    quality: str | None = QUALITY_QUERY,
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """"Mejores señales": ranking transparente que SOLO considera
@@ -279,17 +321,35 @@ def top_signals(
     `min_fair_odds`/`max_fair_odds`: filtro por CUOTA JUSTA del modelo
     (no la de mercado), pedido explicito de usuario para acotar por
     rango (p.ej. "solo entre 1 y 2" = favoritos claros segun el modelo).
+
+    `min_edge`/`min_bookmakers`/`quality`: filtros ADICIONALES ajustables
+    por request (pensados para sliders/selectores de frontend), nunca
+    sustituyen al filtro DURO de calidad (`Settings`/`evaluate_quality_gate`,
+    que ya exige un minimo de casas y edge no negativo por defecto) --
+    son un afinado extra sobre lo que ya paso ese filtro.
     """
+    settings = get_settings()
     candidates = _base_signal_query(
-        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
+        db,
+        market_family,
+        upcoming_only,
+        days,
+        date,
+        min_fair_odds,
+        max_fair_odds,
+        scope,
+        competition_code,
+        min_edge,
+        min_bookmakers,
     ).all()
-    included, excluded = rank_signals(candidates)
+    included, excluded = rank_signals(candidates, settings)
     if excluded:
         logger.info(
             "ranking.top_signals.excluded: total=%d reasons=%s",
             len(excluded),
             {r.reason.value: sum(1 for e in excluded if e.reason == r.reason) for r in excluded},
         )
+    included = _filter_by_quality(included, quality, settings)
     if sort_by == "edge":
         included = sorted(included, key=lambda s: s.prediction.edge or 0.0, reverse=True)
     return [serialize_prediction(s.prediction) for s in included[:limit]]
@@ -308,6 +368,9 @@ def best_predictions(
     date: dt.date | None = Query(None, description="Filtrar a un dia concreto (YYYY-MM-DD); tiene prioridad sobre `scope`"),
     min_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MINIMA del modelo"),
     max_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MAXIMA del modelo"),
+    min_edge: float | None = Query(None, ge=0.0, description="Edge minimo en PUNTOS PORCENTUALES (ej. 5 = 5pp)"),
+    min_bookmakers: int | None = Query(None, ge=1),
+    quality: str | None = QUALITY_QUERY,
     db: Session = Depends(get_db),
 ) -> list[dict]:
     """"Las 5 mejores predicciones" (widget de portada), de la JORNADA
@@ -323,10 +386,22 @@ def best_predictions(
     NUNCA aparecen aqui: usa `/predictions/model-only` para mostrarlas por
     separado, etiquetadas explicitamente como "sin mercado".
     """
+    settings = get_settings()
     candidates = _base_signal_query(
-        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
+        db,
+        market_family,
+        upcoming_only,
+        days,
+        date,
+        min_fair_odds,
+        max_fair_odds,
+        scope,
+        competition_code,
+        min_edge,
+        min_bookmakers,
     ).all()
-    included, _ = rank_signals(candidates)
+    included, _ = rank_signals(candidates, settings)
+    included = _filter_by_quality(included, quality, settings)
     return [serialize_prediction(s.prediction) for s in included[:limit]]
 
 
@@ -403,6 +478,85 @@ def model_only_predictions(
     without_market = [p for p in candidates if p.market_odds is None or p.market_probability is None]
     without_market.sort(key=lambda p: abs(p.model_probability - 0.5), reverse=True)
     return [serialize_prediction(p) for p in without_market[:limit]]
+
+
+def _build_explanation_summary(prediction: Prediction, serialized: dict) -> list[str]:
+    """Explicacion en lenguaje llano, SOLO con numeros reales (seccion 17):
+    nunca "apuesta segura"/"ganadora"/"100%". Cada linea es trazable a un
+    campo concreto de la respuesta, para poder verificarla a mano."""
+    lines = [f"El modelo estima {prediction.model_probability * 100:.1f}% de probabilidad para esta seleccion."]
+    if prediction.market_probability is not None:
+        lines.append(
+            f"El mercado (consenso de {prediction.bookmakers_used or 0} casa"
+            f"{'s' if (prediction.bookmakers_used or 0) != 1 else ''}) implica "
+            f"{prediction.market_probability * 100:.1f}% de probabilidad."
+        )
+    else:
+        lines.append("No hay cuota de mercado disponible para esta seleccion todavia.")
+    if prediction.edge is not None:
+        lines.append(f"Diferencia entre modelo y mercado (edge) = {prediction.edge * 100:+.1f} puntos porcentuales.")
+    if prediction.market_odds is not None:
+        lines.append(f"Cuota de mercado disponible: {prediction.market_odds:.2f}.")
+    lines.append(f"Cuota justa segun el modelo (1 / probabilidad del modelo): {prediction.fair_odds:.2f}.")
+    if serialized["market_quality"] is not None:
+        lines.append(
+            f"Calidad de mercado: {serialized['market_quality']} "
+            f"({prediction.bookmakers_used or 0} casas respaldando el consenso)."
+        )
+    if serialized["odds_age_minutes"] is not None:
+        lines.append(f"Estos datos de mercado se generaron hace {round(serialized['odds_age_minutes'])} minutos.")
+    lines.append(
+        f"Calidad de datos del modelo (informacion disponible de ambos equipos): "
+        f"{prediction.data_quality * 100:.0f}%. Confianza del modelo: {prediction.confidence * 100:.0f}%."
+    )
+    return lines
+
+
+@router.get("/{prediction_id}/detail", response_model=SignalDetailOut)
+def get_prediction_detail(prediction_id: int, db: Session = Depends(get_db)) -> dict:
+    """Detalle completo de una senhal (seccion 16/17): desglose
+    bookmaker-por-bookmaker con la diferencia de cada cuota respecto al
+    consenso (y si esa casa se descarto como outlier, ver
+    `market/consensus.py`), mas una explicacion en lenguaje llano de por
+    que aparece esta senhal, trazable a los datos reales."""
+    from backend.app.market.consensus import compute_market_consensus
+    from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP
+
+    prediction = db.get(Prediction, prediction_id)
+    if prediction is None:
+        raise HTTPException(status_code=404, detail="Prediccion no encontrada")
+
+    serialized = serialize_prediction(prediction)
+
+    raw_market = ALL_MARKET_TO_ODDS_LOOKUP.get(prediction.market, (None, None, None))[0]
+    bookmaker_odds: list[dict] = []
+    if raw_market is not None:
+        match = db.get(Match, prediction.match_id)
+        odds_rows = [
+            o
+            for o in match.odds
+            if o.market == raw_market and o.line == prediction.line and o.selection == prediction.selection
+        ]
+        consensus = compute_market_consensus(match.odds, raw_market, prediction.line, prediction.selection)
+        outlier_names = set(consensus.outliers_removed)
+        median = consensus.median_odds
+        bookmaker_odds = [
+            {
+                "bookmaker": row.bookmaker,
+                "price": row.price,
+                "snapshot_type": row.snapshot_type,
+                "diff_from_consensus": (row.price - median) if median is not None else None,
+                "is_outlier": row.bookmaker in outlier_names,
+            }
+            for row in odds_rows
+        ]
+        bookmaker_odds.sort(key=lambda r: r["price"])
+
+    return {
+        **serialized,
+        "bookmaker_odds": bookmaker_odds,
+        "explanation_summary": _build_explanation_summary(prediction, serialized),
+    }
 
 
 @router.get("/{prediction_id}", response_model=PredictionOut)

@@ -73,6 +73,19 @@ export interface Prediction {
   is_stale_odds: boolean;
 }
 
+export interface BookmakerOdds {
+  bookmaker: string;
+  price: number;
+  snapshot_type: string;
+  diff_from_consensus: number | null;
+  is_outlier: boolean;
+}
+
+export interface SignalDetail extends Prediction {
+  bookmaker_odds: BookmakerOdds[];
+  explanation_summary: string[];
+}
+
 export const MARKET_DISPLAY_NAMES: Record<string, string> = {
   over_1_5: "Más de 1.5 goles",
   over_2_5: "Más de 2.5 goles",

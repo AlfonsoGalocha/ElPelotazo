@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getCompetitions, getTopSignals } from "@/lib/api";
 import type { SignalScope } from "@/lib/api";
 import { MARKET_DISPLAY_NAMES } from "@/types";
@@ -21,6 +22,9 @@ export default async function TopSignalsPage({
     days?: string;
     min_fair_odds?: string;
     max_fair_odds?: string;
+    min_edge?: string;
+    min_bookmakers?: string;
+    quality?: "HIGH" | "MEDIUM" | "LOW" | "ALL";
   };
 }) {
   const { date, competition_code: competitionCode } = searchParams;
@@ -31,13 +35,33 @@ export default async function TopSignalsPage({
   const days = searchParams.days ? Number(searchParams.days) : 4;
   const minFairOdds = searchParams.min_fair_odds ? Number(searchParams.min_fair_odds) : undefined;
   const maxFairOdds = searchParams.max_fair_odds ? Number(searchParams.max_fair_odds) : undefined;
+  const minEdge = searchParams.min_edge ? Number(searchParams.min_edge) : undefined;
+  const minBookmakers = searchParams.min_bookmakers ? Number(searchParams.min_bookmakers) : undefined;
+  const quality = searchParams.quality ?? "ALL";
   const hasFairOddsFilter = minFairOdds !== undefined || maxFairOdds !== undefined;
-  const hasAnyFilter = Boolean(date) || hasFairOddsFilter || Boolean(competitionCode) || scope !== "current_round";
+  const hasAnyFilter =
+    Boolean(date) ||
+    hasFairOddsFilter ||
+    Boolean(competitionCode) ||
+    scope !== "current_round" ||
+    minEdge !== undefined ||
+    minBookmakers !== undefined ||
+    quality !== "ALL";
 
   const [predictions, competitions] = await Promise.all([
-    getTopSignals({ limit: 30, date, sortBy, scope, days, competitionCode, minFairOdds, maxFairOdds }).catch(
-      () => []
-    ),
+    getTopSignals({
+      limit: 30,
+      date,
+      sortBy,
+      scope,
+      days,
+      competitionCode,
+      minFairOdds,
+      maxFairOdds,
+      minEdge,
+      minBookmakers,
+      quality,
+    }).catch(() => []),
     getCompetitions().catch(() => []),
   ]);
 
@@ -155,6 +179,45 @@ export default async function TopSignalsPage({
           defaultValue={searchParams.max_fair_odds ?? ""}
           className="w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
         />
+        <label htmlFor="min_edge" className="ml-2">
+          Edge mínimo (pp):
+        </label>
+        <input
+          id="min_edge"
+          type="number"
+          name="min_edge"
+          step="0.5"
+          min="0"
+          placeholder="0"
+          defaultValue={searchParams.min_edge ?? ""}
+          className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+        />
+        <label htmlFor="min_bookmakers" className="ml-2">
+          Casas mín.:
+        </label>
+        <input
+          id="min_bookmakers"
+          type="number"
+          name="min_bookmakers"
+          min="1"
+          placeholder="1"
+          defaultValue={searchParams.min_bookmakers ?? ""}
+          className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+        />
+        <label htmlFor="quality" className="ml-2">
+          Calidad de mercado:
+        </label>
+        <select
+          id="quality"
+          name="quality"
+          defaultValue={quality}
+          className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+        >
+          <option value="ALL">Todas</option>
+          <option value="HIGH">Alta</option>
+          <option value="MEDIUM">Media</option>
+          <option value="LOW">Baja</option>
+        </select>
         <button type="submit" className="rounded border border-surface-border px-3 py-1 hover:bg-surface-raised">
           Aplicar
         </button>
@@ -185,9 +248,11 @@ export default async function TopSignalsPage({
           </thead>
           <tbody>
             {predictions.map((p) => (
-              <tr key={p.id} className="border-t border-surface-border">
+              <tr key={p.id} className="border-t border-surface-border hover:bg-surface-raised/50">
                 <td className="px-3 py-2 text-slate-200">
-                  {p.match.home_team.canonical_name} vs {p.match.away_team.canonical_name}
+                  <Link href={`/signals/${p.id}`} className="hover:underline">
+                    {p.match.home_team.canonical_name} vs {p.match.away_team.canonical_name}
+                  </Link>
                 </td>
                 <td className="px-3 py-2 text-slate-400">
                   {new Date(p.match.kickoff_utc).toLocaleDateString("es-ES", {

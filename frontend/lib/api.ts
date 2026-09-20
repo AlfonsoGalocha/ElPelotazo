@@ -1,4 +1,4 @@
-import type { Competition, Match, Prediction, RoundInfo } from "@/types";
+import type { Competition, Match, Prediction, RoundInfo, SignalDetail } from "@/types";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -39,6 +39,11 @@ export interface TopSignalsOptions {
   // para evitar tiros muy largos, no para segmentar por rango).
   minFairOdds?: number;
   maxFairOdds?: number;
+  // Ajustes finos adicionales (seccion 14): nunca sustituyen al filtro
+  // duro de calidad del backend, solo lo afinan por request.
+  minEdge?: number; // en PUNTOS PORCENTUALES (ej. 5 = 5pp)
+  minBookmakers?: number;
+  quality?: "HIGH" | "MEDIUM" | "LOW" | "ALL";
 }
 
 // "Mejores señales": SOLO predicciones con mercado real valido (ver
@@ -49,7 +54,19 @@ export interface TopSignalsOptions {
 // menor edge en crudo) -- solo cambia el ORDEN, el filtro de calidad es
 // el mismo.
 export function getTopSignals(opts: TopSignalsOptions = {}): Promise<Prediction[]> {
-  const { limit = 20, date, sortBy, scope, days, competitionCode, minFairOdds, maxFairOdds } = opts;
+  const {
+    limit = 20,
+    date,
+    sortBy,
+    scope,
+    days,
+    competitionCode,
+    minFairOdds,
+    maxFairOdds,
+    minEdge,
+    minBookmakers,
+    quality,
+  } = opts;
   const qs = new URLSearchParams({ limit: String(limit) });
   if (date) qs.set("date", date);
   if (sortBy) qs.set("sort_by", sortBy);
@@ -58,7 +75,18 @@ export function getTopSignals(opts: TopSignalsOptions = {}): Promise<Prediction[
   if (competitionCode) qs.set("competition_code", competitionCode);
   if (minFairOdds !== undefined) qs.set("min_fair_odds", String(minFairOdds));
   if (maxFairOdds !== undefined) qs.set("max_fair_odds", String(maxFairOdds));
+  if (minEdge !== undefined) qs.set("min_edge", String(minEdge));
+  if (minBookmakers !== undefined) qs.set("min_bookmakers", String(minBookmakers));
+  if (quality) qs.set("quality", quality);
   return apiFetch<Prediction[]>(`/predictions/top-signals?${qs.toString()}`);
+}
+
+// Detalle completo de una senhal: desglose bookmaker-por-bookmaker (con
+// diferencia respecto al consenso y si se descarto como outlier) y una
+// explicacion en lenguaje llano de por que aparece, siempre trazable a
+// los datos reales (nunca "apuesta segura"/"100%").
+export function getPredictionDetail(predictionId: number): Promise<SignalDetail> {
+  return apiFetch<SignalDetail>(`/predictions/${predictionId}/detail`);
 }
 
 export function getBestPredictions(limit = 5, marketFamily?: string): Promise<Prediction[]> {

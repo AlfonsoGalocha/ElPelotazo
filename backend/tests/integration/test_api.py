@@ -245,6 +245,49 @@ def test_attach_odds_matches_by_team_and_refreshes_predictions(seeded_competitio
         assert over_2_5.expected_value is not None
 
 
+def test_prediction_detail_endpoint_shows_bookmaker_breakdown_and_explanation(seeded_competition_code):
+    """Seccion 16/17 del pedido de revision integral: detalle completo de
+    una senhal con desglose bookmaker-por-bookmaker y una explicacion en
+    lenguaje llano, sin lenguaje de certeza ("apuesta segura", "100%",
+    "ganadora")."""
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        match = db.query(Match).filter(Match.competition_id == comp.id, Match.status == "scheduled").one()
+        snapshot = FixtureOddsSnapshot(
+            home_team_raw="IntegrationTeam1",
+            away_team_raw="IntegrationTeam2",
+            commence_time=match.kickoff_utc.replace(tzinfo=dt.timezone.utc),
+            odds=[
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+                RawOddsRecord("pinnacle", "over_under_goals", 2.5, "over", 1.85),
+                RawOddsRecord("pinnacle", "over_under_goals", 2.5, "under", 2.00),
+            ],
+        )
+        attach_odds_to_scheduled_matches(db, _FakeOddsProvider([snapshot]), seeded_competition_code)
+
+    with session_scope() as db:
+        predictions = generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+        over_2_5_id = next(p.id for p in predictions if p.market == "over_2_5")
+
+    client = TestClient(app)
+    response = client.get(f"/predictions/{over_2_5_id}/detail")
+    assert response.status_code == 200
+    body = response.json()
+
+    bookmakers = {row["bookmaker"] for row in body["bookmaker_odds"]}
+    assert bookmakers == {"bet365", "pinnacle"}
+    for row in body["bookmaker_odds"]:
+        assert row["diff_from_consensus"] is not None
+
+    assert len(body["explanation_summary"]) > 0
+    forbidden = ["apuesta segura", "bet segura", "ganadora", "100%", "seguro"]
+    full_text = " ".join(body["explanation_summary"]).lower()
+    for word in forbidden:
+        assert word not in full_text
+
+
 def test_attach_odds_reports_unmatched_examples_for_unknown_teams(seeded_competition_code):
     """Si la fuente de cuotas devuelve nombres de equipo que no casan con
     ningun partido programado (nombre distinto, fecha demasiado lejana...),
@@ -540,6 +583,55 @@ def test_top_signals_filters_by_fair_odds_range(seeded_competition_code):
     returned_ids = {p["id"] for p in response.json()}
     assert low_fair_id in returned_ids
     assert high_fair_id not in returned_ids
+
+
+def test_top_signals_filters_by_min_edge_min_bookmakers_and_quality(seeded_competition_code):
+    """Filtros adicionales pedidos explicitamente (seccion 14): edge
+    minimo (en PUNTOS PORCENTUALES, para un slider), numero minimo de
+    casas, y calidad de mercado -- todos AJUSTES FINOS sobre lo que ya
+    paso el filtro duro, nunca lo sustituyen."""
+    with session_scope() as db:
+        valid_predictions = (
+            db.query(Prediction)
+            .filter(Prediction.market_odds.isnot(None))
+            .filter(Prediction.market_probability.isnot(None))
+            .order_by(Prediction.id)
+            .limit(2)
+            .all()
+        )
+        assert len(valid_predictions) == 2
+        low_edge_id, high_edge_id = valid_predictions[0].id, valid_predictions[1].id
+        valid_predictions[0].edge = 0.02  # 2pp
+        valid_predictions[0].bookmakers_used = 1
+        valid_predictions[1].edge = 0.12  # 12pp
+        valid_predictions[1].bookmakers_used = 12
+        db.flush()
+
+    client = TestClient(app)
+
+    min_edge_response = client.get(
+        "/predictions/top-signals",
+        params={"limit": 100, "days": 30, "scope": "all_upcoming", "min_edge": 5},
+    )
+    min_edge_ids = {p["id"] for p in min_edge_response.json()}
+    assert low_edge_id not in min_edge_ids
+    assert high_edge_id in min_edge_ids
+
+    min_bookmakers_response = client.get(
+        "/predictions/top-signals",
+        params={"limit": 100, "days": 30, "scope": "all_upcoming", "min_bookmakers": 5},
+    )
+    min_bookmakers_ids = {p["id"] for p in min_bookmakers_response.json()}
+    assert low_edge_id not in min_bookmakers_ids
+    assert high_edge_id in min_bookmakers_ids
+
+    quality_response = client.get(
+        "/predictions/top-signals",
+        params={"limit": 100, "days": 30, "scope": "all_upcoming", "quality": "LOW"},
+    )
+    quality_ids = {p["id"] for p in quality_response.json()}
+    assert low_edge_id in quality_ids
+    assert high_edge_id not in quality_ids
 
 
 class _FakeApiFootballProvider:

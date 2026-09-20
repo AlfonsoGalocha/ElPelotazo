@@ -16,6 +16,7 @@ from pathlib import Path
 
 import typer
 
+from backend.app.backtesting.calibration import calibration_report_for_table
 from backend.app.backtesting.engine import run_walk_forward_backtest, summarize_backtest
 from backend.app.backtesting.reports import write_backtest_report
 from backend.app.config.settings import REPO_ROOT
@@ -512,6 +513,48 @@ def backtest(competition: str, market: str = "over_2_5", output: str | None = No
     output_path = Path(output) if output else REPO_ROOT / "data" / "processed" / f"backtest_{competition}_{market}.json"
     write_backtest_report(summary, output_path)
     typer.echo(f"[backtest] resumen escrito en {output_path}")
+
+
+@app.command()
+def calibration_report(
+    competition: str, market: str = "over_2_5", method: str = "isotonic", output: str | None = None
+) -> None:
+    """Compara probabilidad CRUDA del modelo vs CALIBRADA (isotonic/platt)
+    sobre las mismas predicciones out-of-fold del backtest walk-forward
+    (seccion 19 del pedido de revision integral: "no introduzcas
+    calibracion automaticamente sin evaluar primero"). Las predicciones en
+    produccion (`prediction_service.py`) usan SIEMPRE la probabilidad
+    CRUDA para el edge -- este comando es solo diagnostico, no cambia nada
+    del pipeline. Si demuestra una mejora real y consistente, seria la
+    evidencia necesaria para plantear activar calibracion en produccion.
+    """
+    init_db()
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=competition).one_or_none()
+        if comp is None:
+            typer.echo(f"Competicion no encontrada: {competition}")
+            raise typer.Exit(1)
+        matches = load_matches_dataframe(db, comp.id)
+        table = build_match_feature_table(matches)
+        report_data = calibration_report_for_table(table, DixonColesModel, market, method=method)
+
+    if "error" in report_data:
+        typer.echo(f"[calibration-report] {report_data['error']}")
+        return
+
+    typer.echo(
+        f"[calibration-report] {competition}/{market} ({method}, n_test={report_data['n_test']}): "
+        f"brier {report_data['before']['brier_score']:.4f} -> {report_data['after']['brier_score']:.4f} | "
+        f"log_loss {report_data['before']['log_loss']:.4f} -> {report_data['after']['log_loss']:.4f} | "
+        f"ECE {report_data['before']['expected_calibration_error']:.4f} -> "
+        f"{report_data['after']['expected_calibration_error']:.4f}"
+    )
+    output_path = (
+        Path(output) if output else REPO_ROOT / "data" / "processed" / f"calibration_{competition}_{market}.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report_data, indent=2, default=str))
+    typer.echo(f"[calibration-report] informe completo escrito en {output_path}")
 
 
 @app.command()

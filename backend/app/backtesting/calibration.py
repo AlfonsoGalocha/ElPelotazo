@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 from backend.app.models.calibration.calibrators import CALIBRATORS
 from backend.app.models.calibration.metrics import (
@@ -48,3 +49,35 @@ def compare_calibration(
             "expected_calibration_error": expected_calibration_error(y_true_test, calibrated_test),
         },
     }
+
+
+def calibration_report_for_table(
+    table: pd.DataFrame,
+    model_factory,
+    market_key: str,
+    method: str = "isotonic",
+    min_train_seasons: int = 2,
+) -> dict:
+    """Punto de entrada real (antes `compare_calibration` existia pero
+    nada la llamaba en todo el proyecto -- seccion 19 del pedido de
+    revision integral). Usa las probabilidades OUT-OF-FOLD del backtest
+    walk-forward (`run_walk_forward_backtest`), nunca probabilidades de un
+    modelo entrenado con esos mismos partidos: si se comparara raw vs
+    calibrado sobre probabilidades in-sample, el "antes" saldria
+    artificialmente bien calibrado (el modelo ya vio esos resultados),
+    sesgando la comparacion a favor de "la calibracion no hace falta".
+    """
+    # Import diferido: evita un ciclo (engine.py no necesita conocer este
+    # modulo, pero este modulo si necesita el motor de backtest).
+    from backend.app.backtesting.engine import run_walk_forward_backtest
+
+    results = run_walk_forward_backtest(table, model_factory, market_key, min_train_seasons=min_train_seasons)
+    if not results:
+        return {"error": "sin folds de backtest suficientes para este mercado/competicion"}
+
+    y_true = np.concatenate([r.y_true for r in results])
+    y_prob_raw = np.concatenate([r.y_prob for r in results])
+    report = compare_calibration(y_true, y_prob_raw, method=method)
+    report["market"] = market_key
+    report["n_folds"] = len(results)
+    return report

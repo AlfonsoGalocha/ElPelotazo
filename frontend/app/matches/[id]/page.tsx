@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import { getMatch, getMatchPredictions } from "@/lib/api";
 import type { Prediction } from "@/types";
 import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES, MATCH_RESULT_MARKETS } from "@/types";
@@ -31,8 +32,16 @@ function PredictionTable({ predictions }: { predictions: Prediction[] }) {
           {predictions.map((p) => (
             <tr key={p.id} className="border-t border-surface-border">
               <td className="px-3 py-2 text-slate-200">
-                {MARKET_DISPLAY_NAMES[p.market] ?? p.market}
-                {!p.has_market && <span className="ml-2 text-[10px] text-slate-500">sin mercado</span>}
+                {p.has_market ? (
+                  <Link href={`/signals/${p.id}`} className="hover:underline">
+                    {MARKET_DISPLAY_NAMES[p.market] ?? p.market}
+                  </Link>
+                ) : (
+                  <>
+                    {MARKET_DISPLAY_NAMES[p.market] ?? p.market}
+                    <span className="ml-2 text-[10px] text-slate-500">sin mercado</span>
+                  </>
+                )}
               </td>
               <td className="px-3 py-2">{(p.model_probability * 100).toFixed(1)}%</td>
               <td className="px-3 py-2">

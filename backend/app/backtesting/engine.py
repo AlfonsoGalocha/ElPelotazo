@@ -21,6 +21,7 @@ import pandas as pd
 from backend.app.backtesting.metrics import (
     market_strategy_metrics,
     model_quality_metrics,
+    performance_by_edge_bucket,
     performance_by_probability_bucket,
 )
 from backend.app.backtesting.splits import WalkForwardFold, expanding_window_splits
@@ -85,7 +86,12 @@ def summarize_backtest(results: list[BacktestFoldResult]) -> dict:
     if all(r.market_odds is not None for r in results):
         market_odds = np.concatenate([r.market_odds for r in results])
         summary["market_strategy"] = market_strategy_metrics(y_true, y_prob, market_odds)
+        # "NO asumas que mayor edge = mejor" (seccion 18/10 del pedido de
+        # revision integral): comportamiento historico REAL por rango de
+        # edge, para poder comprobarlo con datos en vez de suponerlo.
+        summary["performance_by_edge_bucket"] = performance_by_edge_bucket(y_true, y_prob, market_odds)
     else:
         summary["market_strategy"] = None
+        summary["performance_by_edge_bucket"] = None
 
     return summary

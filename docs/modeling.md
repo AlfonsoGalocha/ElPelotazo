@@ -231,3 +231,70 @@ Cada `train_competition_models(...)` crea una fila nueva en `model_versions`
 (nunca sobrescribe) con: features usadas, hiperparametros, metricas de
 holdout, `dataset_version`, y la ruta al artefacto `joblib` con los objetos
 Python de los modelos entrenados + pesos de ensemble.
+
+## Comportamiento historico por rango de edge (`backtesting/metrics.py::performance_by_edge_bucket`)
+
+"NO asumas que mayor edge = mejor" (pedido explicito de usuario): esta
+funcion agrupa las predicciones OUT-OF-FOLD del backtest walk-forward en
+buckets de edge (0-5pp, 5-10pp, 10-15pp, 15-20pp, 20+pp) y calcula, POR
+BUCKET, hit rate real, Brier score y ROI hipotetico. Se calcula sobre la
+cuota CRUDA del mercado (sin quitar vig), el mismo criterio que usa
+`market_strategy_metrics` para decidir "cuando se apuesta" — asi el
+bucket de edge coincide exactamente con lo que la simulacion de ROI
+considera una oportunidad. Se incluye automaticamente en el JSON de
+`football-edge backtest` cuando hay cuotas de mercado disponibles
+(`summary["performance_by_edge_bucket"]`). Si un bucket de edge alto no
+muestra mejor ROI/hit-rate que uno bajo, eso es evidencia REAL de que ese
+edge no era fiable (cuota mal identificada, modelo mal calibrado para esa
+zona, muestra pequenha...), nunca una suposicion.
+
+## Calibracion: raw vs calibrada (`backtesting/calibration.py`)
+
+`compare_calibration()` (Platt/isotonic) existia desde el principio del
+proyecto pero **nada la invocaba** en ningun sitio — bug real corregido
+(2026-09-20). `calibration_report_for_table()` es el punto de entrada
+real: usa las probabilidades OUT-OF-FOLD del backtest walk-forward (nunca
+probabilidades de un modelo que ya vio esos partidos en entrenamiento,
+que sesgarian el "antes" a favor de parecer ya bien calibrado). Comando:
+
+```
+football-edge calibration-report --competition laliga --market over_2_5 --method isotonic
+```
+
+Escribe un JSON con Brier/log loss/ECE antes y despues de calibrar sobre
+un split de test disjunto del usado para ajustar el calibrador. **Las
+predicciones en produccion (`prediction_service.py`) usan SIEMPRE la
+probabilidad CRUDA del modelo para el edge** — este comando es solo
+diagnostico. Si demuestra una mejora real y consistente en varias
+competiciones/mercados, esa seria la evidencia necesaria para plantear
+activar calibracion en produccion (nunca se activa automaticamente sin
+esa evaluacion previa, tal y como se pidio explicitamente).
+
+## Filtros adicionales de "Mejores señales" (`min_edge`, `min_bookmakers`, `quality`)
+
+Sobre el filtro DURO de calidad (`evaluate_quality_gate`, que decide QUE
+entra) y el `scope`/`competition_code` (que deciden que PARTIDOS se
+consideran), `/predictions/top-signals` y `/predictions/best` aceptan tres
+ajustes finos adicionales pensados para sliders/selectores de frontend:
+
+- `min_edge`: edge minimo en PUNTOS PORCENTUALES (ej. `5` = 5pp). Distinto
+  de `Settings.min_edge_pp` (que pese al nombre es una fraccion 0-1 y es
+  el umbral del filtro duro, no ajustable por request).
+- `min_bookmakers`: numero minimo de casas respaldando el consenso.
+- `quality`: `HIGH`/`MEDIUM`/`LOW`/`ALL` (por defecto), sobre
+  `prediction/market_quality.py`.
+
+Ninguno de los tres sustituye al filtro duro: son un afinado adicional
+sobre lo que ya lo paso.
+
+## Detalle de una señal (`GET /predictions/{id}/detail`)
+
+Desglose bookmaker-por-bookmaker (cuota, diferencia respecto al consenso,
+si se descarto como outlier — ver `market/consensus.py`) mas una
+explicacion en lenguaje llano de por que aparece la senhal
+(`explanation_summary`), construida SOLO con numeros reales trazables a
+la respuesta (probabilidad del modelo, probabilidad de mercado, edge,
+cuota, cuota justa, calidad de mercado, antigueedad de la cuota, calidad
+de datos, confianza). Nunca usa lenguaje de certeza ("apuesta segura",
+"ganadora", "100%") — es una herramienta de analisis estadistico, no una
+promesa de resultado. Frontend: `/signals/[id]`.
