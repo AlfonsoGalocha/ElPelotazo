@@ -52,6 +52,16 @@ services:
         # (NEXT_PUBLIC_API_URL=http://localhost:<BACKEND_PORT> en tu .env)
         # y reconstruye con 'docker compose build frontend'.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    environment:
+      # Variable de ENTORNO (no de build, se lee en caliente): la usan las
+      # paginas que renderiza el propio contenedor del frontend
+      # (lib/api.ts::resolveApiUrl) para llegar al backend por la red
+      # INTERNA de Docker Compose ("backend" es el nombre del servicio de
+      # arriba, resoluble solo dentro de esa red). Sin esto, esas paginas
+      # intentarian "localhost:8000", que dentro de este contenedor es el
+      # propio frontend, no el backend -- de ahi el "No se pudo conectar
+      # con la API" aunque el backend estuviera sano.
+      API_URL: http://backend:8000
     # Mismo mecanismo que el backend: FRONTEND_PORT en tu .env si el 3000
     # tambien estuviera ocupado.
     ports:

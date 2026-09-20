@@ -9,10 +9,30 @@ import type {
   SignalDetail,
 } from "@/types";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+// Dos URLs distintas a proposito, no una: en Docker Compose el frontend y
+// el backend son contenedores separados, cada uno con su propio
+// "localhost". Cuando el codigo de esta funcion corre DENTRO del
+// contenedor del frontend (paginas de servidor / Server Components, que
+// son la mayoria de esta app), "localhost:8000" apuntaria al propio
+// contenedor del frontend, no al backend -- hay que usar el nombre del
+// servicio en la red interna de Docker (`API_URL=http://backend:8000` en
+// docker-compose.yml). Cuando el codigo corre en el NAVEGADOR (p.ej.
+// SearchBar.tsx, marcado "use client"), el unico host que existe es la
+// maquina del usuario, asi que ahi si hace falta la URL publica
+// (`NEXT_PUBLIC_API_URL`, la que ve `localhost:<puerto-publicado>`).
+// `API_URL` (sin el prefijo NEXT_PUBLIC_) nunca se envia al navegador --
+// Next.js solo expone al cliente las variables con ese prefijo -- por eso
+// es seguro que apunte a un host interno que no existe fuera de Docker.
+function resolveApiUrl(): string {
+  const browserUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+  if (typeof window === "undefined") {
+    return process.env.API_URL ?? browserUrl;
+  }
+  return browserUrl;
+}
 
 async function apiFetch<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, { cache: "no-store" });
+  const res = await fetch(`${resolveApiUrl()}${path}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error(`API ${path} respondio ${res.status}`);
   }
