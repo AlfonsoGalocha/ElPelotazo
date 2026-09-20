@@ -28,9 +28,11 @@ from collections import defaultdict
 import numpy as np
 from sqlalchemy.orm import Session
 
+import datetime as dt
+
 from backend.app.backtesting.metrics import market_strategy_metrics, model_quality_metrics
 from backend.app.db.models.core import Competition
-from backend.app.db.models.modeling import Prediction
+from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.features.goals import build_match_feature_table
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS, label_for_market
 from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS, label_for_secondary_market
@@ -43,6 +45,86 @@ def _label_for_any_market(table, market_key: str):
     if market_key in SECONDARY_MARKET_DEFINITIONS:
         return label_for_secondary_market(table, market_key)
     return None
+
+
+def settle_finished_predictions(db: Session, competition_code: str | None = None) -> int:
+    """Fase 4: para cada `Prediction` de un partido YA FINALIZADO que
+    todavia no tiene un `PredictionResult`, crea uno (nunca lo actualiza si
+    ya existe -- inmutabilidad absoluta, seccion 8 del brief). Devuelve
+    cuantas filas nuevas se crearon.
+
+    CRITICO (no leakage / inmutabilidad): esta funcion NUNCA toca los
+    campos predictivos de `Prediction` (`model_probability`, `edge`,
+    `signal_score`, etc.) -- unicamente INSERTA una fila nueva en la tabla
+    separada `prediction_results`, relacion 1-a-1 (`unique=True` en
+    `prediction_id`). La prediccion en si es exactamente la que se genero
+    ANTES del pitido inicial (ver docstring del modulo); liquidar solo le
+    ANHADE el resultado observado, nunca la regenera ni la recalcula con
+    las features/cuotas de HOY.
+    """
+    competitions = (
+        [db.query(Competition).filter_by(code=competition_code).one_or_none()]
+        if competition_code
+        else db.query(Competition).all()
+    )
+    created = 0
+    for competition in competitions:
+        if competition is None:
+            continue
+        matches = load_matches_dataframe(db, competition.id)
+        table = build_match_feature_table(matches)
+        finished = table[table["home_goals"].notna()]
+        if finished.empty:
+            continue
+        finished_match_ids = finished["match_id"].tolist()
+
+        already_settled_ids = {
+            row[0]
+            for row in db.query(PredictionResult.prediction_id)
+            .join(Prediction, Prediction.id == PredictionResult.prediction_id)
+            .filter(Prediction.match_id.in_(finished_match_ids))
+            .all()
+        }
+        predictions = [
+            p
+            for p in db.query(Prediction).filter(Prediction.match_id.in_(finished_match_ids)).all()
+            if p.id not in already_settled_ids
+        ]
+        if not predictions:
+            continue
+
+        table_by_match_id = finished.set_index("match_id")
+        by_market: dict[str, list[Prediction]] = defaultdict(list)
+        for prediction in predictions:
+            by_market[prediction.market].append(prediction)
+
+        for market, preds in by_market.items():
+            rows = table_by_match_id.loc[[p.match_id for p in preds]]
+            y_true_series = _label_for_any_market(rows, market)
+            if y_true_series is None:
+                continue  # mercado desconocido: nunca se inventa un resultado
+            y_true_by_match = dict(zip(rows.index, y_true_series))
+            for prediction in preds:
+                outcome = bool(y_true_by_match[prediction.match_id])
+                match_row = table_by_match_id.loc[prediction.match_id]
+                home_goals = match_row["home_goals"]
+                away_goals = match_row["away_goals"]
+                actual_result = (
+                    f"{int(home_goals)}-{int(away_goals)}"
+                    if home_goals == home_goals and away_goals == away_goals  # not NaN
+                    else None
+                )
+                db.add(
+                    PredictionResult(
+                        prediction_id=prediction.id,
+                        outcome=outcome,
+                        actual_result=actual_result,
+                        settled_at=dt.datetime.utcnow(),
+                    )
+                )
+                created += 1
+        db.flush()
+    return created
 
 
 def evaluate_settled_predictions(db: Session, competition_code: str | None = None) -> dict:

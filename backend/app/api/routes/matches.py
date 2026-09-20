@@ -11,6 +11,7 @@ from backend.app.db.database import get_db
 from backend.app.db.models.core import Competition, Team
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
+from backend.app.prediction.anomaly import best_prediction_per_match, compute_anomaly_flags
 from backend.app.schemas.match import MatchOut
 from backend.app.schemas.prediction import PredictionOut
 
@@ -60,6 +61,26 @@ def list_matches(
     return query.order_by(Match.kickoff_utc).limit(limit).all()
 
 
+@router.get("/fixtures/finished", response_model=list[MatchOut])
+def finished_fixtures(
+    competition_code: str | None = None,
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[Match]:
+    """Fase 4: partidos FINALIZADOS (`Match.status == "finished"`, nunca un
+    filtro por fecha -- un partido programado para ayer que no se jugo
+    todavia por aplazamiento sigue sin ser "finalizado"). Orden: mas
+    reciente primero, para que el Historico muestre lo ultimo jugado
+    arriba."""
+    query = db.query(Match).filter(Match.status == "finished")
+    if competition_code:
+        competition = db.query(Competition).filter_by(code=competition_code).one_or_none()
+        if competition is None:
+            return []
+        query = query.filter(Match.competition_id == competition.id)
+    return query.order_by(Match.kickoff_utc.desc()).limit(limit).all()
+
+
 @router.get("/{match_id}", response_model=MatchOut)
 def get_match(match_id: int, db: Session = Depends(get_db)) -> Match:
     match = db.get(Match, match_id)
@@ -70,5 +91,19 @@ def get_match(match_id: int, db: Session = Depends(get_db)) -> Match:
 
 @router.get("/{match_id}/predictions", response_model=list[PredictionOut])
 def get_match_predictions(match_id: int, db: Session = Depends(get_db)) -> list[dict]:
+    """Seccion 1/18: cada prediccion del partido lleva sus `anomaly_flags`
+    (calculadas contra las DEMAS predicciones de este mismo partido) y la
+    que tenga mayor `signal_score` entre las que pasan el filtro duro y no
+    tienen CONTRADICCION viene marcada `is_best_prediction=True` -- nunca
+    la de mayor probabilidad/edge/cuota en crudo (ver prediction/anomaly.py
+    y prediction/ranking.py)."""
     predictions = db.query(Prediction).filter(Prediction.match_id == match_id).all()
-    return [serialize_prediction(p) for p in predictions]
+    best = best_prediction_per_match({match_id: predictions}).get(match_id)
+    return [
+        serialize_prediction(
+            p,
+            compute_anomaly_flags(p, predictions),
+            is_best_prediction=(best is not None and p.id == best.id),
+        )
+        for p in predictions
+    ]

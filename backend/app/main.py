@@ -9,6 +9,7 @@ from backend.app.api.routes import (
     backtesting,
     competitions,
     health,
+    history,
     matches,
     models,
     predictions,
@@ -45,3 +46,4 @@ app.include_router(matches.router)
 app.include_router(predictions.router)
 app.include_router(backtesting.router)
 app.include_router(models.router)
+app.include_router(history.router)

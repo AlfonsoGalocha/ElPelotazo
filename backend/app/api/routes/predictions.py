@@ -9,10 +9,16 @@ from backend.app.db.database import get_db
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
 from backend.app.config.settings import get_settings
+from backend.app.prediction.anomaly import compute_anomaly_flags, is_strong_signal
 from backend.app.prediction.confidence import signal_tier
 from backend.app.prediction.market_quality import market_quality_tier
 from backend.app.prediction.ranking import odds_age_minutes, rank_signals
-from backend.app.schemas.prediction import CurrentRoundPredictionsOut, PredictionOut, SignalDetailOut
+from backend.app.schemas.prediction import (
+    BestOfDayOut,
+    CurrentRoundPredictionsOut,
+    PredictionOut,
+    SignalDetailOut,
+)
 from backend.app.services.round_service import get_current_round, get_next_round
 from backend.app.utils.logging import get_logger
 
@@ -20,7 +26,11 @@ router = APIRouter(prefix="/predictions", tags=["predictions"])
 logger = get_logger(__name__)
 
 
-def serialize_prediction(prediction: Prediction) -> dict:
+def serialize_prediction(
+    prediction: Prediction,
+    anomaly_flags: list[str] | None = None,
+    is_best_prediction: bool = False,
+) -> dict:
     settings = get_settings()
     age_minutes = odds_age_minutes(prediction)
     is_stale = settings.max_odds_age_minutes is not None and age_minutes > settings.max_odds_age_minutes
@@ -63,6 +73,8 @@ def serialize_prediction(prediction: Prediction) -> dict:
         ),
         "odds_age_minutes": round(age_minutes, 1),
         "is_stale_odds": is_stale,
+        "anomaly_flags": anomaly_flags or [],
+        "is_best_prediction": is_best_prediction,
     }
 
 
@@ -240,6 +252,18 @@ def _base_signal_query(
     return query
 
 
+def _group_by_match(predictions: list[Prediction]) -> dict[int, list[Prediction]]:
+    """Agrupa por `match_id`, necesario para detectar contradicciones entre
+    mercados del MISMO partido (ver prediction/anomaly.py) -- nunca se
+    compara una prediccion contra las de otro partido."""
+    from collections import defaultdict
+
+    by_match: dict[int, list[Prediction]] = defaultdict(list)
+    for prediction in predictions:
+        by_match[prediction.match_id].append(prediction)
+    return by_match
+
+
 def _filter_by_quality(included: list, quality: str | None, settings) -> list:
     """`quality`: "HIGH"|"MEDIUM"|"LOW" para quedarse SOLO con esa calidad
     de mercado, o `None`/"ALL" para no filtrar (ver prediction/market_quality.py).
@@ -342,6 +366,7 @@ def top_signals(
         min_edge,
         min_bookmakers,
     ).all()
+    by_match = _group_by_match(candidates)
     included, excluded = rank_signals(candidates, settings)
     if excluded:
         logger.info(
@@ -350,9 +375,23 @@ def top_signals(
             {r.reason.value: sum(1 for e in excluded if e.reason == r.reason) for r in excluded},
         )
     included = _filter_by_quality(included, quality, settings)
+    # Seccion 2/18: una senhal CONTRADICTORIA (ambos lados de un grupo
+    # mutuamente excluyente con model_probability > 0.5 para el mismo
+    # partido; ver prediction/anomaly.py) nunca se muestra como "señal
+    # fuerte", aunque su score compuesto sea alto.
+    included = [
+        s
+        for s in included
+        if is_strong_signal(compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings))
+    ]
     if sort_by == "edge":
         included = sorted(included, key=lambda s: s.prediction.edge or 0.0, reverse=True)
-    return [serialize_prediction(s.prediction) for s in included[:limit]]
+    return [
+        serialize_prediction(
+            s.prediction, compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings)
+        )
+        for s in included[:limit]
+    ]
 
 
 @router.get("/best", response_model=list[PredictionOut])
@@ -400,9 +439,96 @@ def best_predictions(
         min_edge,
         min_bookmakers,
     ).all()
+    by_match = _group_by_match(candidates)
     included, _ = rank_signals(candidates, settings)
     included = _filter_by_quality(included, quality, settings)
-    return [serialize_prediction(s.prediction) for s in included[:limit]]
+    included = [
+        s
+        for s in included
+        if is_strong_signal(compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings))
+    ]
+    return [
+        serialize_prediction(
+            s.prediction, compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings)
+        )
+        for s in included[:limit]
+    ]
+
+
+@router.get("/best-of-day", response_model=BestOfDayOut)
+def best_of_day(
+    competition_code: str | None = Query(None, description="Restringe a una competicion; sin ella, las 5 del MVP"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """"Mejor señal del dia" (seccion 16 del brief): UNA sola prediccion (o
+    ninguna), con el filtro MAS ESTRICTO del sistema -- deliberadamente mas
+    exigente que `/predictions/best` (que devuelve un top-N con el filtro
+    duro normal). Cada requisito de la seccion 16 es una linea explicita en
+    `explanation`, nunca una condicion oculta:
+
+    1. Mercado real (no MODEL_ONLY) -- `evaluate_quality_gate` ya lo exige.
+    2. Cuota valida (no <=1.0, no absurda) -- `evaluate_quality_gate`.
+    3. Bookmakers suficientes -- `evaluate_quality_gate` (min_bookmakers).
+    4. Mercado reciente / sin cuotas obsoletas -- `evaluate_quality_gate`
+       si `max_odds_age_minutes` esta configurado; en caso contrario se
+       reporta la antiguedad igualmente (no se oculta la falta de este
+       requisito).
+    5. Matching fiable -- se apoya en que la prediccion ya viene de un
+       `match_id` valido con equipos resueltos (no hay "partido fantasma"
+       en este pipeline; ver `services/match_service.py`).
+    6. Modelo calibrado disponible -- `calibrated_probability is not None`.
+    7. Edge minimo -- el DOBLE del minimo global (`settings.min_edge_pp`),
+       mas estricto a proposito para "la mejor del dia" (documentado aqui,
+       no oculto).
+    8. Sin contradiccion -- `prediction/anomaly.py::is_strong_signal`.
+    """
+    settings = get_settings()
+    candidates = _base_signal_query(
+        db, None, True, None, None, None, None, "current_round", competition_code, None, None
+    ).all()
+    by_match = _group_by_match(candidates)
+    included, _ = rank_signals(candidates, settings)
+
+    strict_min_edge = settings.min_edge_pp * 2
+    checked: list[dict] = []
+    winner = None
+    for ranked in included:
+        prediction = ranked.prediction
+        flags = compute_anomaly_flags(prediction, by_match[prediction.match_id], settings)
+        reasons_failed = []
+        if not is_strong_signal(flags):
+            reasons_failed.append("contradiccion detectada entre mercados del mismo partido")
+        if prediction.calibrated_probability is None:
+            reasons_failed.append("sin modelo calibrado disponible para este mercado")
+        if prediction.edge is None or prediction.edge < strict_min_edge:
+            reasons_failed.append(f"edge por debajo del minimo estricto ({strict_min_edge * 100:.1f}pp)")
+        checked.append({"prediction_id": prediction.id, "passed": not reasons_failed, "reasons_failed": reasons_failed})
+        if not reasons_failed and winner is None:
+            winner = ranked
+
+    if winner is None:
+        return {
+            "prediction": None,
+            "explanation": [
+                "Ninguna prediccion de la jornada actual cumple TODOS los requisitos minimos "
+                "de 'mejor señal del dia' (mercado real, cuota valida, bookmakers suficientes, "
+                "cuota reciente, modelo calibrado, edge minimo estricto, sin contradiccion).",
+                f"Se evaluaron {len(checked)} candidatas que ya pasaban el filtro duro general.",
+            ],
+        }
+
+    prediction = winner.prediction
+    flags = compute_anomaly_flags(prediction, by_match[prediction.match_id], settings)
+    serialized = serialize_prediction(prediction, flags, is_best_prediction=True)
+    explanation = _build_explanation_summary(prediction, serialized) + [
+        f"Edge minimo estricto exigido para 'mejor señal del dia': {strict_min_edge * 100:.1f} puntos porcentuales "
+        f"(el doble del minimo general de {settings.min_edge_pp * 100:.1f}pp).",
+        "Sin contradiccion con otro mercado del mismo partido (ver prediction/anomaly.py).",
+        f"Probabilidad calibrada disponible: {prediction.calibrated_probability * 100:.1f}%."
+        if prediction.calibrated_probability is not None
+        else "Sin probabilidad calibrada (no deberia llegar aqui).",
+    ]
+    return {"prediction": serialized, "explanation": explanation}
 
 
 @router.get("/best/debug")

@@ -41,7 +41,7 @@ from backend.app.services.data_service import (
 )
 from backend.app.services.match_service import load_market_odds_column, load_matches_dataframe
 from backend.app.services.model_service import train_competition_models
-from backend.app.services.evaluation_service import evaluate_settled_predictions
+from backend.app.services.evaluation_service import evaluate_settled_predictions, settle_finished_predictions
 from backend.app.services.prediction_service import generate_predictions_for_competition
 from backend.app.services.round_service import get_current_round
 from backend.app.utils.dates import season_label as season_label_from_date
@@ -460,7 +460,14 @@ def evaluate(competition: str = typer.Option(None), output: str | None = None) -
     """
     init_db()
     with session_scope() as db:
+        settled_count = settle_finished_predictions(db, competition_code=competition)
         report_data = evaluate_settled_predictions(db, competition_code=competition)
+
+    if settled_count:
+        typer.echo(
+            f"[evaluate] {settled_count} predicciones liquidadas "
+            "(PredictionResult creado, nunca sobreescrito)."
+        )
 
     if not report_data["competitions"]:
         typer.echo(
