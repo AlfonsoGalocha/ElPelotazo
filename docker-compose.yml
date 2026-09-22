@@ -24,6 +24,18 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    # Sin esto, el backend NUNCA ve tu .env: pydantic-settings busca
+    # '/srv/.env' DENTRO del contenedor (ver backend/app/config/settings.py),
+    # y el Dockerfile no copia tu .env real a proposito (secreto, no va en
+    # la imagen). `env_file` hace que Compose inyecte cada variable de tu
+    # .env del HOST como variable de entorno del contenedor -- asi
+    # ODDS_API_KEY/API_FOOTBALL_KEY/etc. llegan sin tener que montar el
+    # fichero ni tocar el Dockerfile. `required: false`: si aun no has
+    # hecho 'cp .env.example .env', arranca igual (sin esas claves) en vez
+    # de fallar todo el 'docker compose up'.
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg://football:football@postgres:5432/football_edge
       APP_ENV: production
@@ -90,6 +102,11 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+    # Mismo motivo que en `backend`: sin esto, 'football-edge refresh' aqui
+    # dentro tampoco veria tu .env y se saltaria cuotas/entrenamiento real.
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+psycopg://football:football@postgres:5432/football_edge
       APP_ENV: production
