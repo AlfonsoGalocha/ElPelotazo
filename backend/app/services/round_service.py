@@ -74,9 +74,24 @@ def get_current_round(db: Session, competition_code: str) -> RoundInfo | None:
         return _fallback_round(db, competition.id)
 
     season_id, matchday = current_matchday_row
+    # Una jornada se juega en varios dias: puede tener partidos YA jugados
+    # (viernes/sabado) y otros todavia por jugar (domingo/lunes) a la vez.
+    # Sin filtrar por fecha, el Home mostraria partidos que ya pasaron
+    # (pedido explicito: nunca mostrar un partido cuyo kickoff sea anterior
+    # a ahora, mires o no su `status` -- un partido recien acabado puede
+    # tardar hasta la siguiente pasada del scheduler en marcarse
+    # 'finished'). Esto NO cambia que jornada se considera "actual" (eso ya
+    # lo decide la query de arriba, por el primer 'scheduled' pendiente):
+    # solo evita listar, DENTRO de esa jornada, partidos con fecha pasada.
+    now = dt.datetime.utcnow()
     round_matches = (
         db.query(Match)
-        .filter(Match.competition_id == competition.id, Match.season_id == season_id, Match.matchday == matchday)
+        .filter(
+            Match.competition_id == competition.id,
+            Match.season_id == season_id,
+            Match.matchday == matchday,
+            Match.kickoff_utc >= now,
+        )
         .all()
     )
     kickoffs = [m.kickoff_utc for m in round_matches]

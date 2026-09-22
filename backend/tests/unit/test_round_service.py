@@ -45,7 +45,11 @@ def _make_match(
 
 def test_current_round_is_lowest_matchday_with_pending_matches(db_session):
     """Jornada 5 pendiente y jornada 6 ya con fecha: la jornada actual debe
-    seguir siendo la 5, no "los proximos partidos que haya"."""
+    seguir siendo la 5, no "los proximos partidos que haya". Pero los
+    partidos YA JUGADOS de esa jornada 5 (viernes/sabado) no deben
+    aparecer junto a los pendientes (domingo/lunes) -- pedido explicito de
+    usuario: nunca mostrar un partido con kickoff anterior a ahora, aunque
+    pertenezca a la jornada "actual"."""
     competition, season = _make_competition_with_season(db_session)
     teams = [_make_team(db_session, f"Team {i}") for i in range(6)]
     now = dt.datetime.utcnow()
@@ -63,16 +67,30 @@ def test_current_round_is_lowest_matchday_with_pending_matches(db_session):
     round_info = get_current_round(db_session, "test_league")
     assert round_info is not None
     assert round_info.round == 5
-    assert round_info.match_ids == [
-        m.id
-        for m in db_session.query(Match)
-        .filter(Match.competition_id == competition.id, Match.matchday == 5)
-        .order_by(Match.id)
-        .all()
-    ]
-    assert pending_j5.id in round_info.match_ids
+    assert round_info.match_ids == [pending_j5.id]
     assert round_info.next_round == 6
     assert round_info.is_fallback is False
+
+
+def test_current_round_excludes_past_matches_even_if_status_not_yet_finished(db_session):
+    """El pipeline puede tardar hasta la siguiente pasada del scheduler en
+    marcar un partido como 'finished' -- no hay que esperar a ese status
+    para dejar de mostrarlo: basta con que su kickoff ya haya pasado."""
+    competition, season = _make_competition_with_season(db_session, "test_league_lag")
+    teams = [_make_team(db_session, f"P{i}") for i in range(4)]
+    now = dt.datetime.utcnow()
+
+    stale_scheduled = _make_match(
+        db_session, competition, season, teams[0], teams[1], now - dt.timedelta(hours=2), "scheduled", 1, "p1"
+    )
+    upcoming = _make_match(
+        db_session, competition, season, teams[2], teams[3], now + dt.timedelta(hours=2), "scheduled", 1, "p2"
+    )
+
+    round_info = get_current_round(db_session, "test_league_lag")
+    assert round_info is not None
+    assert stale_scheduled.id not in round_info.match_ids
+    assert round_info.match_ids == [upcoming.id]
 
 
 def test_future_round_excluded_when_current_round_still_pending(db_session):
