@@ -118,11 +118,32 @@ services:
       - ./models:/srv/models
       - ./data:/srv/data
     entrypoint: ["/bin/sh", "-c"]
+    # NO usa 'football-edge refresh' entero cada hora a proposito: ese
+    # comando incluye update-odds/update-secondary-odds (llaman a APIs
+    # externas con cuota LIMITADA -- The Odds API free tier = 500
+    # peticiones/mes). Pedir cuotas cada hora para 5 ligas agota esa cuota
+    # en menos de una semana (500 / 5 ligas / 24h ~= 4 dias), sin ninguna
+    # ganancia real: las cuotas de mercado no cambian tan rapido como para
+    # necesitar refresco horario. Lo que SI necesita ser horario es lo que
+    # no gasta cuota externa: traer fixtures nuevos y liquidar
+    # (evaluate/settle) los partidos que hayan terminado, para que
+    # Historico se actualice casi en tiempo real. Las cuotas se piden solo
+    # 4 veces al dia (horas 0/6/12/18 UTC) -- suficiente para que "Mejores
+    # senhales" no se quede con cuotas muy desactualizadas, sin quemar la
+    # cuota mensual gratuita.
     command:
       - >
         while true; do
-          echo "[scheduler] $(date -u +%FT%TZ) -- football-edge refresh --skip-historical";
-          football-edge refresh --skip-historical || echo "[scheduler] fallo esta vuelta, se reintenta en 1h";
+          hour=$(date -u +%H);
+          echo "[scheduler] $(date -u +%FT%TZ) -- fixtures + liquidacion de partidos terminados + predicciones";
+          football-edge update-fixtures || echo "[scheduler] fallo update-fixtures, se reintenta en 1h";
+          football-edge evaluate || echo "[scheduler] fallo evaluate/settle, se reintenta en 1h";
+          if [ $((10#$hour % 6)) -eq 0 ]; then
+            echo "[scheduler] $(date -u +%FT%TZ) -- cuotas de mercado (cada 6h, para no agotar la cuota gratuita de las APIs)";
+            football-edge update-odds || echo "[scheduler] fallo update-odds, se reintenta en 6h";
+            football-edge update-secondary-odds || echo "[scheduler] fallo update-secondary-odds, se reintenta en 6h";
+          fi
+          football-edge predict-upcoming || echo "[scheduler] fallo predict-upcoming, se reintenta en 1h";
           sleep 3600;
         done
 

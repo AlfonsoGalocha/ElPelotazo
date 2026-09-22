@@ -81,23 +81,36 @@ pipeline vuelve a comprobar su estado (`Match.status == "finished"`, ver
 ejecutas `football-edge refresh` a mano. Dos formas de dejarlo en
 automatico (elige una segun como despliegues):
 
+**OJO con las cuotas de las APIs externas**: The Odds API (plan gratuito)
+da solo 500 peticiones/mes. Pedir cuotas nuevas cada hora para las 5 ligas
+agota esa cuota en menos de una semana sin ninguna ganancia real (las
+cuotas de mercado no cambian tan rapido). Por eso el refresco horario NO
+llama a `football-edge refresh` completo: separa lo que es horario
+(fixtures nuevos + liquidar partidos terminados + predicciones, que no
+gastan cuota externa) de lo que solo hace falta cada 6 horas (cuotas de
+mercado).
+
 **Docker Compose** (recomendado si ya usas `docker-compose.yml`): ya
-incluye un servicio `scheduler` que corre `football-edge refresh
---skip-historical` en bucle cada hora contra la misma base de datos que
-`backend` — no hace falta nada mas, arranca solo con `docker compose up`.
+incluye un servicio `scheduler` que hace exactamente ese reparto en bucle
+(fixtures/liquidacion/predicciones cada hora, cuotas cada 6h) contra la
+misma base de datos que `backend` — no hace falta nada mas, arranca solo
+con `docker compose up`.
 
 **venv local / servidor sin Docker**: usa cron. Con `crontab -e`, anhade
 (ajusta la ruta al repo y al `.venv`):
 
 ```cron
-0 * * * * cd /ruta/al/repo && .venv/bin/football-edge refresh --skip-historical >> logs/refresh.log 2>&1
+0 * * * * cd /ruta/al/repo && .venv/bin/football-edge update-fixtures && .venv/bin/football-edge evaluate && .venv/bin/football-edge predict-upcoming >> logs/refresh.log 2>&1
+0 */6 * * * cd /ruta/al/repo && .venv/bin/football-edge update-odds && .venv/bin/football-edge update-secondary-odds >> logs/odds.log 2>&1
 ```
 
-`--skip-historical` es importante: sin el, cada ejecucion horaria volveria
-a descargar temporadas enteras de resultados pasados (lento e innecesario,
-esos datos no cambian hora a hora). Con el, cada pasada solo trae fixtures
-nuevos, cuotas, liquida (`evaluate`/settle) los partidos recien terminados,
-y regenera predicciones de los proximos partidos.
+La primera linea es horaria (fixtures + liquidacion de partidos terminados
++ predicciones, sin gastar cuota de API externa); la segunda son las
+cuotas de mercado, cada 6 horas. Si prefieres simplicidad sobre cuidar la
+cuota gratuita (por ejemplo, tienes un plan de pago de The Odds API), usa
+`football-edge refresh --skip-historical` cada hora en su lugar --
+`--skip-historical` evita que cada pasada vuelva a descargar temporadas
+enteras de resultados pasados (lento e innecesario).
 
 ## Datos reales
 
