@@ -71,7 +71,9 @@ def agent_chat(
         # cuerpo (lo que ve el cliente HTTP como respuesta vacia).
         logger.error("agent.llm_runtime_error: error=%s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return AgentChatResponse(reply=result.text, tool_log=result.tool_log)
+    return AgentChatResponse(
+        reply=result.text, tool_log=result.tool_log, referenced_matches=result.referenced_matches
+    )
 
 
 @router.post("/transcribe", response_model=AgentTranscribeResponse)

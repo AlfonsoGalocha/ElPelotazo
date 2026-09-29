@@ -18,7 +18,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from backend.app.agent.llm import LLMClient, ToolCall
-from backend.app.agent.tools import TOOLS, TOOLS_BY_NAME
+from backend.app.agent.tools import TOOLS, TOOLS_BY_NAME, extract_match_references
 from backend.app.config.settings import Settings
 from backend.app.utils.logging import get_logger
 
@@ -73,6 +73,10 @@ prediccion en concreto."""
 class AgentTurnResult:
     text: str
     tool_log: list[dict[str, Any]] = field(default_factory=list)
+    # Partidos mencionados por alguna tool durante este turno (deduplicados
+    # por match_id) -- nunca inventados aqui, solo releidos de lo que la
+    # tool ya devolvio (ver extract_match_references en agent/tools.py).
+    referenced_matches: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AgentError(Exception):
@@ -115,12 +119,28 @@ def run_agent_turn(
 
     tool_log: list[dict[str, Any]] = []
     tools_spec = _anthropic_tool_specs()
+    referenced_matches: list[dict[str, Any]] = []
+    seen_match_ids: set[int] = set()
+
+    def _collect_refs(result: dict[str, Any]) -> None:
+        for ref in extract_match_references(result):
+            if ref["match_id"] not in seen_match_ids:
+                seen_match_ids.add(ref["match_id"])
+                referenced_matches.append(ref)
 
     for _ in range(settings.agent_max_tool_iterations):
         turn = llm.run_turn(SYSTEM_PROMPT, messages, tools_spec)
+        # ClaudeCodeLLMClient resuelve el bucle de tools EL SOLO (ver
+        # llm.py): sus resultados nunca pasan por `_run_tool_with_timeout`
+        # de aqui abajo, asi que se recogen de `last_tool_results` (vacio/
+        # inexistente para AnthropicLLMClient, que si pasa por ese bucle).
+        for result in getattr(llm, "last_tool_results", []):
+            _collect_refs(result)
 
         if not turn.tool_calls:
-            return AgentTurnResult(text=turn.text or "", tool_log=tool_log)
+            return AgentTurnResult(
+                text=turn.text or "", tool_log=tool_log, referenced_matches=referenced_matches
+            )
 
         assistant_content: list[dict[str, Any]] = []
         if turn.text:
@@ -141,6 +161,7 @@ def run_agent_turn(
                 "agent.tool_call: tool=%s ok=%s duration_ms=%s", call.name, ok, duration_ms
             )
             tool_log.append({"tool": call.name, "ok": ok, "duration_ms": duration_ms})
+            _collect_refs(result)
             tool_results.append(
                 {"type": "tool_result", "tool_use_id": call.id, "content": _to_text(result)}
             )

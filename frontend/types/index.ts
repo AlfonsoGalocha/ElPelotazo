@@ -225,7 +225,14 @@ export interface AgentToolLogEntry {
   duration_ms: number;
 }
 
+export interface AgentMatchReference {
+  match_id: number;
+  home_team: string;
+  away_team: string;
+}
+
 export interface AgentChatResponse {
   reply: string;
   tool_log: AgentToolLogEntry[];
+  referenced_matches: AgentMatchReference[];
 }

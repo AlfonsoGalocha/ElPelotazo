@@ -24,9 +24,20 @@ class AgentToolLogEntry(BaseModel):
     duration_ms: float
 
 
+class AgentMatchReference(BaseModel):
+    match_id: int
+    home_team: str
+    away_team: str
+
+
 class AgentChatResponse(BaseModel):
     reply: str
     tool_log: list[AgentToolLogEntry]
+    # Partidos que alguna tool menciono durante este turno (deduplicados),
+    # para que el frontend pueda ofrecer un enlace directo -- pedido real
+    # de usuario ("muestrame el partido X"). Nunca inventado: solo
+    # releido de lo que la tool ya devolvio (agent/tools.py::extract_match_references).
+    referenced_matches: list[AgentMatchReference] = []
 
 
 class AgentTranscribeResponse(BaseModel):

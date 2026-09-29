@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { AgentChatMessage, AgentChatResponse } from "@/types";
+import Link from "next/link";
+import type { AgentChatMessage, AgentChatResponse, AgentMatchReference } from "@/types";
+
+type ChatMessage = AgentChatMessage & { matches?: AgentMatchReference[] };
 
 // Reconocimiento de voz: se probo primero la Web Speech API nativa del
 // navegador (gratis, sin dependencias nuevas) pero esa API NO es local
@@ -27,6 +30,66 @@ function extensionForMimeType(mimeType: string): string {
   return ".webm";
 }
 
+// Detecta silencio tras haber detectado voz, para poder parar de grabar
+// SOLA sin que el usuario tenga que pulsar nada (modo "conversacion
+// continua" pedido por un usuario: "no tener que darle al boton de hablar
+// todo el rato"). Analisis de volumen simple (RMS sobre la forma de onda),
+// nada de reconocimiento de voz -- eso ya lo hace Whisper en el backend.
+function monitorSilence(stream: MediaStream, onSilence: () => void): () => void {
+  const AudioCtx = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const audioCtx = new AudioCtx();
+  const source = audioCtx.createMediaStreamSource(stream);
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  source.connect(analyser);
+  const data = new Uint8Array(analyser.fftSize);
+
+  const SILENCE_THRESHOLD = 0.02;
+  const SILENCE_DURATION_MS = 1200;
+  const MAX_DURATION_MS = 15000;
+  const startedAt = Date.now();
+  let speechDetected = false;
+  let silenceStart: number | null = null;
+  let rafId = 0;
+  let cleaned = false;
+
+  function tick() {
+    analyser.getByteTimeDomainData(data);
+    let sumSquares = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = (data[i] - 128) / 128;
+      sumSquares += v * v;
+    }
+    const rms = Math.sqrt(sumSquares / data.length);
+
+    if (rms > SILENCE_THRESHOLD) {
+      speechDetected = true;
+      silenceStart = null;
+    } else if (speechDetected && silenceStart === null) {
+      silenceStart = Date.now();
+    }
+
+    const silentLongEnough = silenceStart !== null && Date.now() - silenceStart > SILENCE_DURATION_MS;
+    const tooLong = Date.now() - startedAt > MAX_DURATION_MS;
+    if (silentLongEnough || tooLong) {
+      cleanup();
+      onSilence();
+      return;
+    }
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function cleanup() {
+    if (cleaned) return;
+    cleaned = true;
+    cancelAnimationFrame(rafId);
+    audioCtx.close().catch(() => {});
+  }
+
+  rafId = requestAnimationFrame(tick);
+  return cleanup;
+}
+
 // Lectura de respuestas en voz alta: se probo primero `speechSynthesis`
 // nativa del navegador (gratis) pero en Linux (Brave/Chromium) reporta 0
 // voces instaladas -- depende de voces remotas de Google no disponibles
@@ -37,18 +100,21 @@ function extensionForMimeType(mimeType: string): string {
 //
 // `audio.play()` devuelve una promesa que los navegadores pueden RECHAZAR
 // en silencio por su politica de autoplay (p.ej. si consideran que ya paso
-// demasiado tiempo desde el ultimo gesto del usuario) -- sin capturar ese
-// rechazo, "no suena" y no hay ningun error visible (bug real reportado
-// por un usuario). Si pasa, se guarda el <audio> ya cargado para que un
-// boton compacto ("▶️ Reproducir respuesta") lo reintente dentro de un
-// click real, que si cuenta como gesto del usuario.
+// demasiado tiempo desde el ultimo gesto del usuario -- en modo
+// conversacion continua, solo el PRIMER turno tiene un click real detras,
+// asi que es esperable que los siguientes necesiten el boton manual). Sin
+// capturar ese rechazo, "no suena" y no hay ningun error visible (bug real
+// reportado por un usuario). `speak` devuelve una promesa que se resuelve
+// cuando el audio termina de sonar (o de inmediato si el autoplay fallo),
+// para que el modo continuo sepa cuando es seguro volver a escuchar sin
+// captarse a si mismo por el microfono.
 let currentAudio: HTMLAudioElement | null = null;
 
 async function speak(
   text: string,
   onError: (message: string) => void,
   onAutoplayBlocked: (audio: HTMLAudioElement) => void
-) {
+): Promise<void> {
   currentAudio?.pause(); // corta cualquier respuesta anterior aun sonando
   try {
     const res = await fetch("/api/agent/speak", {
@@ -64,30 +130,39 @@ async function speak(
     const blob = await res.blob();
     const audio = new Audio(URL.createObjectURL(blob));
     currentAudio = audio;
-    try {
-      await audio.play();
-    } catch {
-      // Autoplay bloqueado por el navegador -- no es un fallo real (el
-      // audio SI se genero bien), solo hace falta pulsar play a mano.
-      onAutoplayBlocked(audio);
-    }
+    await new Promise<void>((resolve) => {
+      audio.onended = () => resolve();
+      audio.play().catch(() => {
+        // Autoplay bloqueado por el navegador -- no es un fallo real (el
+        // audio SI se genero bien), solo hace falta pulsar play a mano. No
+        // bloqueamos el modo continuo esperando ese click.
+        onAutoplayBlocked(audio);
+        resolve();
+      });
+    });
   } catch {
     onError("No se pudo generar el audio de la respuesta. Comprueba que el backend está corriendo.");
   }
 }
 
 export default function JarvisChat() {
-  const [messages, setMessages] = useState<AgentChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
+  const [continuousMode, setContinuousMode] = useState(false);
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
   const [micSupported, setMicSupported] = useState(false);
   const [blockedAudio, setBlockedAudio] = useState<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  // Refs (no state) porque las lee codigo async/recursivo (el bucle de
+  // conversacion continua) que no debe quedarse con un valor de closure
+  // desactualizado.
+  const continuousModeRef = useRef(false);
+  const voiceReplyEnabledRef = useRef(false);
 
   useEffect(() => {
     setMicSupported(
@@ -96,6 +171,10 @@ export default function JarvisChat() {
         typeof MediaRecorder !== "undefined"
     );
   }, []);
+
+  useEffect(() => {
+    voiceReplyEnabledRef.current = voiceReplyEnabled;
+  }, [voiceReplyEnabled]);
 
   async function send(overrideText?: string) {
     const text = (overrideText ?? input).trim();
@@ -110,21 +189,29 @@ export default function JarvisChat() {
     try {
       // Manda el historial ya visto (SIN el ultimo turno, que va en
       // `message`) -- la memoria de conversacion no se guarda en el
-      // servidor para este MVP, ver docs/modeling.md.
+      // servidor para este MVP, ver docs/modeling.md. Solo role/content:
+      // el historial local puede llevar campos extra (`matches`) que el
+      // backend no espera.
       const res = await fetch("/api/agent/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, history: messages }),
+        body: JSON.stringify({
+          message: text,
+          history: messages.map(({ role, content }) => ({ role, content })),
+        }),
       });
       const data = (await res.json()) as AgentChatResponse | { detail: string };
       if (!res.ok || !("reply" in data)) {
         setError("detail" in data ? data.detail : `Error ${res.status}`);
         return;
       }
-      setMessages([...history, { role: "assistant", content: data.reply }]);
-      if (voiceReplyEnabled) {
+      setMessages([
+        ...history,
+        { role: "assistant", content: data.reply, matches: data.referenced_matches },
+      ]);
+      if (voiceReplyEnabledRef.current) {
         setBlockedAudio(null);
-        speak(data.reply, setError, setBlockedAudio);
+        await speak(data.reply, setError, setBlockedAudio);
       }
     } catch {
       setError("No se pudo conectar con Jarvis. Comprueba que el backend esta corriendo.");
@@ -146,11 +233,14 @@ export default function JarvisChat() {
         return;
       }
       if (!data.text.trim()) {
-        setError("No se detectó ninguna voz en la grabación. Prueba a hablar más alto o más cerca del micrófono.");
+        // En modo continuo esto pasa a menudo (silencio/ruido de fondo) --
+        // no es un error real, el bucle simplemente vuelve a escuchar.
+        if (!continuousModeRef.current) {
+          setError("No se detectó ninguna voz en la grabación. Prueba a hablar más alto o más cerca del micrófono.");
+        }
         return;
       }
-      setInput(data.text);
-      send(data.text);
+      await send(data.text);
     } catch {
       setError("No se pudo transcribir el audio. Comprueba que el backend está corriendo.");
     } finally {
@@ -158,45 +248,72 @@ export default function JarvisChat() {
     }
   }
 
-  async function toggleRecording() {
+  function startListening(autoStopOnSilence: boolean) {
+    setError(null);
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((stream) => {
+        const mimeType = getSupportedMimeType();
+        const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+        chunksRef.current = [];
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) chunksRef.current.push(e.data);
+        };
+
+        const stopSilenceMonitor = autoStopOnSilence
+          ? monitorSilence(stream, () => {
+              if (recorder.state === "recording") recorder.stop();
+            })
+          : null;
+
+        recorder.onstop = async () => {
+          stopSilenceMonitor?.();
+          stream.getTracks().forEach((track) => track.stop()); // apaga el LED del micro
+          setRecording(false);
+          const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
+          await transcribeAndSend(blob, recorder.mimeType);
+          // Conversacion continua: en cuanto se envia y se lee la
+          // respuesta (si toca), se vuelve a escuchar sola -- sin pulsar
+          // nada. Se corta si el usuario desactivo el modo mientras tanto.
+          if (continuousModeRef.current) {
+            startListening(true);
+          }
+        };
+        mediaRecorderRef.current = recorder;
+        setRecording(true);
+        recorder.start();
+      })
+      .catch((err: DOMException) => {
+        if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+          setError(
+            "Permiso de micrófono denegado. Revisa el icono de candado/permisos junto a la URL del navegador y permite el micrófono para esta página."
+          );
+        } else if (err.name === "NotFoundError") {
+          setError("No se encontró ningún micrófono. Comprueba que tienes uno conectado y no lo está usando otra app.");
+        } else {
+          setError(`No se pudo acceder al micrófono: ${err.name}`);
+        }
+        continuousModeRef.current = false;
+        setContinuousMode(false);
+      });
+  }
+
+  function toggleRecording() {
     if (recording) {
       mediaRecorderRef.current?.stop();
       return;
     }
+    startListening(false);
+  }
 
-    setError(null);
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch (err) {
-      const name = (err as DOMException).name;
-      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
-        setError(
-          "Permiso de micrófono denegado. Revisa el icono de candado/permisos junto a la URL del navegador y permite el micrófono para esta página."
-        );
-      } else if (name === "NotFoundError") {
-        setError("No se encontró ningún micrófono. Comprueba que tienes uno conectado y no lo está usando otra app.");
-      } else {
-        setError(`No se pudo acceder al micrófono: ${name}`);
-      }
-      return;
+  function toggleContinuousMode(next: boolean) {
+    continuousModeRef.current = next;
+    setContinuousMode(next);
+    if (next) {
+      startListening(true);
+    } else if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop();
     }
-
-    const mimeType = getSupportedMimeType();
-    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
-    chunksRef.current = [];
-    recorder.ondataavailable = (e) => {
-      if (e.data.size > 0) chunksRef.current.push(e.data);
-    };
-    recorder.onstop = () => {
-      stream.getTracks().forEach((track) => track.stop()); // apaga el LED del micro
-      setRecording(false);
-      const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
-      transcribeAndSend(blob, recorder.mimeType);
-    };
-    mediaRecorderRef.current = recorder;
-    setRecording(true);
-    recorder.start();
   }
 
   return (
@@ -210,12 +327,28 @@ export default function JarvisChat() {
           />
           Leer las respuestas en voz alta
         </label>
+        {micSupported && (
+          <label className="flex items-center gap-1.5">
+            <input
+              type="checkbox"
+              checked={continuousMode}
+              onChange={(e) => toggleContinuousMode(e.target.checked)}
+            />
+            🔁 Conversación continua (manos libres)
+          </label>
+        )}
         {!micSupported && (
           <span className="text-amber-500/80">
             Tu navegador no soporta grabación de audio (prueba con Chrome/Edge/Brave/Firefox recientes).
           </span>
         )}
       </div>
+      {continuousMode && (
+        <p className="text-xs text-slate-500">
+          Habla cuando quieras, Jarvis escucha solo y sigue el turno automáticamente. Si el navegador
+          bloquea la reproducción de una respuesta, aparecerá el botón de play para esa vez.
+        </p>
+      )}
 
       <div className="flex min-h-[300px] flex-col gap-3 rounded-lg border border-surface-border bg-surface-raised p-4">
         {messages.length === 0 && (
@@ -229,10 +362,34 @@ export default function JarvisChat() {
             className={
               m.role === "user"
                 ? "self-end rounded-lg bg-slate-700 px-3 py-2 text-sm text-slate-100"
-                : "self-start rounded-lg bg-black/30 px-3 py-2 text-sm text-slate-200"
+                : "self-start flex flex-col gap-1.5"
             }
           >
-            {m.content}
+            <div
+              className={
+                m.role === "user"
+                  ? undefined
+                  : "rounded-lg bg-black/30 px-3 py-2 text-sm text-slate-200"
+              }
+            >
+              {m.content}
+            </div>
+            {/* Pedido real de usuario: "muestrame el partido X" -- Jarvis no
+                controla la navegacion, pero enlaza a los partidos que sus
+                herramientas ya encontraron de verdad (nunca inventados). */}
+            {m.matches && m.matches.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {m.matches.map((match) => (
+                  <Link
+                    key={match.match_id}
+                    href={`/matches/${match.match_id}`}
+                    className="rounded border border-surface-border px-2 py-1 text-xs text-slate-300 hover:bg-surface-raised"
+                  >
+                    Ver partido: {match.home_team} vs {match.away_team} →
+                  </Link>
+                ))}
+              </div>
+            )}
           </div>
         ))}
         {transcribing && <p className="text-xs text-slate-500">Transcribiendo tu voz…</p>}
@@ -265,7 +422,7 @@ export default function JarvisChat() {
           placeholder="Escribe a Jarvis…"
           className="flex-1 rounded border border-surface-border bg-surface-raised px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:border-slate-500 focus:outline-none"
         />
-        {micSupported && (
+        {micSupported && !continuousMode && (
           <button
             onClick={toggleRecording}
             disabled={transcribing}
@@ -279,6 +436,18 @@ export default function JarvisChat() {
           >
             🎤
           </button>
+        )}
+        {continuousMode && (
+          <span
+            className={
+              "flex items-center rounded border px-3 py-2 text-sm " +
+              (recording
+                ? "animate-pulse border-red-500/50 bg-red-500/15 text-red-300"
+                : "border-surface-border text-slate-400")
+            }
+          >
+            {recording ? "🎙️ Escuchando…" : "🔁 En espera…"}
+          </span>
         )}
         <button
           onClick={() => send()}

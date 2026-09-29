@@ -123,6 +123,13 @@ class ClaudeCodeLLMClient(LLMClient):
     def __init__(self, settings: Settings, db: Any) -> None:
         self._settings = settings
         self._db = db
+        # El orquestador (orchestrator.py) nunca ve los tool_use/tool_result
+        # de este proveedor uno a uno (el SDK resuelve el bucle entero el
+        # solo) -- se exponen aqui para que pueda extraer de ellos los
+        # partidos mencionados (enlaces directos en el frontend) despues de
+        # cada `run_turn()`, leyendo este atributo con getattr (no existe
+        # en AnthropicLLMClient, que no lo necesita).
+        self.last_tool_results: list[dict[str, Any]] = []
 
     def run_turn(
         self,
@@ -134,6 +141,7 @@ class ClaudeCodeLLMClient(LLMClient):
 
         from claude_agent_sdk import CLINotFoundError, ProcessError
 
+        self.last_tool_results = []
         try:
             return asyncio.run(self._run_turn_async(system_prompt, messages))
         except CLINotFoundError as exc:
@@ -224,6 +232,7 @@ class ClaudeCodeLLMClient(LLMClient):
             try:
                 result = football_tool.handler(db, args)
                 ok = True
+                self.last_tool_results.append(result)
             except Exception as exc:  # noqa: BLE001 -- se reporta al LLM, no se propaga
                 result = {"error": str(exc)}
                 ok = False

@@ -299,6 +299,37 @@ def get_active_alerts(db: Session, _params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def extract_match_references(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Recorre un resultado de tool YA devuelto (nunca inventa nada) para
+    sacar los `match_id` que menciona, de forma que el frontend pueda
+    ofrecer un enlace directo a esos partidos (pedido real de usuario:
+    "muestrame el partido X" -- Jarvis no controla la navegacion, pero
+    puede decir que partidos ha consultado para que la UI enlace a ellos).
+    Cubre la forma de `analyze_match` (un unico partido en el nivel
+    superior) y la de `get_matches_today` (una lista `matches`)."""
+    refs: list[dict[str, Any]] = []
+    if not isinstance(result, dict):
+        return refs
+    if "match_id" in result and "home_team" in result and "away_team" in result:
+        refs.append(
+            {
+                "match_id": result["match_id"],
+                "home_team": result["home_team"],
+                "away_team": result["away_team"],
+            }
+        )
+    for m in result.get("matches", []) or []:
+        if isinstance(m, dict) and "match_id" in m:
+            refs.append(
+                {
+                    "match_id": m["match_id"],
+                    "home_team": m.get("home_team", ""),
+                    "away_team": m.get("away_team", ""),
+                }
+            )
+    return refs
+
+
 TOOLS: list[Tool] = [
     Tool(
         name="get_matches_today",

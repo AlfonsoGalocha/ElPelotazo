@@ -575,3 +575,43 @@ reproduce con un elemento `<audio>` (no depende de ninguna voz del
 sistema, a diferencia de `speechSynthesis`). `PIPER_VOICE` es
 configurable (formato `<idioma>-<nombre>-<calidad>`, catalogo completo en
 [VOICES.md](https://github.com/rhasspy/piper/blob/master/VOICES.md)).
+
+### Enlaces directos a partidos desde el chat (`extract_match_references`)
+
+Pedido real de usuario: "muestrame el partido del Real Madrid contra
+Malaga". Jarvis no controla la navegacion del frontend (ni deberia
+inventarsela), pero SI puede decir que partidos ha consultado de verdad --
+`agent/tools.py::extract_match_references()` relee (nunca inventa) los
+`match_id` que `analyze_match`/`get_matches_today` ya devolvieron, y
+`AgentChatResponse.referenced_matches` los expone al frontend, que renderiza
+un enlace "Ver partido: X vs Y →" bajo la respuesta.
+
+Complicacion real: `ClaudeCodeLLMClient` (proveedor `claude_code`) resuelve
+el bucle de tool-calling ENTERO dentro del SDK -- el orquestador
+(`orchestrator.py::run_agent_turn`) nunca ve esos tool_use/tool_result uno
+a uno para ese proveedor, a diferencia de `AnthropicLLMClient` (bucle
+hecho a mano en el propio orquestador). Por eso `ClaudeCodeLLMClient`
+expone un atributo `last_tool_results` (poblado dentro de
+`_wrap_as_sdk_tool`, el mismo punto donde ya se loguea cada `agent.tool_call`)
+que el orquestador lee con `getattr(llm, "last_tool_results", [])` despues
+de cada `run_turn()` -- funciona para ambos proveedores sin acoplar el
+orquestador a los detalles internos de ninguno.
+
+### Conversacion continua manos libres (`JarvisChat.tsx::monitorSilence`)
+
+Pedido real de usuario: "no tener que darle al boton de hablar todo el
+rato". Un toggle "🔁 Conversación continua" arranca un bucle que graba,
+transcribe, envia y vuelve a escuchar solo, sin ninguna otra interaccion.
+Parar de grabar SIN que el usuario pulse nada requiere saber cuando ha
+dejado de hablar: `monitorSilence()` analiza el volumen (RMS) del stream
+del microfono via Web Audio API (`AnalyserNode`) y para la grabacion tras
+~1.2s de silencio siguiendo a voz detectada (o un tope de 15s). Cada turno
+espera a que `speak()` termine de sonar (o se resuelve de inmediato si el
+navegador bloqueo el autoplay) antes de volver a escuchar, para minimizar
+la posibilidad de que el microfono capte la propia voz de Jarvis saliendo
+por los altavoces -- limitacion honesta: sin auriculares, ese eco SI puede
+colarse en la siguiente transcripcion. Limitacion adicional del navegador:
+la politica de autoplay solo concede audio automatico ligado al gesto que
+activo el modo continuo (el primer turno); a partir de ahi, cada respuesta
+hablada puede necesitar el boton "▶️ Reproducir respuesta" ya existente --
+no hay forma de evitarlo desde JavaScript, es una decision del navegador.
