@@ -34,9 +34,21 @@ function extensionForMimeType(mimeType: string): string {
 // el microfono). Ahora el audio se genera en el backend con Piper
 // (POST /api/agent/speak) y se reproduce con el elemento <audio>, que no
 // depende de ninguna voz del sistema.
+//
+// `audio.play()` devuelve una promesa que los navegadores pueden RECHAZAR
+// en silencio por su politica de autoplay (p.ej. si consideran que ya paso
+// demasiado tiempo desde el ultimo gesto del usuario) -- sin capturar ese
+// rechazo, "no suena" y no hay ningun error visible (bug real reportado
+// por un usuario). Por eso `speak` devuelve la URL del audio generado
+// ademas de intentar reproducirlo solo: si el autoplay falla, el
+// <audio controls> visible en el JSX permite darle al play a mano.
 let currentAudio: HTMLAudioElement | null = null;
 
-async function speak(text: string, onError: (message: string) => void) {
+async function speak(
+  text: string,
+  onError: (message: string) => void,
+  onReady: (audioUrl: string) => void
+) {
   currentAudio?.pause(); // corta cualquier respuesta anterior aun sonando
   try {
     const res = await fetch("/api/agent/speak", {
@@ -50,9 +62,20 @@ async function speak(text: string, onError: (message: string) => void) {
       return;
     }
     const blob = await res.blob();
-    const audio = new Audio(URL.createObjectURL(blob));
+    const audioUrl = URL.createObjectURL(blob);
+    onReady(audioUrl);
+    const audio = new Audio(audioUrl);
     currentAudio = audio;
-    audio.play();
+    try {
+      await audio.play();
+    } catch (err) {
+      // Autoplay bloqueado por el navegador -- no es un fallo real (el
+      // audio SI se genero bien), solo hace falta pulsar play a mano en el
+      // reproductor que queda visible bajo la respuesta.
+      onError(
+        `El navegador bloqueó la reproducción automática (${(err as Error).name}). Pulsa el botón de play que aparece debajo de la respuesta.`
+      );
+    }
   } catch {
     onError("No se pudo generar el audio de la respuesta. Comprueba que el backend está corriendo.");
   }
@@ -67,6 +90,7 @@ export default function JarvisChat() {
   const [recording, setRecording] = useState(false);
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
   const [micSupported, setMicSupported] = useState(false);
+  const [lastAudioUrl, setLastAudioUrl] = useState<string | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
@@ -103,7 +127,7 @@ export default function JarvisChat() {
         return;
       }
       setMessages([...history, { role: "assistant", content: data.reply }]);
-      if (voiceReplyEnabled) speak(data.reply, setError);
+      if (voiceReplyEnabled) speak(data.reply, setError, setLastAudioUrl);
     } catch {
       setError("No se pudo conectar con Jarvis. Comprueba que el backend esta corriendo.");
     } finally {
@@ -215,6 +239,12 @@ export default function JarvisChat() {
         ))}
         {transcribing && <p className="text-xs text-slate-500">Transcribiendo tu voz…</p>}
         {loading && <p className="text-xs text-slate-500">Jarvis está pensando…</p>}
+        {lastAudioUrl && (
+          // Respaldo visible por si el navegador bloqueo la reproduccion
+          // automatica (autoplay) -- el audio ya esta generado, solo hace
+          // falta darle al play a mano.
+          <audio controls src={lastAudioUrl} className="h-8 w-full" />
+        )}
         {error && (
           <p className="rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
             {error}
