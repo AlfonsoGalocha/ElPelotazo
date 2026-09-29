@@ -213,3 +213,19 @@ export function marketFamily(market: string): "goals" | "cards" | "corners" {
   if (market.startsWith("corners_")) return "corners";
   return "goals";
 }
+
+export interface AgentChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface AgentToolLogEntry {
+  tool: string;
+  ok: boolean;
+  duration_ms: number;
+}
+
+export interface AgentChatResponse {
+  reply: string;
+  tool_log: AgentToolLogEntry[];
+}

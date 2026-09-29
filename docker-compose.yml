@@ -74,6 +74,13 @@ services:
       # propio frontend, no el backend -- de ahi el "No se pudo conectar
       # con la API" aunque el backend estuviera sano.
       API_URL: http://backend:8000
+      # La usa frontend/app/api/agent/chat/route.ts, un proxy SERVER-SIDE
+      # hacia POST /agent/chat del backend: asi el secreto nunca se manda
+      # como NEXT_PUBLIC_* (lo que lo haria visible en el navegador de
+      # cualquiera que abra las herramientas de desarrollador). Mismo
+      # valor que AGENT_SHARED_SECRET del backend -- si no coincide, el
+      # backend respondera 401 a las peticiones de Jarvis.
+      AGENT_SHARED_SECRET: ${AGENT_SHARED_SECRET:-}
     # Mismo mecanismo que el backend: FRONTEND_PORT en tu .env si el 3000
     # tambien estuviera ocupado.
     ports:

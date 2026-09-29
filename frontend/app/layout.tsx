@@ -31,6 +31,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/model" className="hover:text-slate-100">
                 Modelo
               </Link>
+              <Link href="/jarvis" className="hover:text-slate-100">
+                Jarvis
+              </Link>
             </nav>
           </div>
         </header>
