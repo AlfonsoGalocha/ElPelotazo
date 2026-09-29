@@ -405,14 +405,19 @@ gente, esto debe evolucionar a un sistema de auth real).
   `agent/tools.py` expuestas via MCP, nunca puede ejecutar comandos del
   sistema ni tocar el filesystem (seccion 17 del brief).
 
-  **Limitacion honesta con Docker**: el contenedor `backend`/`scheduler`
-  (`python:3.12-slim`) NO tiene Node.js ni el CLI `claude` instalados, y
-  `claude login` es un flujo interactivo que no encaja bien dentro de un
-  contenedor. Para usar `claude_code` hoy, la opcion mas simple es correr
-  el backend fuera de Docker (venv local) en una maquina donde ya tengas
-  `claude` logueado con tu cuenta Pro/Max. Dockerizarlo (imagen con
-  Node+CLI, `claude setup-token` para auth no interactiva) queda como
-  trabajo futuro si hace falta.
+  **Docker**: `backend/Dockerfile` instala Node.js/npm y el CLI `claude`
+  (`npm install -g @anthropic-ai/claude-code`) en la imagen. Como
+  `claude login` es un flujo interactivo (abre navegador) que no encaja
+  dentro de un contenedor, la autenticacion ahi es via
+  `CLAUDE_CODE_OAUTH_TOKEN` (variable de entorno, generada una vez en tu
+  propia maquina con `claude setup-token` y pegada en tu `.env` — ver
+  `.env.example`): `docker-compose.yml` ya inyecta el `.env` completo a
+  `backend`/`scheduler` (`env_file`), asi que el CLI dentro del contenedor
+  la coge sola, sin login interactivo. Un `RuntimeError` de
+  `ClaudeCodeLLMClient` (CLI ausente, token caducado/invalido) se traduce
+  a un 502 con detalle legible en `POST /agent/chat`, nunca a un 500 sin
+  cuerpo (error real corregido tras probarlo: el traceback quedaba sin
+  capturar en la ruta, "Expecting value" en el cliente).
 
   **Limite de uso**: el plan Pro/Max esta pensado para uso interactivo, no
   para un servicio en segundo plano con mucho trafico — si Jarvis se usa

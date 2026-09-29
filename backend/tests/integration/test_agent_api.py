@@ -124,6 +124,33 @@ def test_agent_chat_reports_unknown_tool_gracefully(monkeypatch):
         app.dependency_overrides.clear()
 
 
+def test_agent_chat_translates_llm_runtime_error_to_clean_502(monkeypatch):
+    """Regresion real: un RuntimeError del cliente LLM (p.ej.
+    ClaudeCodeLLMClient sin el CLI logueado) subia sin capturar y el
+    cliente HTTP veia una respuesta vacia ('Expecting value: line 1 column
+    1 (char 0)'). Debe traducirse a un 502 con detalle legible."""
+
+    class _BrokenLLMClient(LLMClient):
+        def run_turn(self, system_prompt, messages, tools):  # noqa: ANN001
+            raise RuntimeError("El CLI 'claude' fallo al ejecutar la consulta: exit code 1")
+
+    monkeypatch.setattr(
+        "backend.app.api.routes.agent.client_for", lambda settings, db: _BrokenLLMClient()
+    )
+    app.dependency_overrides[get_settings] = _settings_with_agent_enabled
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/agent/chat",
+            json={"message": "hola"},
+            headers={"X-Agent-Key": "test-secret"},
+        )
+        assert response.status_code == 502
+        assert "claude" in response.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_agent_orchestrator_raises_after_max_iterations(monkeypatch, db_session):
     """Si el LLM pide tools indefinidamente sin nunca dar texto final, el
     orquestador debe cortar (nunca un bucle sin techo, seccion 19/21)."""

@@ -75,7 +75,7 @@ def _run_tool_with_timeout(db: Session, call: ToolCall, timeout_seconds: float) 
         except concurrent.futures.TimeoutError:
             return {"error": f"La herramienta {call.name!r} tardo demasiado (timeout)."}
         except Exception as exc:  # noqa: BLE001 -- se reporta al LLM, no se propaga tal cual
-            logger.error("agent.tool_error", tool=call.name, error=str(exc))
+            logger.error("agent.tool_error: tool=%s error=%s", call.name, exc)
             return {"error": f"La herramienta {call.name!r} fallo: {exc}"}
 
 
@@ -114,10 +114,7 @@ def run_agent_turn(
             duration_ms = round((time.monotonic() - started) * 1000, 1)
             ok = "error" not in result
             logger.info(
-                "agent.tool_call",
-                tool=call.name,
-                ok=ok,
-                duration_ms=duration_ms,
+                "agent.tool_call: tool=%s ok=%s duration_ms=%s", call.name, ok, duration_ms
             )
             tool_log.append({"tool": call.name, "ok": ok, "duration_ms": duration_ms})
             tool_results.append(

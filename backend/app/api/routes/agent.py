@@ -54,4 +54,11 @@ def agent_chat(
         result = run_agent_turn(db, llm, settings, payload.message, history)
     except AgentError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # Errores de infraestructura del LLM (p.ej. ClaudeCodeLLMClient: CLI
+        # ausente, sesion no logueada, token caducado) -- se traducen a un
+        # JSON legible en vez de dejar que suban como 500 "pelado" sin
+        # cuerpo (lo que ve el cliente HTTP como respuesta vacia).
+        logger.error("agent.llm_runtime_error: error=%s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return AgentChatResponse(reply=result.text, tool_log=result.tool_log)

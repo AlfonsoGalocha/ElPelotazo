@@ -217,7 +217,7 @@ class ClaudeCodeLLMClient(LLMClient):
                 ok = False
             duration_ms = round((time.monotonic() - started) * 1000, 1)
             logger.info(
-                "agent.tool_call", tool=football_tool.name, ok=ok, duration_ms=duration_ms
+                "agent.tool_call: tool=%s ok=%s duration_ms=%s", football_tool.name, ok, duration_ms
             )
             text = json.dumps(result, ensure_ascii=False, default=str)
             return {"content": [{"type": "text", "text": text}]}
