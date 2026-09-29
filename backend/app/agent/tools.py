@@ -164,9 +164,15 @@ def _find_match(db: Session, query_text: str) -> Match | None:
     sin similitud difusa) que `GET /matches?search=` -- nunca fuzzy
     matching ambiguo (principio del proyecto, ver normalization/teams.py).
     Si la consulta trae "vs"/" - "/"contra", intenta casar un equipo a cada
-    lado; si no, busca ese texto en cualquiera de los dos equipos. De entre
-    los candidatos, el mas cercano a AHORA (pasado o futuro)."""
+    lado. Si no (bug real: "Paris Saint-Germain Le Mans" sin separador,
+    dictado por voz, buscaba ese texto LITERAL como nombre de un unico
+    equipo y nunca encontraba nada), intenta reconocer que DOS equipos
+    conocidos de la base de datos aparecen como substring de la consulta;
+    si solo reconoce uno, cae al comportamiento previo (buscar ese texto en
+    cualquiera de los dos equipos). De entre los candidatos, el mas cercano
+    a AHORA (pasado o futuro)."""
     query_text = query_text.strip()
+    query_lower = query_text.lower()
     HomeTeam, AwayTeam = aliased(Team), aliased(Team)
     base = db.query(Match).join(HomeTeam, Match.home_team_id == HomeTeam.id).join(
         AwayTeam, Match.away_team_id == AwayTeam.id
@@ -174,8 +180,8 @@ def _find_match(db: Session, query_text: str) -> Match | None:
 
     split = None
     for sep in (" vs ", " vs. ", " - ", " contra "):
-        if sep in query_text.lower():
-            idx = query_text.lower().index(sep)
+        if sep in query_lower:
+            idx = query_lower.index(sep)
             split = (query_text[: idx].strip(), query_text[idx + len(sep) :].strip())
             break
 
@@ -188,10 +194,22 @@ def _find_match(db: Session, query_text: str) -> Match | None:
             )
         ).all()
     else:
-        pattern = f"%{query_text}%"
-        candidates = base.filter(
-            or_(HomeTeam.canonical_name.ilike(pattern), AwayTeam.canonical_name.ilike(pattern))
-        ).all()
+        known_teams = db.query(Team).all()
+        matched_teams = [t for t in known_teams if t.canonical_name.lower() in query_lower]
+        if len(matched_teams) >= 2:
+            matched_teams.sort(key=lambda t: query_lower.index(t.canonical_name.lower()))
+            team_a, team_b = matched_teams[0], matched_teams[1]
+            candidates = base.filter(
+                or_(
+                    (Match.home_team_id == team_a.id) & (Match.away_team_id == team_b.id),
+                    (Match.home_team_id == team_b.id) & (Match.away_team_id == team_a.id),
+                )
+            ).all()
+        else:
+            pattern = f"%{query_text}%"
+            candidates = base.filter(
+                or_(HomeTeam.canonical_name.ilike(pattern), AwayTeam.canonical_name.ilike(pattern))
+            ).all()
 
     if not candidates:
         return None

@@ -39,15 +39,15 @@ function extensionForMimeType(mimeType: string): string {
 // en silencio por su politica de autoplay (p.ej. si consideran que ya paso
 // demasiado tiempo desde el ultimo gesto del usuario) -- sin capturar ese
 // rechazo, "no suena" y no hay ningun error visible (bug real reportado
-// por un usuario). Por eso `speak` devuelve la URL del audio generado
-// ademas de intentar reproducirlo solo: si el autoplay falla, el
-// <audio controls> visible en el JSX permite darle al play a mano.
+// por un usuario). Si pasa, se guarda el <audio> ya cargado para que un
+// boton compacto ("▶️ Reproducir respuesta") lo reintente dentro de un
+// click real, que si cuenta como gesto del usuario.
 let currentAudio: HTMLAudioElement | null = null;
 
 async function speak(
   text: string,
   onError: (message: string) => void,
-  onReady: (audioUrl: string) => void
+  onAutoplayBlocked: (audio: HTMLAudioElement) => void
 ) {
   currentAudio?.pause(); // corta cualquier respuesta anterior aun sonando
   try {
@@ -62,19 +62,14 @@ async function speak(
       return;
     }
     const blob = await res.blob();
-    const audioUrl = URL.createObjectURL(blob);
-    onReady(audioUrl);
-    const audio = new Audio(audioUrl);
+    const audio = new Audio(URL.createObjectURL(blob));
     currentAudio = audio;
     try {
       await audio.play();
-    } catch (err) {
+    } catch {
       // Autoplay bloqueado por el navegador -- no es un fallo real (el
-      // audio SI se genero bien), solo hace falta pulsar play a mano en el
-      // reproductor que queda visible bajo la respuesta.
-      onError(
-        `El navegador bloqueó la reproducción automática (${(err as Error).name}). Pulsa el botón de play que aparece debajo de la respuesta.`
-      );
+      // audio SI se genero bien), solo hace falta pulsar play a mano.
+      onAutoplayBlocked(audio);
     }
   } catch {
     onError("No se pudo generar el audio de la respuesta. Comprueba que el backend está corriendo.");
@@ -90,7 +85,7 @@ export default function JarvisChat() {
   const [recording, setRecording] = useState(false);
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
   const [micSupported, setMicSupported] = useState(false);
-  const [lastAudioUrl, setLastAudioUrl] = useState<string | null>(null);
+  const [blockedAudio, setBlockedAudio] = useState<HTMLAudioElement | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
@@ -127,7 +122,10 @@ export default function JarvisChat() {
         return;
       }
       setMessages([...history, { role: "assistant", content: data.reply }]);
-      if (voiceReplyEnabled) speak(data.reply, setError, setLastAudioUrl);
+      if (voiceReplyEnabled) {
+        setBlockedAudio(null);
+        speak(data.reply, setError, setBlockedAudio);
+      }
     } catch {
       setError("No se pudo conectar con Jarvis. Comprueba que el backend esta corriendo.");
     } finally {
@@ -239,11 +237,19 @@ export default function JarvisChat() {
         ))}
         {transcribing && <p className="text-xs text-slate-500">Transcribiendo tu voz…</p>}
         {loading && <p className="text-xs text-slate-500">Jarvis está pensando…</p>}
-        {lastAudioUrl && (
-          // Respaldo visible por si el navegador bloqueo la reproduccion
-          // automatica (autoplay) -- el audio ya esta generado, solo hace
-          // falta darle al play a mano.
-          <audio controls src={lastAudioUrl} className="h-8 w-full" />
+        {blockedAudio && (
+          // Solo aparece si el navegador bloqueo el autoplay -- el audio
+          // ya esta generado, un click real (gesto de usuario) basta para
+          // reproducirlo.
+          <button
+            onClick={() => {
+              blockedAudio.play();
+              setBlockedAudio(null);
+            }}
+            className="self-start rounded border border-surface-border px-3 py-1.5 text-xs text-slate-200 hover:bg-surface-raised"
+          >
+            ▶️ Reproducir respuesta
+          </button>
         )}
         {error && (
           <p className="rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">

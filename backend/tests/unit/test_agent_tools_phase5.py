@@ -86,6 +86,30 @@ def test_analyze_match_finds_match_by_two_team_names_and_includes_factors(db_ses
     assert result["best_prediction"]["market"] == "over_2_5"
 
 
+def test_analyze_match_finds_match_without_separator_by_recognizing_two_known_teams(db_session):
+    """Bug real reportado por voz: 'Paris Saint-Germain Le Mans' (sin 'vs'/
+    '-'/'contra', tal cual lo transcribe Whisper) antes se buscaba como el
+    nombre LITERAL de un unico equipo y nunca encontraba nada. Ahora
+    reconoce que dos equipos conocidos de la base de datos aparecen como
+    substring de la consulta."""
+    competition, season = _make_competition_with_season(db_session, "phase5_no_sep")
+    home = _make_team(db_session, "Paris Saint-Germain")
+    away = _make_team(db_session, "Le Mans")
+    match = Match(
+        provider="test", provider_id="am_nosep", competition_id=competition.id,
+        season_id=season.id, kickoff_utc=dt.datetime.utcnow() + dt.timedelta(days=1),
+        home_team_id=home.id, away_team_id=away.id, status="scheduled", matchday=1,
+    )
+    db_session.add(match)
+    db_session.flush()
+
+    result = analyze_match(db_session, {"query": "Paris Saint-Germain Le Mans"})
+
+    assert result["match_id"] == match.id
+    assert result["home_team"] == "Paris Saint-Germain"
+    assert result["away_team"] == "Le Mans"
+
+
 def test_analyze_match_reports_final_score_for_finished_match(db_session):
     competition, season = _make_competition_with_season(db_session, "phase5_league_finished")
     home, away = _make_team(db_session, "Real Madrid"), _make_team(db_session, "Sevilla")
