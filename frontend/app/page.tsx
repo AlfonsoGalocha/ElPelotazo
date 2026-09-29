@@ -1,10 +1,8 @@
-import Link from "next/link";
 import { getCompetitions, getCurrentRoundPredictions, getModelOnlyPredictions } from "@/lib/api";
 import type { Prediction } from "@/types";
-import MatchCard from "@/components/MatchCard";
 import BestOfDayWidget from "@/components/BestOfDayWidget";
 import BestPredictionsWidget from "@/components/BestPredictionsWidget";
-import ModelOnlySection from "@/components/ModelOnlySection";
+import HomeLeagueBoard from "@/components/HomeLeagueBoard";
 
 function groupByMatch(predictions: Prediction[]): Prediction[][] {
   const byMatch = new Map<number, Prediction[]>();
@@ -91,39 +89,9 @@ export default async function TodayPage() {
         </div>
       )}
 
-      {competitionBlocks.map((block) => (
-        <div key={block.code}>
-          <div className="mb-3 flex items-baseline justify-between">
-            <h2 className="text-sm font-semibold text-slate-400">
-              <span className="uppercase tracking-wide">{block.roundLabel}</span>
-              <span className="mx-2 text-slate-600">·</span>
-              <span>{block.name}</span>
-              {block.dateRange && (
-                <>
-                  <span className="mx-2 text-slate-600">·</span>
-                  <span>{block.dateRange}</span>
-                </>
-              )}
-            </h2>
-            <Link href="/top-signals" className="text-xs text-slate-500 hover:text-slate-300">
-              Ver mejores señales →
-            </Link>
-          </div>
-          {block.isFallback && (
-            <p className="mb-3 text-xs text-amber-500/80">
-              Esta liga aún no tiene datos de jornada real para sus próximos partidos (fixtures
-              pendientes de refrescar): se muestra por fecha en su lugar.
-            </p>
-          )}
-          <div className="flex flex-col gap-4">
-            {block.matches.map((group) => (
-              <MatchCard key={group[0].match.id} predictions={group} />
-            ))}
-          </div>
-        </div>
-      ))}
-
-      {modelOnly.length > 0 && <ModelOnlySection predictions={modelOnly} />}
+      {!error && competitionBlocks.length > 0 && (
+        <HomeLeagueBoard competitionBlocks={competitionBlocks} modelOnly={modelOnly} />
+      )}
     </div>
   );
 }
