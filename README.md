@@ -101,16 +101,23 @@ con `docker compose up`.
 
 ```cron
 0 * * * * cd /ruta/al/repo && .venv/bin/football-edge update-fixtures && .venv/bin/football-edge evaluate && .venv/bin/football-edge predict-upcoming >> logs/refresh.log 2>&1
-0 */6 * * * cd /ruta/al/repo && .venv/bin/football-edge update-odds && .venv/bin/football-edge update-secondary-odds >> logs/odds.log 2>&1
+0 */6 * * * cd /ruta/al/repo && .venv/bin/football-edge update && .venv/bin/football-edge update-odds && .venv/bin/football-edge update-secondary-odds >> logs/odds.log 2>&1
 ```
 
-La primera linea es horaria (fixtures + liquidacion de partidos terminados
-+ predicciones, sin gastar cuota de API externa); la segunda son las
-cuotas de mercado, cada 6 horas. Si prefieres simplicidad sobre cuidar la
-cuota gratuita (por ejemplo, tienes un plan de pago de The Odds API), usa
-`football-edge refresh --skip-historical` cada hora en su lugar --
-`--skip-historical` evita que cada pasada vuelva a descargar temporadas
-enteras de resultados pasados (lento e innecesario).
+La primera linea es horaria (fixtures nuevos, liquidacion de lo que ya
+este marcado como terminado, predicciones). La segunda, cada 6 horas,
+trae RESULTADOS REALES (`update`, el unico comando que marca un partido
+como terminado -- `update-fixtures` los descarta a proposito, ver
+`docs/data_sources.md`) y cuotas de mercado. Sin `update` en algun sitio
+del cron, Historico se queda parado indefinidamente por mucho que
+`evaluate` corra cada hora (bug real, corregido tras reportarlo un
+usuario: el scheduler de Docker se quedo semanas sin avanzar por esto
+exacto). OJO: `football-edge refresh --skip-historical` se salta el paso
+`update` POR COMPLETO (temporada en curso incluida, no solo temporadas
+pasadas) -- si automatizas con `refresh --skip-historical` en vez de
+estas dos lineas, tienes que seguir ejecutando `update` a mano de vez en
+cuando (o anhadirlo a un cron aparte), o Historico se quedara parado
+igual.
 
 ## Datos reales
 

@@ -158,12 +158,24 @@ services:
           hour=$${hour:-0};
           echo "[scheduler] $$(date -u +%FT%TZ) -- fixtures + liquidacion de partidos terminados + predicciones";
           football-edge update-fixtures || echo "[scheduler] fallo update-fixtures, se reintenta en 1h";
-          football-edge evaluate || echo "[scheduler] fallo evaluate/settle, se reintenta en 1h";
           if [ $$((hour % 6)) -eq 0 ]; then
-            echo "[scheduler] $$(date -u +%FT%TZ) -- cuotas de mercado (cada 6h, para no agotar la cuota gratuita de las APIs)";
+            # 'update-fixtures' (arriba) NUNCA trae resultados: descarta a
+            # proposito los partidos ya jugados de su propia fuente (ver
+            # docs/data_sources.md). 'update' es el UNICO comando que
+            # descarga resultados reales y marca un partido como
+            # 'finished' -- sin esto en el scheduler, Historico se queda
+            # parado indefinidamente por mucho que 'evaluate' corra cada
+            # hora (bug real: se quedo sin avanzar semanas porque este
+            # paso faltaba). Cada 6h (no cada hora) porque redescarga un
+            # CSV de ~45MB del mirror de GitHub -- sin limite de cuota
+            # como las APIs de cuotas, pero sin necesidad de hacerlo mas a
+            # menudo (los resultados de una jornada no cambian cada hora).
+            echo "[scheduler] $$(date -u +%FT%TZ) -- resultados reales + cuotas de mercado (cada 6h)";
+            football-edge update || echo "[scheduler] fallo update (resultados reales), se reintenta en 6h";
             football-edge update-odds || echo "[scheduler] fallo update-odds, se reintenta en 6h";
             football-edge update-secondary-odds || echo "[scheduler] fallo update-secondary-odds, se reintenta en 6h";
           fi
+          football-edge evaluate || echo "[scheduler] fallo evaluate/settle, se reintenta en 1h";
           football-edge predict-upcoming || echo "[scheduler] fallo predict-upcoming, se reintenta en 1h";
           sleep 3600;
         done
