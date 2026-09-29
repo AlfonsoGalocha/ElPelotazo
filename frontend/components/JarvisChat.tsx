@@ -104,7 +104,18 @@ export default function JarvisChat() {
       setInput(transcript);
       send(transcript);
     };
-    recognition.onerror = () => setListening(false);
+    recognition.onerror = (event) => {
+      const code = event.error as string;
+      const reasons: Record<string, string> = {
+        "not-allowed": "Permiso de micrófono denegado. Revisa el icono de candado/permisos junto a la URL del navegador y permite el micrófono para esta página.",
+        "audio-capture": "No se encontró ningún micrófono. Comprueba que tienes uno conectado y no lo está usando otra app.",
+        "no-speech": "No se detectó voz. Prueba a hablar justo después de pulsar el micrófono.",
+        network: "Fallo de red del reconocimiento de voz del navegador (necesita conexión a internet aunque sea local).",
+        aborted: "Reconocimiento cancelado.",
+      };
+      setError(reasons[code] ?? `Error de reconocimiento de voz: ${code}`);
+      setListening(false);
+    };
     recognition.onend = () => setListening(false);
     recognitionRef.current = recognition;
     setListening(true);
