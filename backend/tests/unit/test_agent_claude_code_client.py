@@ -22,6 +22,7 @@ def _install_fake_claude_agent_sdk(monkeypatch, *, final_result: str, tool_shoul
     el codigo bajo test haga su `import claude_agent_sdk` perezoso."""
 
     called = {"tool_invoked": False}
+    captured_options: list = []
 
     class FakeTextBlock:
         def __init__(self, text: str) -> None:
@@ -62,6 +63,7 @@ def _install_fake_claude_agent_sdk(monkeypatch, *, final_result: str, tool_shoul
             self.kwargs = kwargs
 
     async def fake_query(*, prompt, options):  # noqa: ANN001
+        captured_options.append(options)
         # Simula que el SDK, internamente, invoca la primera tool
         # configurada (como haria Claude Code al decidir usarla) antes de
         # dar el texto final -- asi comprobamos que nuestro wrapper
@@ -84,14 +86,14 @@ def _install_fake_claude_agent_sdk(monkeypatch, *, final_result: str, tool_shoul
     fake_module.ProcessError = FakeProcessError
 
     monkeypatch.setitem(sys.modules, "claude_agent_sdk", fake_module)
-    return called
+    return called, captured_options
 
 
 def test_claude_code_client_runs_real_tool_and_returns_sdk_final_text(monkeypatch, db_session):
     from backend.app.agent.llm import ClaudeCodeLLMClient
     from backend.app.config.settings import Settings
 
-    called = _install_fake_claude_agent_sdk(
+    called, captured_options = _install_fake_claude_agent_sdk(
         monkeypatch,
         final_result="No hay partidos programados en la jornada actual.",
         tool_should_be_called=True,
@@ -106,6 +108,11 @@ def test_claude_code_client_runs_real_tool_and_returns_sdk_final_text(monkeypatc
     assert turn.text == "No hay partidos programados en la jornada actual."
     assert turn.tool_calls == []
     assert turn.stop_reason == "end_turn"
+    # Regresion real: sin esto, Claude Code se niega a usar bypassPermissions
+    # como root (el contenedor Docker de este proyecto corre como root) con
+    # "--dangerously-skip-permissions cannot be used with root/sudo
+    # privileges" -- ver docs/modeling.md.
+    assert captured_options[0].kwargs["env"] == {"IS_SANDBOX": "1"}
 
 
 def test_claude_code_client_raises_clear_error_when_cli_missing(monkeypatch, db_session):

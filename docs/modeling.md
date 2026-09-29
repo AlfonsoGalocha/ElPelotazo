@@ -423,3 +423,13 @@ gente, esto debe evolucionar a un sistema de auth real).
   para un servicio en segundo plano con mucho trafico — si Jarvis se usa
   intensivamente, puedes toparte con el limite de tu plan antes que con
   el coste de la API de pago (que no tiene techo salvo el que tu pongas).
+
+  **`IS_SANDBOX=1`**: el contenedor Docker corre como root (no hay ningun
+  `USER` no-root en el Dockerfile), y Claude Code se niega a usar
+  `bypassPermissions` como root salvo que se le diga explicitamente que
+  esta en un entorno aislado (si no, falla con "--dangerously-skip-
+  permissions cannot be used with root/sudo privileges" -- error real
+  reproducido probando esto en Docker). `ClaudeCodeLLMClient` pasa
+  `env={"IS_SANDBOX": "1"}` al proceso del CLI para esto -- no relaja
+  ninguna seguridad real, el aislamiento de verdad ya lo da `tools=[]`
+  (sin Bash/Read/Write nativos).

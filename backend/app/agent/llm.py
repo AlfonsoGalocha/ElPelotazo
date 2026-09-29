@@ -184,6 +184,18 @@ class ClaudeCodeLLMClient(LLMClient):
             model=self._settings.agent_llm_model or None,
             permission_mode="bypassPermissions",  # solo puede llamar a las tools whitelisted arriba
             max_turns=self._settings.agent_max_tool_iterations,
+            # El contenedor Docker de este proyecto corre como root (no hay
+            # ningun 'USER' no-root en el Dockerfile), y Claude Code se
+            # niega a usar bypassPermissions como root a menos que se le
+            # diga explicitamente que esta en un entorno aislado/sandbox
+            # (si no, falla con "cannot be used with root/sudo privileges
+            # for security reasons" -- error real reproducido probando
+            # esto en Docker). No es un problema de seguridad real aqui:
+            # el aislamiento de verdad ya lo da `tools=[]` de arriba (sin
+            # Bash/Read/Write nativos), este flag solo evita el prompt de
+            # aprobacion interactiva para las tools de futbol que SI estan
+            # en la whitelist.
+            env={"IS_SANDBOX": "1"},
         )
 
         final_text = ""
