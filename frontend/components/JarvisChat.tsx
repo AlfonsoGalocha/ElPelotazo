@@ -27,12 +27,35 @@ function extensionForMimeType(mimeType: string): string {
   return ".webm";
 }
 
-function speak(text: string) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
-  window.speechSynthesis.cancel(); // corta cualquier respuesta anterior aun hablando
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = "es-ES";
-  window.speechSynthesis.speak(utterance);
+// Lectura de respuestas en voz alta: se probo primero `speechSynthesis`
+// nativa del navegador (gratis) pero en Linux (Brave/Chromium) reporta 0
+// voces instaladas -- depende de voces remotas de Google no disponibles
+// ahi (bug real confirmado por un usuario, misma familia de problema que
+// el microfono). Ahora el audio se genera en el backend con Piper
+// (POST /api/agent/speak) y se reproduce con el elemento <audio>, que no
+// depende de ninguna voz del sistema.
+let currentAudio: HTMLAudioElement | null = null;
+
+async function speak(text: string, onError: (message: string) => void) {
+  currentAudio?.pause(); // corta cualquier respuesta anterior aun sonando
+  try {
+    const res = await fetch("/api/agent/speak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) {
+      const data = (await res.json()) as { detail?: string };
+      onError(data.detail ?? `Error ${res.status} generando el audio.`);
+      return;
+    }
+    const blob = await res.blob();
+    const audio = new Audio(URL.createObjectURL(blob));
+    currentAudio = audio;
+    audio.play();
+  } catch {
+    onError("No se pudo generar el audio de la respuesta. Comprueba que el backend está corriendo.");
+  }
 }
 
 export default function JarvisChat() {
@@ -44,7 +67,6 @@ export default function JarvisChat() {
   const [recording, setRecording] = useState(false);
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
   const [micSupported, setMicSupported] = useState(false);
-  const [synthesisSupported, setSynthesisSupported] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
@@ -54,7 +76,6 @@ export default function JarvisChat() {
         !!navigator.mediaDevices?.getUserMedia &&
         typeof MediaRecorder !== "undefined"
     );
-    setSynthesisSupported(typeof window !== "undefined" && "speechSynthesis" in window);
   }, []);
 
   async function send(overrideText?: string) {
@@ -82,7 +103,7 @@ export default function JarvisChat() {
         return;
       }
       setMessages([...history, { role: "assistant", content: data.reply }]);
-      if (voiceReplyEnabled) speak(data.reply);
+      if (voiceReplyEnabled) speak(data.reply, setError);
     } catch {
       setError("No se pudo conectar con Jarvis. Comprueba que el backend esta corriendo.");
     } finally {
@@ -159,16 +180,14 @@ export default function JarvisChat() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
-        {synthesisSupported && (
-          <label className="flex items-center gap-1.5">
-            <input
-              type="checkbox"
-              checked={voiceReplyEnabled}
-              onChange={(e) => setVoiceReplyEnabled(e.target.checked)}
-            />
-            Leer las respuestas en voz alta
-          </label>
-        )}
+        <label className="flex items-center gap-1.5">
+          <input
+            type="checkbox"
+            checked={voiceReplyEnabled}
+            onChange={(e) => setVoiceReplyEnabled(e.target.checked)}
+          />
+          Leer las respuestas en voz alta
+        </label>
         {!micSupported && (
           <span className="text-amber-500/80">
             Tu navegador no soporta grabación de audio (prueba con Chrome/Edge/Brave/Firefox recientes).

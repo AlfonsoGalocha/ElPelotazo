@@ -14,14 +14,21 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, UploadFile
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from backend.app.agent.llm import client_for
 from backend.app.agent.orchestrator import AgentError, run_agent_turn
 from backend.app.agent.transcription import TranscriptionError, transcribe_audio
+from backend.app.agent.tts import SpeechSynthesisError, synthesize_speech
 from backend.app.config.settings import Settings, get_settings
 from backend.app.db.database import get_db
-from backend.app.schemas.agent import AgentChatRequest, AgentChatResponse, AgentTranscribeResponse
+from backend.app.schemas.agent import (
+    AgentChatRequest,
+    AgentChatResponse,
+    AgentSpeakRequest,
+    AgentTranscribeResponse,
+)
 from backend.app.utils.logging import get_logger
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -83,3 +90,19 @@ async def agent_transcribe(
         logger.error("agent.transcription_error: error=%s", exc)
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return AgentTranscribeResponse(text=text)
+
+
+@router.post("/speak")
+def agent_speak(
+    payload: AgentSpeakRequest,
+    settings: Settings = Depends(_require_agent_enabled),
+) -> Response:
+    """Sintetiza la respuesta de Jarvis a voz con Piper local -- ver
+    backend/app/agent/tts.py para el por que (la Web Speech API nativa no
+    tiene voces disponibles en Linux/Brave)."""
+    try:
+        wav_bytes = synthesize_speech(payload.text, settings)
+    except SpeechSynthesisError as exc:
+        logger.error("agent.speech_synthesis_error: error=%s", exc)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return Response(content=wav_bytes, media_type="audio/wav")

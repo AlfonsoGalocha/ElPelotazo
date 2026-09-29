@@ -536,6 +536,42 @@ camino especial en el orquestador ni en el LLM.
 
 Modelo cacheado en `data/cache/whisper` (bajo el volumen `./data` ya
 montado en `docker-compose.yml`) para no re-descargarlo en cada
-`docker compose up`. `WHISPER_MODEL_SIZE=base` por defecto: buen punto de
-partida en CPU sin GPU dedicada; `WHISPER_COMPUTE_TYPE=int8` acelera la
-inferencia en CPU con perdida de precision minima para clips cortos.
+`docker compose up`. `WHISPER_COMPUTE_TYPE=int8` acelera la inferencia en
+CPU con perdida de precision minima para clips cortos.
+
+**Precision con nombres propios** (bug real, 2026-09-29): con
+`WHISPER_MODEL_SIZE=base`, "Bayern de Múnich" se transcribia como "Bayern
+de Monoch". Dos cambios: (1) subir el modelo por defecto a `small`
+(mejora sensible en nombres extranjeros manteniendo un tiempo de
+inferencia razonable en CPU); (2) pasar un `initial_prompt` fijo a
+faster-whisper con una lista CURADA de clubes extranjeros con
+transliteracion ambigua al hablarlos en espanhol (`_TEAM_NAME_PROMPT` en
+`transcription.py`) -- curada a mano y corta a proposito: Whisper trunca el
+prompt a ~224 tokens, asi que volcar los ~140 nombres de
+`normalization/teams.py::KNOWN_ALIASES` enteros se cortaria a mitad de
+lista de forma impredecible; los nombres 100% espanholes ("Real Madrid",
+"Barcelona") ya se reconocen bien sin pista y no hacia falta incluirlos.
+
+### Voz de salida -- sintesis (`backend/app/agent/tts.py`, `POST /agent/speak`)
+
+Mismo patron que la transcripcion, mismo motivo real: `speechSynthesis`
+nativa del navegador devuelve **0 voces** en Linux
+(`speechSynthesis.getVoices().length === 0`, confirmado por un usuario) --
+las voces de calidad de Chrome son remotas y dependen del mismo servicio
+de Google que Brave/Chromium en Linux no tiene disponible. Solucion:
+[Piper](https://github.com/rhasspy/piper) (proyecto Rhasspy) sintetiza
+localmente en CPU con voces neuronales de buena calidad.
+
+Flujo: tras recibir la respuesta de `/agent/chat`, si "Leer las respuestas
+en voz alta" esta marcado, `JarvisChat.tsx` manda el texto a
+`POST /api/agent/speak` (proxy Next.js, reenvia la respuesta binaria con
+`arrayBuffer()`, nunca `.text()`) -> `POST /agent/speak` en el backend
+(mismo guardian `X-Agent-Key` que el resto de `/agent/*`) ->
+`synthesize_speech()` carga la voz Piper (perezosa, cacheada con
+`lru_cache`; se descarga sola la primera vez con
+`piper.download_voices.download_voice`, cacheada en `data/cache/piper`
+bajo el mismo volumen `./data`) y devuelve un WAV -> el frontend lo
+reproduce con un elemento `<audio>` (no depende de ninguna voz del
+sistema, a diferencia de `speechSynthesis`). `PIPER_VOICE` es
+configurable (formato `<idioma>-<nombre>-<calidad>`, catalogo completo en
+[VOICES.md](https://github.com/rhasspy/piper/blob/master/VOICES.md)).

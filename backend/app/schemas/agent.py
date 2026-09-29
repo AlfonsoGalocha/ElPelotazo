@@ -31,3 +31,7 @@ class AgentChatResponse(BaseModel):
 
 class AgentTranscribeResponse(BaseModel):
     text: str
+
+
+class AgentSpeakRequest(BaseModel):
+    text: str

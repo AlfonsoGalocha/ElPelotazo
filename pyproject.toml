@@ -45,6 +45,15 @@ dependencies = [
     # (usado por /agent/transcribe) -- sin esto, FastAPI arranca pero ese
     # endpoint falla en tiempo de ejecucion.
     "python-multipart>=0.0.9",
+    # Sintesis de voz (TTS) para /agent/speak: igual que con el
+    # reconocimiento de voz, se probo primero `speechSynthesis` NATIVA del
+    # navegador (gratis) pero en Linux (Brave/Chromium) devuelve CERO voces
+    # instaladas (`speechSynthesis.getVoices().length === 0`, confirmado
+    # por un usuario) -- de nuevo depende de un servicio de voces remoto de
+    # Google que no esta disponible. Piper (proyecto Rhasspy) sintetiza
+    # localmente en CPU con voces neuronales de buena calidad, sin API key
+    # ni servicio externo -- misma logica que faster-whisper para STT.
+    "piper-tts>=1.8",
 ]
 
 [project.optional-dependencies]

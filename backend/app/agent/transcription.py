@@ -32,6 +32,29 @@ class TranscriptionError(RuntimeError):
     """Fallo al cargar el modelo o transcribir el audio recibido."""
 
 
+# `initial_prompt` de faster-whisper: un trozo de texto que "precalienta" el
+# modelo con el vocabulario esperado, sesgando la transcripcion hacia esos
+# nombres en vez de la palabra generica mas probable (bug real reportado:
+# "Bayern de Múnich" se transcribia como "Bayern de Monoch" con el modelo
+# "base" sin pista de contexto). Whisper trunca el prompt a los ultimos
+# ~224 tokens, asi que NO se vuelca aqui la lista entera de equipos
+# (KNOWN_ALIASES, normalization/teams.py, ~140 nombres) -- se cortaria a
+# mitad de lista de forma impredecible. Se cura a mano un subconjunto de
+# nombres extranjeros con transliteracion realmente ambigua al hablarlos en
+# espanhol (los nombres 100% espanholes como "Real Madrid" ya los reconoce
+# bien sin pista); si un usuario reporta otro nombre mal entendido, se
+# anhade aqui.
+_TEAM_NAME_PROMPT = (
+    "Partidos de fútbol de las 5 grandes ligas: Bayern de Múnich, Borussia Dortmund, "
+    "Bayer Leverkusen, Eintracht Fráncfort, Werder Bremen, Wolfsburgo, Hoffenheim, "
+    "Manchester United, Manchester City, Newcastle, Tottenham, Nottingham Forest, "
+    "Wolverhampton, Brighton, Leicester, Sheffield United, West Ham, "
+    "Paris Saint-Germain, Olympique de Lyon, Olympique de Marsella, Mónaco, Lens, Rennes, "
+    "Inter de Milán, AC Milan, Nápoles, Juventus, Atalanta, Fiorentina, "
+    "Atlético de Madrid, Athletic de Bilbao, Real Sociedad, Villarreal, Betis, Osasuna."
+)
+
+
 @lru_cache(maxsize=1)
 def _load_model(model_size: str, compute_type: str, cache_dir: str):
     # Import perezoso (igual que anthropic/claude_agent_sdk en agent/llm.py):
@@ -68,7 +91,9 @@ def transcribe_audio(audio_bytes: bytes, settings: Settings, suffix: str = ".web
         tmp.write(audio_bytes)
         tmp.flush()
         try:
-            segments, _info = model.transcribe(tmp.name, language="es", vad_filter=True)
+            segments, _info = model.transcribe(
+                tmp.name, language="es", vad_filter=True, initial_prompt=_TEAM_NAME_PROMPT
+            )
             text = "".join(segment.text for segment in segments).strip()
         except Exception as exc:  # noqa: BLE001 -- fallo real de decodificacion/inferencia
             raise TranscriptionError(f"No se pudo transcribir el audio: {exc}") from exc

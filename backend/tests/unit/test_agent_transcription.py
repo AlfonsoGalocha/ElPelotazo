@@ -24,7 +24,7 @@ class _FakeWhisperModel:
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
         pass
 
-    def transcribe(self, path, language=None, vad_filter=None):  # noqa: ANN001
+    def transcribe(self, path, language=None, vad_filter=None, initial_prompt=None):  # noqa: ANN001
         return [_FakeSegment(" Qué partidos hay hoy")], SimpleNamespace(language="es")
 
 
