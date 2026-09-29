@@ -11,6 +11,7 @@ contener datos sensibles (de momento no los hay, pero se deja preparado).
 from __future__ import annotations
 
 import concurrent.futures
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -66,7 +67,33 @@ una de las 5 ligas cubiertas, el problema era solo que la consulta no se parseo 
 frase inventada llevo al usuario a una conclusion falsa.
 6. Se conciso. El usuario es un unico usuario tecnico, no necesitas ser formal ni repetir \
 disclaimers en cada frase, pero nunca los omitas del todo cuando dictamines algo sobre una \
-prediccion en concreto."""
+prediccion en concreto.
+7. NUNCA uses formato Markdown (nada de **negrita**, *cursiva*, `codigo`, listas con "-"/"*" \
+ni encabezados con "#"). Tu respuesta se muestra como texto PLANO en un chat que no renderiza \
+Markdown (los asteriscos aparecen literales) y se lee en voz alta (un sintetizador de voz \
+diria "asterisco asterisco"). Si necesitas enumerar varias cosas, hazlo con una frase natural \
+o numeros seguidos de un punto ("1., 2., 3."), nunca con guiones ni asteriscos."""
+
+# Limpieza defensiva ADEMAS de la regla 7 de arriba: por si el LLM usa
+# Markdown igualmente (bug real reportado por un usuario -- "no para de
+# decir asteriscos"), se retira cualquier formato antes de que la
+# respuesta llegue al frontend (que la muestra en texto plano) o a Piper
+# (que la lee en voz alta tal cual, asteriscos incluidos). Solo asteriscos,
+# NUNCA guion bajo como marcador de enfasis: nombres de mercado reales que
+# Jarvis repite tal cual son snake_case ("over_2_5", "cards_over_3_5") --
+# tratar "_2_" como cursiva se comia el "2" (bug real detectado en tests).
+_MARKDOWN_BOLD_ITALIC = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*")
+_MARKDOWN_HEADER = re.compile(r"^#{1,6}\s*", re.MULTILINE)
+_MARKDOWN_BULLET = re.compile(r"^[ \t]*[-*]\s+", re.MULTILINE)
+_MARKDOWN_CODE = re.compile(r"`([^`]+)`")
+
+
+def _strip_markdown(text: str) -> str:
+    text = _MARKDOWN_CODE.sub(r"\1", text)
+    text = _MARKDOWN_BOLD_ITALIC.sub(lambda m: next(g for g in m.groups() if g is not None), text)
+    text = _MARKDOWN_HEADER.sub("", text)
+    text = _MARKDOWN_BULLET.sub("", text)
+    return text
 
 
 @dataclass
@@ -139,7 +166,9 @@ def run_agent_turn(
 
         if not turn.tool_calls:
             return AgentTurnResult(
-                text=turn.text or "", tool_log=tool_log, referenced_matches=referenced_matches
+                text=_strip_markdown(turn.text or ""),
+                tool_log=tool_log,
+                referenced_matches=referenced_matches,
             )
 
         assistant_content: list[dict[str, Any]] = []
