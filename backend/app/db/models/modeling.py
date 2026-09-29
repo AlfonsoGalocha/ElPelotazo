@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.database import Base
@@ -114,6 +114,41 @@ class PredictionResult(Base):
     settled_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
     prediction: Mapped[Prediction] = relationship(back_populates="result")
+
+
+class AgentAlert(Base):
+    """Alerta proactiva de Jarvis (Fase 6 del brief del agente, seccion 13:
+    "revisa los partidos de hoy" -> detectar contradicciones/senhales de
+    baja fiabilidad/outliers/senhales de valor SIN que el usuario tenga que
+    preguntar). La genera `backend/app/agent/alerts.py`, nunca el motor de
+    prediccion -- una tabla nueva y separada en vez de reusar `Prediction`
+    para no mezclar "lo que predice el modelo" con "lo que decide destacar
+    el agente".
+
+    Idempotente por diseno (`UniqueConstraint` match+tipo): generar alertas
+    varias veces al dia (la pasada horaria del scheduler) nunca duplica la
+    misma alerta para el mismo partido.
+    """
+
+    __tablename__ = "agent_alerts"
+    __table_args__ = (UniqueConstraint("match_id", "alert_type", name="uq_agent_alert_match_type"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"))
+    prediction_id: Mapped[int | None] = mapped_column(ForeignKey("predictions.id"), nullable=True)
+    # Mismas constantes que prediction/anomaly.py (CONTRADICCION,
+    # SENAL_BAJA_FIABILIDAD, OUTLIER, HIGH_PROBABILITY_LOW_VALUE) mas
+    # "SENAL_DE_VALOR" (propia de este modulo: mejor prediccion del
+    # partido con edge/confianza por encima del umbral configurado).
+    alert_type: Mapped[str] = mapped_column(String(32))
+    # Texto en lenguaje llano, SOLO con numeros reales trazables a la
+    # prediccion (nunca "apuesta segura"/certeza) -- mismo principio que
+    # `explanation_summary` de /predictions/{id}/detail.
+    message: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+    match = relationship("Match", foreign_keys=[match_id])
+    prediction = relationship("Prediction", foreign_keys=[prediction_id])
 
 
 class Backtest(Base):

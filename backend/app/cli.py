@@ -16,6 +16,7 @@ from pathlib import Path
 
 import typer
 
+from backend.app.agent.alerts import generate_alerts_for_current_round
 from backend.app.backtesting.calibration import calibration_report_for_table
 from backend.app.backtesting.engine import run_walk_forward_backtest, summarize_backtest
 from backend.app.backtesting.reports import write_backtest_report
@@ -39,9 +40,12 @@ from backend.app.services.data_service import (
     attach_secondary_odds_to_scheduled_matches,
     ingest_matches,
 )
+from backend.app.services.evaluation_service import (
+    evaluate_settled_predictions,
+    settle_finished_predictions,
+)
 from backend.app.services.match_service import load_market_odds_column, load_matches_dataframe
 from backend.app.services.model_service import train_competition_models
-from backend.app.services.evaluation_service import evaluate_settled_predictions, settle_finished_predictions
 from backend.app.services.prediction_service import generate_predictions_for_competition
 from backend.app.services.round_service import get_current_round
 from backend.app.utils.dates import season_label as season_label_from_date
@@ -462,12 +466,20 @@ def evaluate(competition: str = typer.Option(None), output: str | None = None) -
     with session_scope() as db:
         settled_count = settle_finished_predictions(db, competition_code=competition)
         report_data = evaluate_settled_predictions(db, competition_code=competition)
+        # Alertas proactivas de Jarvis (Fase 6, agent/alerts.py) -- misma
+        # cadencia que el settlement (cada hora via scheduler), no-op si
+        # AGENT_ALERTS_ENABLED=false. Aqui y no en un paso aparte del
+        # scheduler para no tener que tocar docker-compose.yml cada vez
+        # que se anhada un nuevo tipo de alerta proactiva.
+        new_alerts = generate_alerts_for_current_round(db)
 
     if settled_count:
         typer.echo(
             f"[evaluate] {settled_count} predicciones liquidadas "
             "(PredictionResult creado, nunca sobreescrito)."
         )
+    if new_alerts:
+        typer.echo(f"[evaluate] {new_alerts} alertas nuevas de Jarvis generadas.")
 
     if not report_data["competitions"]:
         typer.echo(

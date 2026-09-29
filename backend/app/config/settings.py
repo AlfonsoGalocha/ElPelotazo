@@ -145,6 +145,28 @@ class Settings(BaseSettings):
     # nunca lo deja abierto "por defecto".
     agent_shared_secret: str | None = None
 
+    # --- Alertas proactivas de Jarvis (backend/app/agent/alerts.py, Fase 6) ---
+    # Desactivadas por defecto a proposito (seccion 13 del brief: "quiero
+    # que esto sea configurable", nunca un ON silencioso). Generan filas en
+    # `agent_alerts` (contradicciones/baja fiabilidad/outliers/senhales de
+    # valor de la jornada actual) que la tool `get_active_alerts` puede
+    # consultar -- de momento SOLO se guardan, no se envian a ningun sitio
+    # (no hay canal de notificacion decidido todavia: email/Telegram/push
+    # son trabajo futuro cuando el usuario elija uno, ver docs/modeling.md).
+    agent_alerts_enabled: bool = False
+    # Puntos porcentuales de edge minimo para que la mejor prediccion de un
+    # partido genere una alerta de "senhal de valor" (seccion 13: "Minimum
+    # edge: 5%").
+    agent_alert_min_edge_pp: float = 5.0
+    # Nivel minimo de `signal_tier()` (prediction/confidence.py) para esa
+    # misma alerta -- reusa la misma clasificacion HIGH/MEDIUM/LOW ya
+    # existente en vez de inventar un segundo umbral de "confianza"
+    # (seccion 13: "Minimum confidence: MEDIUM").
+    agent_alert_min_tier: str = "MEDIUM_DATA_SUPPORT"
+    # Lista de competition_code a vigilar; vacia = todas las conocidas
+    # (seccion 13: "Leagues: Premier / La Liga / Serie A").
+    agent_alert_leagues: list[str] = []
+
     @property
     def model_artifacts_path(self) -> Path:
         path = REPO_ROOT / self.model_artifacts_dir

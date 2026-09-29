@@ -433,3 +433,68 @@ gente, esto debe evolucionar a un sistema de auth real).
   `env={"IS_SANDBOX": "1"}` al proceso del CLI para esto -- no relaja
   ninguna seguridad real, el aislamiento de verdad ya lo da `tools=[]`
   (sin Bash/Read/Write nativos).
+
+### Fase 4 -- interfaz de chat
+
+Pagina `/jarvis` (frontend) con chat simple, sin memoria en servidor
+(reenvia el historial completo en cada request). Llama a un proxy propio
+del frontend, `frontend/app/api/agent/chat/route.ts` (server-side), en vez
+de al backend directamente desde el navegador: asi `AGENT_SHARED_SECRET`
+nunca se manda como `NEXT_PUBLIC_*` (quedaria visible para cualquiera que
+abra las herramientas de desarrollador de la pagina). `docker-compose.yml`
+pasa ese mismo secreto al contenedor `frontend` (variable de entorno
+normal, no de build) para que el proxy lo pueda usar.
+
+### Fase 5 -- mas tools (`analyze_match`, `get_model_performance`)
+
+Dos tools nuevas, mismos principios que `get_matches_today` (wrapper fino
+sobre logica YA EXISTENTE, nunca inventa datos):
+
+- **`analyze_match(query)`**: busca un partido por nombre de uno o los dos
+  equipos (`_find_match`, MISMA logica de busqueda por substring que
+  `GET /matches?search=` -- nunca similitud difusa/ambigua, principio ya
+  establecido en `normalization/teams.py`). Devuelve TODAS las
+  predicciones del partido (no solo la mejor), cada una con sus factores
+  reales (`explanation.factors`, el mismo campo que ya expone
+  `/predictions/{id}/detail` -- nunca un factor inventado que el modelo no
+  pueda respaldar), la mejor prediccion, y el resultado real si el partido
+  ya termino. Cubre el ejemplo destacado del brief: "analiza el Barcelona -
+  Getafe".
+- **`get_model_performance(competition_code?, market?)`**: delega
+  directamente en `services/evaluation_service.py::real_performance_report`
+  (ya usado por `GET /models/performance`) -- cero logica nueva, solo
+  expone el mismo informe real (accuracy/Brier/calibracion/ROI sobre
+  predicciones YA liquidadas) al agente.
+
+### Fase 6 -- alertas proactivas (`backend/app/agent/alerts.py`)
+
+`generate_alerts_for_current_round(db)` escanea la jornada actual de cada
+competicion vigilada y guarda filas en la tabla nueva `agent_alerts`
+cuando `prediction/anomaly.py` (ya usado por /top-signals) detecta algo
+digno de destacar:
+
+- Los 4 tipos de anomalia ya existentes (`CONTRADICCION`,
+  `SENAL_BAJA_FIABILIDAD`, `OUTLIER`, `HIGH_PROBABILITY_LOW_VALUE`) --
+  una alerta por (partido, tipo), nunca una por prediccion individual.
+- `SENAL_DE_VALOR` (nueva, propia de este modulo): la mejor prediccion del
+  partido (`best_prediction_per_match`, sin contradiccion) cuando su edge
+  y su `signal_tier` superan los umbrales configurados
+  (`AGENT_ALERT_MIN_EDGE_PP`, `AGENT_ALERT_MIN_TIER` -- reusa la MISMA
+  clasificacion HIGH/MEDIUM/LOW de `prediction/confidence.py` en vez de
+  inventar un segundo umbral de "confianza").
+
+Idempotente por diseno: `UniqueConstraint(match_id, alert_type)` en el
+modelo `AgentAlert` (`db/models/modeling.py`) impide duplicar la misma
+alerta aunque se genere cada hora (se ejecuta desde `football-edge
+evaluate`, el mismo paso que ya liquida partidos terminados cada hora via
+el scheduler -- asi no hace falta tocar `docker-compose.yml` cada vez que
+se anhada un nuevo tipo de alerta). Desactivado por defecto
+(`AGENT_ALERTS_ENABLED=false`, seccion 13 del brief: "quiero que esto sea
+configurable", nunca un ON silencioso).
+
+**Entrega deliberadamente NO incluida**: envio real (email/Telegram/push).
+No hay canal de notificacion configurado ni credenciales pedidas por el
+usuario -- inventar uno seria fabricar infraestructura sin que nos la
+hayan pedido. La tool `get_active_alerts` es, de momento, la unica forma
+de "recibir" estas alertas: preguntandole a Jarvis ("¿hay alguna
+alerta?").
