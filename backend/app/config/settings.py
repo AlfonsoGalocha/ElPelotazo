@@ -167,6 +167,25 @@ class Settings(BaseSettings):
     # (seccion 13: "Leagues: Premier / La Liga / Serie A").
     agent_alert_leagues: list[str] = []
 
+    # --- Transcripcion de voz de Jarvis (backend/app/agent/transcription.py, Fase 7) ---
+    # faster-whisper corre EN NUESTRO backend (nunca en un servicio externo
+    # de Google) -- ver comentario en pyproject.toml sobre por que el
+    # reconocimiento de voz nativo del navegador no sirve en Brave. Tamanho
+    # de modelo por defecto pequenho a proposito: "base" transcribe bien
+    # espanhol conversacional corto y tarda pocos segundos en CPU, sin
+    # necesitar GPU. Sube a "small"/"medium" si la precision no basta,
+    # baja el coste en CPU es lo que manda para un asistente de un solo
+    # usuario.
+    whisper_model_size: str = "base"
+    # "int8" es mucho mas rapido en CPU que "float32"/"float16" con perdida
+    # de precision minima para audio corto -- CTranslate2 (motor de
+    # faster-whisper) esta pensado para esto, no es un atajo improvisado.
+    whisper_compute_type: str = "int8"
+    # Directorio bajo el volumen `./data` (ya montado en docker-compose.yml)
+    # para que el modelo descargado sobreviva a un `docker compose down` en
+    # vez de re-descargarse en cada arranque del contenedor.
+    whisper_model_cache_dir: str = "data/cache/whisper"
+
     @property
     def model_artifacts_path(self) -> Path:
         path = REPO_ROOT / self.model_artifacts_dir

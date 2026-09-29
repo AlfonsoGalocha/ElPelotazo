@@ -3,30 +3,28 @@
 import { useEffect, useRef, useState } from "react";
 import type { AgentChatMessage, AgentChatResponse } from "@/types";
 
-// Web Speech API: nativa del navegador, sin coste ni claves nuevas (Fase
-// 7 del brief -- "primero estudia las opciones", elegido esto por ser
-// gratis; ElevenLabs/Whisper quedan como mejora futura si la calidad de
-// voz robotica del sistema operativo no basta). Soporte real: Chrome/Edge
-// completo, Safari parcial, Firefox SIN reconocimiento de voz -- se
-// detecta y se deshabilita el microfono en vez de fingir que funciona.
-type SpeechRecognitionLike = {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  onresult: ((event: any) => void) | null; // eslint-disable-line @typescript-eslint/no-explicit-any
-  onerror: ((event: any) => void) | null; // eslint-disable-line @typescript-eslint/no-explicit-any
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
+// Reconocimiento de voz: se probo primero la Web Speech API nativa del
+// navegador (gratis, sin dependencias nuevas) pero esa API NO es local
+// pese a las apariencias -- manda el audio a un servidor de Google usando
+// una clave API que Chrome trae integrada de fabrica. Brave (y cualquier
+// Chromium centrado en privacidad) la elimina a proposito, asi que falla
+// siempre con "error de red" (bug real confirmado por un usuario,
+// reproducido incluso con Shields desactivado). Solucion, la MISMA que usa
+// claude.ai: el navegador solo GRABA el audio con `MediaRecorder`
+// (funciona en cualquier navegador, incluido Brave/Firefox) y
+// `POST /api/agent/transcribe` lo transcribe con un modelo Whisper local
+// en nuestro propio backend -- sin API key de pago ni depender de ningun
+// servicio externo de Google.
+function getSupportedMimeType(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+}
 
-function getSpeechRecognition(): (new () => SpeechRecognitionLike) | null {
-  if (typeof window === "undefined") return null;
-  const w = window as unknown as {
-    SpeechRecognition?: new () => SpeechRecognitionLike;
-    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
-  };
-  return w.SpeechRecognition ?? w.webkitSpeechRecognition ?? null;
+function extensionForMimeType(mimeType: string): string {
+  if (mimeType.includes("ogg")) return ".ogg";
+  if (mimeType.includes("mp4")) return ".mp4";
+  return ".webm";
 }
 
 function speak(text: string) {
@@ -41,15 +39,21 @@ export default function JarvisChat() {
   const [messages, setMessages] = useState<AgentChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [listening, setListening] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
-  const [speechSupported, setSpeechSupported] = useState(false);
+  const [micSupported, setMicSupported] = useState(false);
   const [synthesisSupported, setSynthesisSupported] = useState(false);
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
-    setSpeechSupported(getSpeechRecognition() !== null);
+    setMicSupported(
+      typeof navigator !== "undefined" &&
+        !!navigator.mediaDevices?.getUserMedia &&
+        typeof MediaRecorder !== "undefined"
+    );
     setSynthesisSupported(typeof window !== "undefined" && "speechSynthesis" in window);
   }, []);
 
@@ -86,40 +90,70 @@ export default function JarvisChat() {
     }
   }
 
-  function toggleListening() {
-    const SpeechRecognitionCtor = getSpeechRecognition();
-    if (!SpeechRecognitionCtor) return;
+  async function transcribeAndSend(blob: Blob, mimeType: string) {
+    setTranscribing(true);
+    setError(null);
+    try {
+      const formData = new FormData();
+      formData.append("audio", blob, `clip${extensionForMimeType(mimeType)}`);
+      const res = await fetch("/api/agent/transcribe", { method: "POST", body: formData });
+      const data = (await res.json()) as { text: string } | { detail: string };
+      if (!res.ok || !("text" in data)) {
+        setError("detail" in data ? data.detail : `Error ${res.status} transcribiendo el audio.`);
+        return;
+      }
+      if (!data.text.trim()) {
+        setError("No se detectó ninguna voz en la grabación. Prueba a hablar más alto o más cerca del micrófono.");
+        return;
+      }
+      setInput(data.text);
+      send(data.text);
+    } catch {
+      setError("No se pudo transcribir el audio. Comprueba que el backend está corriendo.");
+    } finally {
+      setTranscribing(false);
+    }
+  }
 
-    if (listening) {
-      recognitionRef.current?.stop();
+  async function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop();
       return;
     }
 
-    const recognition = new SpeechRecognitionCtor();
-    recognition.lang = "es-ES";
-    recognition.continuous = false;
-    recognition.interimResults = false;
-    recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript as string;
-      setInput(transcript);
-      send(transcript);
+    setError(null);
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      const name = (err as DOMException).name;
+      if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+        setError(
+          "Permiso de micrófono denegado. Revisa el icono de candado/permisos junto a la URL del navegador y permite el micrófono para esta página."
+        );
+      } else if (name === "NotFoundError") {
+        setError("No se encontró ningún micrófono. Comprueba que tienes uno conectado y no lo está usando otra app.");
+      } else {
+        setError(`No se pudo acceder al micrófono: ${name}`);
+      }
+      return;
+    }
+
+    const mimeType = getSupportedMimeType();
+    const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    chunksRef.current = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data.size > 0) chunksRef.current.push(e.data);
     };
-    recognition.onerror = (event) => {
-      const code = event.error as string;
-      const reasons: Record<string, string> = {
-        "not-allowed": "Permiso de micrófono denegado. Revisa el icono de candado/permisos junto a la URL del navegador y permite el micrófono para esta página.",
-        "audio-capture": "No se encontró ningún micrófono. Comprueba que tienes uno conectado y no lo está usando otra app.",
-        "no-speech": "No se detectó voz. Prueba a hablar justo después de pulsar el micrófono.",
-        network: "Fallo de red del reconocimiento de voz del navegador (necesita conexión a internet aunque sea local).",
-        aborted: "Reconocimiento cancelado.",
-      };
-      setError(reasons[code] ?? `Error de reconocimiento de voz: ${code}`);
-      setListening(false);
+    recorder.onstop = () => {
+      stream.getTracks().forEach((track) => track.stop()); // apaga el LED del micro
+      setRecording(false);
+      const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
+      transcribeAndSend(blob, recorder.mimeType);
     };
-    recognition.onend = () => setListening(false);
-    recognitionRef.current = recognition;
-    setListening(true);
-    recognition.start();
+    mediaRecorderRef.current = recorder;
+    setRecording(true);
+    recorder.start();
   }
 
   return (
@@ -135,9 +169,9 @@ export default function JarvisChat() {
             Leer las respuestas en voz alta
           </label>
         )}
-        {!speechSupported && (
+        {!micSupported && (
           <span className="text-amber-500/80">
-            Tu navegador no soporta reconocimiento de voz (prueba con Chrome/Edge).
+            Tu navegador no soporta grabación de audio (prueba con Chrome/Edge/Brave/Firefox recientes).
           </span>
         )}
       </div>
@@ -160,6 +194,7 @@ export default function JarvisChat() {
             {m.content}
           </div>
         ))}
+        {transcribing && <p className="text-xs text-slate-500">Transcribiendo tu voz…</p>}
         {loading && <p className="text-xs text-slate-500">Jarvis está pensando…</p>}
         {error && (
           <p className="rounded border border-red-500/30 bg-red-500/10 p-2 text-xs text-red-300">
@@ -175,13 +210,14 @@ export default function JarvisChat() {
           placeholder="Escribe a Jarvis…"
           className="flex-1 rounded border border-surface-border bg-surface-raised px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:border-slate-500 focus:outline-none"
         />
-        {speechSupported && (
+        {micSupported && (
           <button
-            onClick={toggleListening}
-            title={listening ? "Escuchando… pulsa para parar" : "Hablar a Jarvis"}
+            onClick={toggleRecording}
+            disabled={transcribing}
+            title={recording ? "Grabando… pulsa para parar y transcribir" : "Hablar a Jarvis"}
             className={
-              "rounded border px-3 py-2 text-sm " +
-              (listening
+              "rounded border px-3 py-2 text-sm disabled:opacity-50 " +
+              (recording
                 ? "animate-pulse border-red-500/50 bg-red-500/15 text-red-300"
                 : "border-surface-border text-slate-200 hover:bg-surface-raised")
             }

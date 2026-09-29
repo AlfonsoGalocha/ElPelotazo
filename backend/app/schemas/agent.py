@@ -27,3 +27,7 @@ class AgentToolLogEntry(BaseModel):
 class AgentChatResponse(BaseModel):
     reply: str
     tool_log: list[AgentToolLogEntry]
+
+
+class AgentTranscribeResponse(BaseModel):
+    text: str

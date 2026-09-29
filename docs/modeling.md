@@ -498,3 +498,44 @@ usuario -- inventar uno seria fabricar infraestructura sin que nos la
 hayan pedido. La tool `get_active_alerts` es, de momento, la unica forma
 de "recibir" estas alertas: preguntandole a Jarvis ("¿hay alguna
 alerta?").
+
+### Fase 7 -- voz (`backend/app/agent/transcription.py`, `POST /agent/transcribe`)
+
+Primer intento: la Web Speech API nativa del navegador
+(`webkitSpeechRecognition`) -- gratis, cero dependencias nuevas. Se
+descarto tras un fallo real reportado por un usuario: esa API NO
+transcribe localmente pese a las apariencias, manda el audio a un
+servidor de reconocimiento de Google usando una clave API que Chrome trae
+integrada de fabrica. **Brave (y cualquier Chromium centrado en
+privacidad) elimina esa clave a proposito**, asi que el reconocimiento
+falla siempre con `event.error === "network"` aunque el microfono en si
+funcione perfectamente y haya conexion a internet normal -- reproducido
+incluso con los Shields de Brave desactivados.
+
+Solucion adoptada, la MISMA arquitectura que usa claude.ai para voz: el
+navegador solo GRABA el audio (`MediaRecorder`, API distinta de
+`SpeechRecognition` -- funciona en cualquier navegador, incluidos
+Brave/Firefox) y lo manda a nuestro propio backend, donde
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2,
+mas rapido que `openai-whisper` en CPU con precision equivalente) lo
+transcribe localmente. Sin API key de pago ni depender de ningun servicio
+externo de Google -- coherente con el mismo principio que llevo a elegir
+`AGENT_LLM_PROVIDER=claude_code` (pagar con lo que ya tienes, no con una
+API de terceros).
+
+Flujo: `JarvisChat.tsx` graba con `MediaRecorder` -> sube el blob
+(webm/opus normalmente) a `POST /api/agent/transcribe` (proxy Next.js,
+mismo patron que `/api/agent/chat` -- reenvia el `FormData` tal cual,
+nunca `request.text()`, para no corromper los bytes binarios del audio) ->
+`POST /agent/transcribe` en el backend (mismo guardian de autenticacion
+`X-Agent-Key`/`AGENT_SHARED_SECRET` que `/agent/chat`) -> `transcribe_audio()`
+carga el modelo Whisper (perezoso, cacheado con `lru_cache`, tamanho
+configurable via `WHISPER_MODEL_SIZE`) y devuelve el texto -> el frontend
+rellena el input y lo envia como un mensaje de texto normal, sin ningun
+camino especial en el orquestador ni en el LLM.
+
+Modelo cacheado en `data/cache/whisper` (bajo el volumen `./data` ya
+montado en `docker-compose.yml`) para no re-descargarlo en cada
+`docker compose up`. `WHISPER_MODEL_SIZE=base` por defecto: buen punto de
+partida en CPU sin GPU dedicada; `WHISPER_COMPUTE_TYPE=int8` acelera la
+inferencia en CPU con perdida de precision minima para clips cortos.

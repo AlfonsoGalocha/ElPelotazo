@@ -30,6 +30,21 @@ dependencies = [
     # (npm install -g @anthropic-ai/claude-code) en la maquina que ejecuta
     # el backend -- este paquete Python por si solo no basta.
     "claude-agent-sdk>=0.2",
+    # Transcripcion de voz (Fase 7) para /agent/transcribe: se probo primero
+    # el reconocimiento de voz NATIVO del navegador (Web Speech API,
+    # gratis, sin dependencias nuevas) pero Brave (y en general cualquier
+    # Chromium sin la API key propietaria de Google) falla siempre con
+    # error de "red" -- ese reconocimiento en realidad NO es local, manda
+    # el audio a un servidor de Google usando una clave que Brave elimina
+    # a proposito por privacidad. Solucion: igual que hace claude.ai, el
+    # navegador solo GRABA el audio (MediaRecorder, funciona en cualquier
+    # navegador) y este modelo lo transcribe en NUESTRO propio backend --
+    # sin API key de pago ni dependencia de un servicio externo de Google.
+    "faster-whisper>=1.0",
+    # Requerido por FastAPI para parsear `UploadFile`/multipart-form-data
+    # (usado por /agent/transcribe) -- sin esto, FastAPI arranca pero ese
+    # endpoint falla en tiempo de ejecucion.
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
