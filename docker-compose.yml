@@ -138,15 +138,29 @@ services:
     # 4 veces al dia (horas 0/6/12/18 UTC) -- suficiente para que "Mejores
     # senhales" no se quede con cuotas muy desactualizadas, sin quemar la
     # cuota mensual gratuita.
+    # IMPORTANTE: todo "$" de este script va escapado como "$$" a
+    # proposito. Docker Compose interpola SU PROPIA sintaxis de variables
+    # ($VAR, ${VAR}, ${VAR:-default}...) en cualquier valor del YAML antes
+    # de que el contenedor vea el comando -- bug real detectado en
+    # produccion: "$hour" se sustituia por el valor (vacio) de una
+    # variable de entorno del HOST llamada "hour" (de ahi el aviso "The
+    # 'hour' variable is not set" en TODOS los comandos de compose, no
+    # solo al arrancar este servicio), dejando literalmente "10# % 6" y
+    # tumbando el contenedor entero (exit code 2) en cada pasada -- el
+    # scheduler llevaba dias sin ejecutar nada. "$$" le dice a Compose "no
+    # interpoles esto, es literal", y el shell del contenedor lo recibe
+    # como un "$" normal.
     command:
       - >
         while true; do
-          hour=$(date -u +%H);
-          echo "[scheduler] $(date -u +%FT%TZ) -- fixtures + liquidacion de partidos terminados + predicciones";
+          hour=$$(date -u +%H);
+          hour=$${hour#0};
+          hour=$${hour:-0};
+          echo "[scheduler] $$(date -u +%FT%TZ) -- fixtures + liquidacion de partidos terminados + predicciones";
           football-edge update-fixtures || echo "[scheduler] fallo update-fixtures, se reintenta en 1h";
           football-edge evaluate || echo "[scheduler] fallo evaluate/settle, se reintenta en 1h";
-          if [ $((10#$hour % 6)) -eq 0 ]; then
-            echo "[scheduler] $(date -u +%FT%TZ) -- cuotas de mercado (cada 6h, para no agotar la cuota gratuita de las APIs)";
+          if [ $$((hour % 6)) -eq 0 ]; then
+            echo "[scheduler] $$(date -u +%FT%TZ) -- cuotas de mercado (cada 6h, para no agotar la cuota gratuita de las APIs)";
             football-edge update-odds || echo "[scheduler] fallo update-odds, se reintenta en 6h";
             football-edge update-secondary-odds || echo "[scheduler] fallo update-secondary-odds, se reintenta en 6h";
           fi
