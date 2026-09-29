@@ -112,6 +112,34 @@ class Settings(BaseSettings):
     # entero para activar la exclusion dura (`ExclusionReason.STALE_ODDS`).
     max_odds_age_minutes: int | None = None
 
+    # --- Agente Jarvis (backend/app/agent/) ---
+    # Desactivado por defecto: hasta que se ponga una API key real, el
+    # endpoint /agent/chat responde 503 en vez de fallar a medias. Nunca
+    # se ejecuta ninguna llamada a un LLM externo sin que esto sea true a
+    # proposito.
+    agent_enabled: bool = False
+    # Interfaz LLMClient abstraida (backend/app/agent/llm.py) para poder
+    # cambiar de proveedor sin tocar el orquestador -- de momento solo hay
+    # implementacion para "anthropic", pero el nombre del proveedor vive en
+    # config, no hardcodeado.
+    agent_llm_provider: str = "anthropic"
+    anthropic_api_key: str | None = None
+    # Haiku por defecto a proposito (seccion 19, control de costes): esta
+    # tarea es sobre todo "decidir que tool llamar" e interpretar una
+    # respuesta estructurada, no razonamiento complejo -- un modelo barato
+    # basta. Subir a un modelo mas potente es cambiar esta variable, nunca
+    # tocar codigo.
+    agent_llm_model: str = "claude-haiku-4-5-20251001"
+    agent_max_tool_iterations: int = 4
+    agent_tool_timeout_seconds: float = 10.0
+    # Autenticacion MINIMA (uso personal, sin multiusuario, seccion C de la
+    # entrevista): un secreto compartido en la cabecera X-Agent-Key. No es
+    # un sistema de auth completo, pero sin esto el endpoint quedaria
+    # abierto a cualquiera en cuanto se exponga a internet (pedido en la
+    # misma conversacion). `None` deshabilita el endpoint por completo,
+    # nunca lo deja abierto "por defecto".
+    agent_shared_secret: str | None = None
+
     @property
     def model_artifacts_path(self) -> Path:
         path = REPO_ROOT / self.model_artifacts_dir

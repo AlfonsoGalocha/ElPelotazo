@@ -350,3 +350,34 @@ cuota, cuota justa, calidad de mercado, antigueedad de la cuota, calidad
 de datos, confianza). Nunca usa lenguaje de certeza ("apuesta segura",
 "ganadora", "100%") — es una herramienta de analisis estadistico, no una
 promesa de resultado. Frontend: `/signals/[id]`.
+
+## Agente "Jarvis" (`backend/app/agent/`, Fase 1-2, MVP)
+
+Capa de agente conversacional CONSTRUIDA ENCIMA del motor existente, no un
+reemplazo: el LLM (Anthropic, `agent/llm.py`, interfaz `LLMClient`
+abstraida para poder cambiar de proveedor por configuracion) nunca calcula
+probabilidades ni inventa datos — solo decide que "tool" llamar
+(`agent/tools.py`) entre las herramientas registradas, cada una un wrapper
+fino sobre un servicio que YA EXISTE, e interpreta/resume el resultado en
+lenguaje natural (`agent/orchestrator.py` implementa el bucle
+LLM -> tool_use -> resultado -> LLM, con limite de iteraciones y timeout
+por tool para que nunca quede colgado).
+
+MVP: una sola tool, `get_matches_today` (partidos de la jornada actual de
+cada competicion, mismo filtro de fecha que el Home -- ver
+`services/round_service.py` -- con la MEJOR PREDICCION de cada partido via
+`prediction/anomaly.py::best_prediction_per_match`, el mismo criterio de
+`signal_score` que usa el resto de la app, nunca "la probabilidad mas
+alta" sin mas). Anhadir una tool nueva no requiere tocar el orquestador:
+solo escribir su handler y anhadirla a `TOOLS` en `agent/tools.py`.
+
+Endpoint: `POST /agent/chat` (`backend/app/api/routes/agent.py`), body
+`{message, history}` — la memoria de conversacion es SIN PERSISTENCIA en
+servidor para este MVP (el frontend reenvia el historial completo en cada
+request); memoria de largo plazo/de dominio queda para una fase
+posterior. Desactivado por defecto (`AGENT_ENABLED=false`): sin
+`ANTHROPIC_API_KEY` ni `AGENT_SHARED_SECRET` configurados, responde 503 en
+vez de quedar abierto. Autenticacion: secreto compartido en la cabecera
+`X-Agent-Key` (uso personal, sin multiusuario — pedido explicito de
+usuario; si algun dia se abre a mas gente, esto debe evolucionar a un
+sistema de auth real).

@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.routes import (
+    agent,
     backtesting,
     competitions,
     health,
@@ -47,3 +48,4 @@ app.include_router(predictions.router)
 app.include_router(backtesting.router)
 app.include_router(models.router)
 app.include_router(history.router)
+app.include_router(agent.router)

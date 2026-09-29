@@ -1,0 +1,137 @@
+"""Bucle del agente: manda el mensaje del usuario + definicion de tools al
+LLM, ejecuta las tools que pida, le devuelve el resultado, y repite hasta
+que el LLM de una respuesta de texto final (o se agote el limite de
+iteraciones/tiempo, seccion 19 y 21 del brief: nunca un bucle sin techo).
+
+Observabilidad (seccion 18): cada tool ejecutada se loguea con nombre,
+duracion y si tuvo exito, SIN loguear los argumentos completos si pudieran
+contener datos sensibles (de momento no los hay, pero se deja preparado).
+"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from backend.app.agent.llm import LLMClient, ToolCall
+from backend.app.agent.tools import TOOLS, TOOLS_BY_NAME
+from backend.app.config.settings import Settings
+from backend.app.utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+SYSTEM_PROMPT = """Eres Jarvis, un asistente especializado EXCLUSIVAMENTE en analisis y \
+prediccion de futbol de las 5 grandes ligas europeas (Premier League, LaLiga, Bundesliga, \
+Serie A, Ligue 1).
+
+Reglas que NUNCA rompes:
+1. Nunca inventas datos, partidos, probabilidades ni cuotas. Si una herramienta no te da un \
+dato, dices explicitamente que no lo tienes -- nunca rellenas el hueco.
+2. Nunca presentas una prediccion como una certeza o garantia. Usa siempre lenguaje de \
+probabilidad/estimacion ("el modelo estima", "la probabilidad calculada es"), nunca \
+"seguro que", "va a ganar" a secas, ni "apuesta segura".
+3. Cuando expliques una prediccion, distingue claramente DATOS (lo que devuelve la \
+herramienta) de INTERPRETACION (tu resumen en lenguaje natural) -- nunca mezcles ambas \
+cosas como si fueran la misma cosa.
+4. Si no tienes ninguna herramienta que te de la informacion que te piden (por ejemplo, \
+lesiones o alineaciones: todavia no estan disponibles), dilo honestamente en vez de \
+responder con conocimiento general sobre futbol.
+5. Se conciso y estructurado. El usuario es un unico usuario tecnico, no necesitas ser \
+formal ni repetir disclaimers en cada frase, pero nunca los omitas del todo cuando dictamines
+algo sobre una prediccion en concreto."""
+
+
+@dataclass
+class AgentTurnResult:
+    text: str
+    tool_log: list[dict[str, Any]] = field(default_factory=list)
+
+
+class AgentError(Exception):
+    """Error del agente pensado para mostrarse tal cual al usuario (nunca
+    expone stacktraces ni detalles internos)."""
+
+
+def _anthropic_tool_specs() -> list[dict[str, Any]]:
+    return [
+        {"name": tool.name, "description": tool.description, "input_schema": tool.parameters}
+        for tool in TOOLS
+    ]
+
+
+def _run_tool_with_timeout(db: Session, call: ToolCall, timeout_seconds: float) -> dict[str, Any]:
+    tool = TOOLS_BY_NAME.get(call.name)
+    if tool is None:
+        return {"error": f"Herramienta desconocida: {call.name!r}."}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(tool.handler, db, call.arguments)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            return {"error": f"La herramienta {call.name!r} tardo demasiado (timeout)."}
+        except Exception as exc:  # noqa: BLE001 -- se reporta al LLM, no se propaga tal cual
+            logger.error("agent.tool_error", tool=call.name, error=str(exc))
+            return {"error": f"La herramienta {call.name!r} fallo: {exc}"}
+
+
+def run_agent_turn(
+    db: Session,
+    llm: LLMClient,
+    settings: Settings,
+    user_message: str,
+    history: list[dict[str, Any]] | None = None,
+) -> AgentTurnResult:
+    messages: list[dict[str, Any]] = list(history or [])
+    messages.append({"role": "user", "content": user_message})
+
+    tool_log: list[dict[str, Any]] = []
+    tools_spec = _anthropic_tool_specs()
+
+    for _ in range(settings.agent_max_tool_iterations):
+        turn = llm.run_turn(SYSTEM_PROMPT, messages, tools_spec)
+
+        if not turn.tool_calls:
+            return AgentTurnResult(text=turn.text or "", tool_log=tool_log)
+
+        assistant_content: list[dict[str, Any]] = []
+        if turn.text:
+            assistant_content.append({"type": "text", "text": turn.text})
+        for call in turn.tool_calls:
+            assistant_content.append(
+                {"type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments}
+            )
+        messages.append({"role": "assistant", "content": assistant_content})
+
+        tool_results: list[dict[str, Any]] = []
+        for call in turn.tool_calls:
+            started = time.monotonic()
+            result = _run_tool_with_timeout(db, call, settings.agent_tool_timeout_seconds)
+            duration_ms = round((time.monotonic() - started) * 1000, 1)
+            ok = "error" not in result
+            logger.info(
+                "agent.tool_call",
+                tool=call.name,
+                ok=ok,
+                duration_ms=duration_ms,
+            )
+            tool_log.append({"tool": call.name, "ok": ok, "duration_ms": duration_ms})
+            tool_results.append(
+                {"type": "tool_result", "tool_use_id": call.id, "content": _to_text(result)}
+            )
+        messages.append({"role": "user", "content": tool_results})
+
+    raise AgentError(
+        "No he podido completar la respuesta en un numero razonable de pasos "
+        f"(limite: {settings.agent_max_tool_iterations}). Prueba a reformular la pregunta."
+    )
+
+
+def _to_text(result: dict[str, Any]) -> str:
+    import json
+
+    return json.dumps(result, ensure_ascii=False, default=str)
