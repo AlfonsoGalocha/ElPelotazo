@@ -465,6 +465,16 @@ sobre logica YA EXISTENTE, nunca inventa datos):
   (ya usado por `GET /models/performance`) -- cero logica nueva, solo
   expone el mismo informe real (accuracy/Brier/calibracion/ROI sobre
   predicciones YA liquidadas) al agente.
+- **`list_team_matches(team, scope?, limit?)`** (anhadida despues, mismo
+  pedido real de "acceso a todo": "que partidos le quedan al Barca",
+  "como le fue al Sevilla el mes pasado"): busca el equipo por nombre
+  (`_find_team`, substring, prioriza el nombre canonico mas CORTO si hay
+  varios candidatos -- ej. "Madrid" casa con "Real Madrid" y "Atletico
+  Madrid", se queda con el mas corto por ser menos ambiguo) y lista sus
+  partidos pasados y/o futuros (`scope`: "upcoming"/"past"/"all") con
+  calendario y resultado real si ya termino. Deliberadamente SIN
+  predicciones -- para eso esta `analyze_match` sobre un partido concreto,
+  esta tool es solo calendario/historial.
 
 ### Fase 6 -- alertas proactivas (`backend/app/agent/alerts.py`)
 

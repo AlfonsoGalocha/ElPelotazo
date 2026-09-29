@@ -218,6 +218,86 @@ def _find_match(db: Session, query_text: str) -> Match | None:
     return candidates[0]
 
 
+def _find_team(db: Session, query_text: str) -> Team | None:
+    """Busca un equipo por nombre (substring, sin fuzzy), mismo principio
+    que `_find_match`. Si hay varios candidatos (ej. 'Madrid' casa con
+    'Real Madrid' y 'Atletico Madrid'), prioriza el nombre mas CORTO -- el
+    substring completo de un nombre mas largo, no al reves, asi que el
+    nombre corto es la coincidencia menos ambigua."""
+    query_text = query_text.strip()
+    if not query_text:
+        return None
+    candidates = db.query(Team).filter(Team.canonical_name.ilike(f"%{query_text}%")).all()
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: len(t.canonical_name))
+    return candidates[0]
+
+
+def _serialize_match_summary(match: Match) -> dict[str, Any]:
+    return {
+        "match_id": match.id,
+        "competition": match.competition.name,
+        "home_team": match.home_team.canonical_name,
+        "away_team": match.away_team.canonical_name,
+        "kickoff_utc": match.kickoff_utc.isoformat(),
+        "status": match.status,
+        "final_score": (
+            f"{match.home_goals}-{match.away_goals}"
+            if match.status == "finished" and match.home_goals is not None
+            else None
+        ),
+    }
+
+
+def list_team_matches(db: Session, params: dict[str, Any]) -> dict[str, Any]:
+    """Lista partidos (pasados y/o futuros) de un equipo concreto. Pedido
+    real de usuario: 'que partidos le quedan al Barca', 'como le fue al
+    Sevilla el mes pasado'. Solo calendario y resultado (no predicciones --
+    para eso esta `analyze_match` sobre un partido concreto). Nunca inventa
+    un equipo: si no lo encuentra, lo dice explicitamente."""
+    query_text = str(params.get("team", "")).strip()
+    if not query_text:
+        return {"error": "Falta el parametro 'team' (ej. 'Barcelona')."}
+
+    scope = params.get("scope") or "all"
+    if scope not in ("upcoming", "past", "all"):
+        scope = "all"
+    try:
+        limit = int(params.get("limit") or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 30))
+
+    team = _find_team(db, query_text)
+    if team is None:
+        return {
+            "error": (
+                f"No se encontro ningun equipo para {query_text!r}. Puede que este mal "
+                "escrito o no juegue en las 5 ligas cubiertas."
+            )
+        }
+
+    now = dt.datetime.utcnow()
+    base = db.query(Match).filter(or_(Match.home_team_id == team.id, Match.away_team_id == team.id))
+
+    matches: list[Match] = []
+    if scope in ("upcoming", "all"):
+        upcoming_q = base.filter(Match.kickoff_utc >= now).order_by(Match.kickoff_utc.asc())
+        matches.extend(upcoming_q.limit(limit).all())
+    if scope in ("past", "all"):
+        past_q = base.filter(Match.kickoff_utc < now).order_by(Match.kickoff_utc.desc())
+        matches.extend(past_q.limit(limit).all())
+    matches.sort(key=lambda m: m.kickoff_utc)
+
+    return {
+        "team": team.canonical_name,
+        "scope": scope,
+        "total_matches": len(matches),
+        "matches": [_serialize_match_summary(m) for m in matches],
+    }
+
+
 def analyze_match(db: Session, params: dict[str, Any]) -> dict[str, Any]:
     """Analiza un partido concreto: TODAS las predicciones del sistema
     para el (resultado, goles, BTTS...), la mejor prediccion segun
@@ -364,6 +444,41 @@ TOOLS: list[Tool] = [
             "required": ["query"],
         },
         handler=analyze_match,
+    ),
+    Tool(
+        name="list_team_matches",
+        description=(
+            "Lista partidos (pasados y/o futuros) de un equipo concreto: calendario y "
+            "resultado, sin analisis de predicciones (para eso usa 'analyze_match' sobre un "
+            "partido en concreto). Usa esta tool para preguntas como '¿que partidos le quedan "
+            "al Barca?', '¿como le fue al Sevilla el mes pasado?' o '¿cuando juega el Real "
+            "Madrid?'."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "team": {
+                    "type": "string",
+                    "description": "Nombre del equipo, ej. 'Barcelona' o 'Real Madrid'.",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["upcoming", "past", "all"],
+                    "description": (
+                        "'upcoming': solo partidos futuros. 'past': solo ya jugados. "
+                        "'all' (por defecto): ambos."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Maximo de partidos a devolver por lado (upcoming/past), por defecto 10."
+                    ),
+                },
+            },
+            "required": ["team"],
+        },
+        handler=list_team_matches,
     ),
     Tool(
         name="get_model_performance",
