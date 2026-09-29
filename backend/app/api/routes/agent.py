@@ -48,7 +48,7 @@ def agent_chat(
     settings: Settings = Depends(_require_agent_enabled),
     db: Session = Depends(get_db),
 ) -> AgentChatResponse:
-    llm = client_for(settings)
+    llm = client_for(settings, db)
     history = [{"role": m.role, "content": m.content} for m in payload.history]
     try:
         result = run_agent_turn(db, llm, settings, payload.message, history)

@@ -24,6 +24,12 @@ dependencies = [
     # Agente Jarvis (backend/app/agent/) -- solo se importa (import
     # perezoso, ver agent/llm.py) cuando AGENT_ENABLED=true.
     "anthropic>=0.39",
+    # Alternativa a "anthropic" para AGENT_LLM_PROVIDER=claude_code: usa el
+    # CLI `claude` logueado con una suscripcion Claude Pro/Max en vez de
+    # una API key de pago. Requiere tambien el CLI instalado por separado
+    # (npm install -g @anthropic-ai/claude-code) en la maquina que ejecuta
+    # el backend -- este paquete Python por si solo no basta.
+    "claude-agent-sdk>=0.2",
 ]
 
 [project.optional-dependencies]

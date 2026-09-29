@@ -376,8 +376,45 @@ Endpoint: `POST /agent/chat` (`backend/app/api/routes/agent.py`), body
 servidor para este MVP (el frontend reenvia el historial completo en cada
 request); memoria de largo plazo/de dominio queda para una fase
 posterior. Desactivado por defecto (`AGENT_ENABLED=false`): sin
-`ANTHROPIC_API_KEY` ni `AGENT_SHARED_SECRET` configurados, responde 503 en
-vez de quedar abierto. Autenticacion: secreto compartido en la cabecera
-`X-Agent-Key` (uso personal, sin multiusuario — pedido explicito de
-usuario; si algun dia se abre a mas gente, esto debe evolucionar a un
-sistema de auth real).
+`AGENT_SHARED_SECRET` configurado (y, con el proveedor "anthropic", sin
+`ANTHROPIC_API_KEY`), responde 503 en vez de quedar abierto. Autenticacion:
+secreto compartido en la cabecera `X-Agent-Key` (uso personal, sin
+multiusuario — pedido explicito de usuario; si algun dia se abre a mas
+gente, esto debe evolucionar a un sistema de auth real).
+
+### Dos proveedores de LLM (`AGENT_LLM_PROVIDER`)
+
+- **`anthropic`** (por defecto): `AnthropicLLMClient`, API de Anthropic
+  facturada por token (necesita `ANTHROPIC_API_KEY` de pago).
+- **`claude_code`**: `ClaudeCodeLLMClient`, usa el Claude Agent SDK (el
+  mismo motor de Claude Code) con el CLI `claude` logueado localmente via
+  suscripcion Claude Pro/Max — sin pagar API aparte (pedido explicito de
+  usuario: "no quiero pagar por la api key"). Diferencia de arquitectura
+  importante: aqui el SDK gestiona el bucle de tool-calling EL SOLO (via
+  un servidor MCP en proceso que expone las mismas `TOOLS` de
+  `agent/tools.py`), asi que `run_turn()` para este proveedor siempre
+  devuelve `tool_calls=[]` al orquestador — ya se resolvio todo dentro.
+  Las llamadas a tools se siguen logueando (mismo evento
+  `agent.tool_call`) para observabilidad, pero no aparecen en el
+  `tool_log` de la respuesta HTTP para este proveedor (limitacion
+  documentada, no un descuido).
+
+  **Seguridad**: se pasa `tools=[]` a `ClaudeAgentOptions`, lo que
+  desactiva TODAS las tools nativas de Claude Code (Bash, Read, Write,
+  WebFetch...) — el agente solo puede llamar a las tools de
+  `agent/tools.py` expuestas via MCP, nunca puede ejecutar comandos del
+  sistema ni tocar el filesystem (seccion 17 del brief).
+
+  **Limitacion honesta con Docker**: el contenedor `backend`/`scheduler`
+  (`python:3.12-slim`) NO tiene Node.js ni el CLI `claude` instalados, y
+  `claude login` es un flujo interactivo que no encaja bien dentro de un
+  contenedor. Para usar `claude_code` hoy, la opcion mas simple es correr
+  el backend fuera de Docker (venv local) en una maquina donde ya tengas
+  `claude` logueado con tu cuenta Pro/Max. Dockerizarlo (imagen con
+  Node+CLI, `claude setup-token` para auth no interactiva) queda como
+  trabajo futuro si hace falta.
+
+  **Limite de uso**: el plan Pro/Max esta pensado para uso interactivo, no
+  para un servicio en segundo plano con mucho trafico — si Jarvis se usa
+  intensivamente, puedes toparte con el limite de tu plan antes que con
+  el coste de la API de pago (que no tiene techo salvo el que tu pongas).

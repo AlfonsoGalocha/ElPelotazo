@@ -76,7 +76,7 @@ def test_agent_chat_runs_real_tool_and_returns_llm_text(monkeypatch, db_session)
         ]
     )
     monkeypatch.setattr(
-        "backend.app.api.routes.agent.client_for", lambda settings: scripted
+        "backend.app.api.routes.agent.client_for", lambda settings, db: scripted
     )
     app.dependency_overrides[get_settings] = _settings_with_agent_enabled
     try:
@@ -106,7 +106,7 @@ def test_agent_chat_reports_unknown_tool_gracefully(monkeypatch):
         ]
     )
     monkeypatch.setattr(
-        "backend.app.api.routes.agent.client_for", lambda settings: scripted
+        "backend.app.api.routes.agent.client_for", lambda settings, db: scripted
     )
     app.dependency_overrides[get_settings] = _settings_with_agent_enabled
     try:

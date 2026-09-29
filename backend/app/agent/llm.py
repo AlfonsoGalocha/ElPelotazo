@@ -96,10 +96,141 @@ class AnthropicLLMClient(LLMClient):
         )
 
 
-def client_for(settings: Settings) -> LLMClient:
+class ClaudeCodeLLMClient(LLMClient):
+    """Usa el Claude Agent SDK (el mismo motor de Claude Code) en vez de la
+    API de Anthropic facturada por token. Si tienes `claude` logueado con
+    tu suscripcion Claude Pro/Max en esta maquina (`claude login` o
+    `claude setup-token`), el consumo sale de esa suscripcion, no de una
+    API key de pago -- ver docs/modeling.md, seccion del agente.
+
+    Diferencia clave con `AnthropicLLMClient`: aqui el SDK gestiona el
+    bucle completo de tool-calling EL SOLO (llama a nuestras tools
+    directamente via un servidor MCP en proceso). Por eso `run_turn`
+    ejecuta la conversacion entera de un tiron y devuelve un `LLMTurn` con
+    `tool_calls=[]` siempre -- el orquestador (`orchestrator.py`) no
+    necesita volver a iterar para este proveedor. Las tools SI se loguean
+    (mismo formato `agent.tool_call` que el otro proveedor) para
+    observabilidad, aunque no aparezcan en el `tool_log` que devuelve la
+    API (limitacion conocida y documentada, no un descuido).
+
+    Seguridad (seccion 17 del brief): `tools=[]` en `ClaudeAgentOptions`
+    desactiva TODAS las herramientas nativas de Claude Code (Bash, Read,
+    Write, WebFetch...) -- el agente SOLO puede llamar a las tools de
+    `agent/tools.py`, expuestas via un servidor MCP en proceso. Nunca
+    puede ejecutar comandos del sistema ni tocar el filesystem.
+    """
+
+    def __init__(self, settings: Settings, db: Any) -> None:
+        self._settings = settings
+        self._db = db
+
+    def run_turn(
+        self,
+        system_prompt: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+    ) -> LLMTurn:
+        import asyncio
+
+        from claude_agent_sdk import CLINotFoundError, ProcessError
+
+        try:
+            return asyncio.run(self._run_turn_async(system_prompt, messages))
+        except CLINotFoundError as exc:
+            raise RuntimeError(
+                "No se encontro el CLI 'claude' en esta maquina. Instalalo "
+                "(npm install -g @anthropic-ai/claude-code) y haz 'claude login' "
+                "con tu cuenta Pro/Max antes de usar AGENT_LLM_PROVIDER=claude_code."
+            ) from exc
+        except ProcessError as exc:
+            raise RuntimeError(
+                f"El CLI 'claude' fallo al ejecutar la consulta: {exc}. "
+                "Comprueba que has hecho 'claude login' (o 'claude setup-token') "
+                "y que tu suscripcion sigue activa."
+            ) from exc
+
+    async def _run_turn_async(self, system_prompt: str, messages: list[dict[str, Any]]) -> LLMTurn:
+        from claude_agent_sdk import (
+            AssistantMessage,
+            ClaudeAgentOptions,
+            ResultMessage,
+            TextBlock,
+            create_sdk_mcp_server,
+            query,
+            tool,
+        )
+
+        from backend.app.agent.tools import TOOLS
+
+        # Solo el ULTIMO mensaje de usuario se manda como prompt: el
+        # historial previo (turnos anteriores de la conversacion) no tiene
+        # un hueco natural en `query()` de una sola llamada -- limitacion
+        # aceptada para este MVP (ver docs/modeling.md), igual que la
+        # memoria sin persistencia del resto del agente.
+        prompt = messages[-1]["content"] if messages else ""
+        if not isinstance(prompt, str):
+            prompt = str(prompt)
+
+        sdk_tools = []
+        for football_tool in TOOLS:
+            sdk_tools.append(self._wrap_as_sdk_tool(tool, football_tool))
+
+        server = create_sdk_mcp_server(name="football", tools=sdk_tools)
+        options = ClaudeAgentOptions(
+            system_prompt=system_prompt,
+            tools=[],  # desactiva TODAS las tools nativas (Bash/Read/Write/...)
+            mcp_servers={"football": server},
+            allowed_tools=[f"mcp__football__{t.name}" for t in TOOLS],
+            model=self._settings.agent_llm_model or None,
+            permission_mode="bypassPermissions",  # solo puede llamar a las tools whitelisted arriba
+            max_turns=self._settings.agent_max_tool_iterations,
+        )
+
+        final_text = ""
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        final_text = block.text
+            elif isinstance(message, ResultMessage):
+                if message.is_error:
+                    raise RuntimeError(f"Claude Code devolvio un error: {message.subtype}")
+                if message.result:
+                    final_text = message.result
+
+        return LLMTurn(text=final_text, tool_calls=[], stop_reason="end_turn")
+
+    def _wrap_as_sdk_tool(self, tool_decorator: Any, football_tool: Any) -> Any:
+        db = self._db
+
+        @tool_decorator(football_tool.name, football_tool.description, football_tool.parameters)
+        async def _handler(args: dict[str, Any]) -> dict[str, Any]:
+            import json
+            import time
+
+            started = time.monotonic()
+            try:
+                result = football_tool.handler(db, args)
+                ok = True
+            except Exception as exc:  # noqa: BLE001 -- se reporta al LLM, no se propaga
+                result = {"error": str(exc)}
+                ok = False
+            duration_ms = round((time.monotonic() - started) * 1000, 1)
+            logger.info(
+                "agent.tool_call", tool=football_tool.name, ok=ok, duration_ms=duration_ms
+            )
+            text = json.dumps(result, ensure_ascii=False, default=str)
+            return {"content": [{"type": "text", "text": text}]}
+
+        return _handler
+
+
+def client_for(settings: Settings, db: Any = None) -> LLMClient:
     if settings.agent_llm_provider == "anthropic":
         return AnthropicLLMClient(settings)
+    if settings.agent_llm_provider == "claude_code":
+        return ClaudeCodeLLMClient(settings, db)
     raise ValueError(
         f"Proveedor de LLM desconocido: {settings.agent_llm_provider!r} "
-        "(unico soportado de momento: 'anthropic')."
+        "(soportados: 'anthropic', 'claude_code')."
     )

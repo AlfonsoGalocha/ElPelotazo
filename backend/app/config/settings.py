@@ -119,9 +119,14 @@ class Settings(BaseSettings):
     # proposito.
     agent_enabled: bool = False
     # Interfaz LLMClient abstraida (backend/app/agent/llm.py) para poder
-    # cambiar de proveedor sin tocar el orquestador -- de momento solo hay
-    # implementacion para "anthropic", pero el nombre del proveedor vive en
-    # config, no hardcodeado.
+    # cambiar de proveedor sin tocar el orquestador. Dos implementaciones:
+    # - "anthropic": API de Anthropic facturada por token (necesita
+    #   ANTHROPIC_API_KEY de pago, console.anthropic.com).
+    # - "claude_code": usa el Claude Agent SDK (el motor de Claude Code)
+    #   con el CLI `claude` logueado localmente via suscripcion Claude
+    #   Pro/Max ('claude login') -- el consumo sale de esa suscripcion, sin
+    #   API key de pago aparte. Requiere tener el CLI instalado en la
+    #   maquina donde corre el backend (no vale solo con pip install).
     agent_llm_provider: str = "anthropic"
     anthropic_api_key: str | None = None
     # Haiku por defecto a proposito (seccion 19, control de costes): esta
