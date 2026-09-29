@@ -6,7 +6,7 @@ Cada fuente implementa `backend/app/ingestion/base.py::DataProvider`
 (`is_available()` + `fetch_matches()`). El resto del sistema nunca sabe de
 donde vinieron los datos: solo ve `RawMatchRecord`.
 
-## openfootball/football.json — FIXTURES FUTUROS, ACTIVA
+## openfootball/football.json — FIXTURES FUTUROS + TAPAGUJERO DE RESULTADOS, ACTIVA
 
 - **Adapter**: `backend/app/ingestion/football_data/fixtures_provider.py::OpenFootballFixturesProvider`.
 - **Fuente real**: [openfootball/football.json](https://github.com/openfootball/football.json),
@@ -14,17 +14,30 @@ donde vinieron los datos: solo ve `RawMatchRecord`.
   calendario COMPLETO de la temporada en curso (partidos jugados y por
   jugar) para las 5 ligas del MVP y muchas mas.
 - **Por que existe ademas de Club Football Match Data**: ese dataset es
-  puramente historico (solo partidos ya jugados). Sin un fixture real, no
-  hay ningun partido sobre el que mostrar "predicciones de hoy" — solo se
-  podria hacer backtesting sobre el pasado. Este adapter cubre exactamente
-  ese hueco con partidos que de verdad se van a jugar.
-- **Filtrado en `fetch_matches`**: solo se devuelven partidos SIN resultado
-  Y con fecha `>= hoy`. Los partidos ya jugados de esta misma fuente se
-  descartan (el dataset historico los cubre con muchisimo mas detalle:
-  estadisticas de partido, cuotas). El filtro por fecha existe porque un
-  dataset comunitario puede tardar en marcar un partido como jugado; sin
-  ese filtro, un partido ya disputado en la realidad pero aun sin marcador
-  en la fuente apareceria incorrectamente como "programado".
+  puramente historico y es un mirror que puede tardar SEMANAS en reflejar
+  la temporada en curso (problema real detectado por un usuario: solo 31
+  partidos de LaLiga ingeridos con muchos mas ya jugados, dejando
+  Historico/settlement parados). Sin un fixture real, tampoco hay ningun
+  partido sobre el que mostrar "predicciones de hoy". Este adapter cubre
+  ambos huecos: partidos que de verdad se van a jugar, Y el marcador real
+  de los ya jugados mientras el mirror historico se pone al dia.
+- **Filtrado en `fetch_matches`** (`parse_payload`): un partido CON marcador
+  valido (`score.ft`) se incluye SIEMPRE, sin importar la fecha -- es un
+  resultado real. Un partido SIN marcador solo se incluye si su fecha es
+  `>= hoy` (sigue "programado"); el filtro por fecha existe porque un
+  dataset comunitario puede tardar en marcar un partido como jugado, y sin
+  el, un partido ya disputado pero aun sin marcador en la fuente
+  apareceria incorrectamente como "programado".
+- **Sin duplicar partidos**: el `provider_id` de un partido no cambia al
+  pasar de "programado" a "jugado" (misma fuente, mismo partido), asi que
+  `_upsert_match` (`services/data_service.py`) actualiza la MISMA fila en
+  vez de crear una nueva. Cuando el mirror historico trae despues ese
+  mismo partido con estadisticas/cuotas completas,
+  `_find_absorbable_duplicate` fusiona ambos registros en una unica fila
+  (mismo mecanismo, sentido inverso).
+- **Nunca trae estadisticas de partido (tiros, corners...) ni cuotas**:
+  solo marcador. Esos campos quedan `None` hasta que el mirror historico
+  los traiga -- nunca inventados.
 - **Normalizacion de equipos critica**: esta fuente usa nombres oficiales
   completos ("Real Madrid CF", "Manchester United FC"). Se anhadio un
   bloque grande de alias en `normalization/teams.py::KNOWN_ALIASES` para

@@ -108,9 +108,14 @@ def update(
 @app.command()
 def update_fixtures(competition: str = typer.Option(None)) -> None:
     """Descarga el CALENDARIO real de la temporada en curso (partidos aun no
-    jugados, con fecha real) via openfootball/football.json. Complementa
-    `update` (que solo trae partidos YA jugados): sin esto, no hay ningun
-    partido futuro sobre el que generar predicciones "de hoy".
+    jugados, con fecha real) via openfootball/football.json -- sin esto, no
+    hay ningun partido futuro sobre el que generar predicciones "de hoy".
+
+    Tambien trae, de la MISMA fuente, el marcador de los partidos YA
+    jugados de la temporada en curso (sin estadisticas/cuotas, que siguen
+    viniendo de `update`) -- tapagujero mientras el mirror historico de
+    `update` se pone al dia, para que Historico/settlement no se queden
+    parados semanas esperando esa fuente mas lenta.
     """
     init_db()
     competitions = [competition] if competition else ALL_COMPETITIONS
@@ -121,7 +126,7 @@ def update_fixtures(competition: str = typer.Option(None)) -> None:
         for comp in competitions:
             try:
                 n = ingest_matches(db, provider, comp, season_label)
-                typer.echo(f"[update-fixtures] {comp} {season_label}: {n} partidos programados")
+                typer.echo(f"[update-fixtures] {comp} {season_label}: {n} partidos actualizados")
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-fixtures] {comp} {season_label}: ERROR {exc}")
 
