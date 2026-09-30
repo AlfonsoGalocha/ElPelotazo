@@ -72,6 +72,25 @@ export default async function HistoryDetailPage({ params }: { params: { id: stri
                       <AnomalyBadges flags={p.anomaly_flags} />
                     </div>
                   )}
+                  {/* Pedido real de usuario: "que el modelo pueda aprender
+                      de sus propios fallos" empieza por poder VER por que
+                      se equivocó -- mismos factores reales del modelo
+                      (nunca inventados) que ya usa /predictions/{id}/detail. */}
+                  {p.explanation?.length > 0 && (
+                    <details className="mt-1">
+                      <summary className="cursor-pointer text-[11px] text-slate-500 hover:text-slate-300">
+                        ¿Por qué predijo esto?
+                      </summary>
+                      <ul className="mt-1 flex flex-col gap-0.5 text-[11px] text-slate-400">
+                        {p.explanation.map((f, i) => (
+                          <li key={i}>
+                            {f.direction === "increases_probability" ? "↑" : "↓"} {f.display_name}
+                            {f.contribution != null && ` (${(f.contribution * 100).toFixed(1)}%)`}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
                 </td>
                 <td className="px-3 py-2">{(p.model_probability * 100).toFixed(1)}%</td>
                 <td className="px-3 py-2">

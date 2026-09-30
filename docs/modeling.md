@@ -277,6 +277,19 @@ red).
 Comando aislado: `football-edge evaluate --competition laliga` (o sin
 `--competition` para todas). Ver `services/evaluation_service.py`.
 
+**Bug real corregido (2026-09-30)**: el `scheduler` de `docker-compose.yml`
+llamaba a `update`/`evaluate`/`predict-upcoming` pero NUNCA a `train` --
+pedido real de usuario: "que el modelo aprenda de sus propios fallos". El
+ciclo se quedaba a medias: Histórico/`evaluate` SI reflejaban los
+aciertos/fallos reales, pero ningun modelo nuevo volvia a entrenarse con
+ellos salvo que alguien ejecutase `football-edge train` a mano. Corregido
+anhadiendo `train` al bloque de cada 6h del scheduler (mismo bloque que
+`update`, justo despues de traer los resultados reales) -- no cada hora,
+porque reentrenar las 5 ligas no es gratis en CPU y los resultados no
+cambian tan rapido como para necesitarlo mas a menudo. `predict-upcoming`
+(hourly, sin condicion) ya recoge el modelo recien entrenado en la
+siguiente vuelta.
+
 ## Versionado (seccion 34)
 
 Cada `train_competition_models(...)` crea una fila nueva en `model_versions`
