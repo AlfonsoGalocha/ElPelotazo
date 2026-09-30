@@ -1,0 +1,40 @@
+# Overlay de PRODUCCION para acceso desde movil/internet (docs/mobile_access.md).
+# Se usa JUNTO al docker-compose.yml normal, nunca solo:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Anhade Caddy como unico punto de entrada publico (puertos 80/443), que
+# pide su propio certificado HTTPS (Let's Encrypt) automaticamente -- cero
+# configuracion manual de nginx/certbot. `backend`/`frontend` dejan de
+# publicar sus puertos directamente al host: en un servidor real, expuestos
+# sin cifrar y sin autenticacion salvo el X-Agent-Key de Jarvis, no
+# deberian ser alcanzables directamente desde internet, solo a traves de
+# Caddy (que SI habla HTTPS).
+services:
+  backend:
+    ports: !reset []
+
+  frontend:
+    ports: !reset []
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Dominio publico -- tipicamente un subdominio gratuito de sslip.io
+      # (resuelve solo a la IP del servidor, sin registrar nada) o un
+      # dominio propio si lo tienes. Ver docs/mobile_access.md.
+      DOMAIN: ${DOMAIN:?Falta DOMAIN en tu .env -- ver docs/mobile_access.md}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+
+volumes:
+  caddy_data:
+  caddy_config:

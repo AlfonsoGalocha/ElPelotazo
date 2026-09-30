@@ -1,0 +1,30 @@
+## Reverse proxy para acceso desde movil/internet (docs/mobile_access.md).
+#
+# Un unico dominio publico ({$DOMAIN}, tipicamente un subdominio gratuito
+# de sslip.io que resuelve automaticamente a la IP del servidor) sirve
+# TANTO el frontend como el backend, con Caddy pidiendo un certificado
+# HTTPS real (Let's Encrypt) el solo -- sin tocar nginx/certbot a mano.
+#
+# Por que dos rutas y no un dominio por servicio: `frontend/lib/api.ts`
+# distingue peticiones SERVIDOR (usa `API_URL`, red interna de Docker,
+# nunca sale a internet) de peticiones NAVEGADOR (usa
+# `NEXT_PUBLIC_API_URL`, publica -- el movil llama a la API DIRECTAMENTE
+# desde el navegador para varias paginas). `/backend-api/*` expone esa
+# API publica bajo el MISMO dominio que el frontend (mas simple que gestionar
+# un segundo subdominio/certificado), y `handle_path` retira el prefijo
+# antes de reenviar -- el backend seguirá viendo `/matches`, `/agent/chat`,
+# etc., exactamente como en local, sin ningun cambio de codigo.
+#
+# IMPORTANTE: no se puede confundir con `/api/agent/*`, las rutas propias
+# del FRONTEND (proxies server-side hacia el backend para /agent/chat,
+# /agent/speak, /agent/transcribe -- ver frontend/app/api/agent/*/route.ts)
+# que guardan AGENT_SHARED_SECRET fuera del navegador. Por eso el prefijo
+# elegido es `/backend-api/`, no `/api/`.
+{$DOMAIN} {
+	handle_path /backend-api/* {
+		reverse_proxy backend:8000
+	}
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

@@ -285,3 +285,4 @@ docker-compose.yml  backend + frontend + Postgres
 - [`docs/backtesting.md`](docs/backtesting.md)
 - [`docs/api.md`](docs/api.md)
 - [`docs/development.md`](docs/development.md) (incluye el roadmap de fases futuras)
+- [`docs/mobile_access.md`](docs/mobile_access.md) (desplegar en un servidor para acceder desde el móvil)
