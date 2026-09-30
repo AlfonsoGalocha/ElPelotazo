@@ -110,10 +110,19 @@ function monitorSilence(stream: MediaStream, onSilence: () => void): () => void 
 // captarse a si mismo por el microfono.
 let currentAudio: HTMLAudioElement | null = null;
 
+// Boton de emergencia "🛑 Parar" (pedido real de usuario: "que si no no se
+// calla"): incrementa este contador global cada vez que se pulsa. Todo el
+// codigo async de abajo captura el valor vigente ANTES de cada `await` y
+// comprueba, al volver, que nadie lo haya incrementado mientras tanto --
+// si lo hizo, aborta en silencio en vez de seguir hablando/escuchando con
+// una respuesta que el usuario ya no quiere.
+let stopGeneration = 0;
+
 async function speak(
   text: string,
   onError: (message: string) => void,
-  onAutoplayBlocked: (audio: HTMLAudioElement) => void
+  onAutoplayBlocked: (audio: HTMLAudioElement) => void,
+  generation: number
 ): Promise<void> {
   currentAudio?.pause(); // corta cualquier respuesta anterior aun sonando
   try {
@@ -122,12 +131,14 @@ async function speak(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
     });
+    if (stopGeneration !== generation) return; // se pulso "Parar" mientras se generaba el audio
     if (!res.ok) {
       const data = (await res.json()) as { detail?: string };
       onError(data.detail ?? `Error ${res.status} generando el audio.`);
       return;
     }
     const blob = await res.blob();
+    if (stopGeneration !== generation) return;
     const audio = new Audio(URL.createObjectURL(blob));
     currentAudio = audio;
     await new Promise<void>((resolve) => {
@@ -141,7 +152,9 @@ async function speak(
       });
     });
   } catch {
-    onError("No se pudo generar el audio de la respuesta. Comprueba que el backend está corriendo.");
+    if (stopGeneration === generation) {
+      onError("No se pudo generar el audio de la respuesta. Comprueba que el backend está corriendo.");
+    }
   }
 }
 
@@ -179,6 +192,7 @@ export default function JarvisChat() {
   async function send(overrideText?: string) {
     const text = (overrideText ?? input).trim();
     if (!text || loading) return;
+    const generation = stopGeneration;
 
     const history = [...messages, { role: "user" as const, content: text }];
     setMessages(history);
@@ -200,6 +214,7 @@ export default function JarvisChat() {
           history: messages.map(({ role, content }) => ({ role, content })),
         }),
       });
+      if (stopGeneration !== generation) return; // se pulso "Parar" mientras Jarvis respondia
       const data = (await res.json()) as AgentChatResponse | { detail: string };
       if (!res.ok || !("reply" in data)) {
         setError("detail" in data ? data.detail : `Error ${res.status}`);
@@ -211,22 +226,25 @@ export default function JarvisChat() {
       ]);
       if (voiceReplyEnabledRef.current) {
         setBlockedAudio(null);
-        await speak(data.reply, setError, setBlockedAudio);
+        await speak(data.reply, setError, setBlockedAudio, generation);
       }
     } catch {
-      setError("No se pudo conectar con Jarvis. Comprueba que el backend esta corriendo.");
+      if (stopGeneration === generation) {
+        setError("No se pudo conectar con Jarvis. Comprueba que el backend esta corriendo.");
+      }
     } finally {
-      setLoading(false);
+      if (stopGeneration === generation) setLoading(false);
     }
   }
 
-  async function transcribeAndSend(blob: Blob, mimeType: string) {
+  async function transcribeAndSend(blob: Blob, mimeType: string, generation: number) {
     setTranscribing(true);
     setError(null);
     try {
       const formData = new FormData();
       formData.append("audio", blob, `clip${extensionForMimeType(mimeType)}`);
       const res = await fetch("/api/agent/transcribe", { method: "POST", body: formData });
+      if (stopGeneration !== generation) return; // se pulso "Parar" mientras se transcribia
       const data = (await res.json()) as { text: string } | { detail: string };
       if (!res.ok || !("text" in data)) {
         setError("detail" in data ? data.detail : `Error ${res.status} transcribiendo el audio.`);
@@ -242,17 +260,25 @@ export default function JarvisChat() {
       }
       await send(data.text);
     } catch {
-      setError("No se pudo transcribir el audio. Comprueba que el backend está corriendo.");
+      if (stopGeneration === generation) {
+        setError("No se pudo transcribir el audio. Comprueba que el backend está corriendo.");
+      }
     } finally {
-      setTranscribing(false);
+      if (stopGeneration === generation) setTranscribing(false);
     }
   }
 
   function startListening(autoStopOnSilence: boolean) {
+    const generation = stopGeneration;
     setError(null);
     navigator.mediaDevices
       .getUserMedia({ audio: true })
       .then((stream) => {
+        if (stopGeneration !== generation) {
+          // Se pulso "Parar" mientras se pedia permiso de microfono.
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
         const mimeType = getSupportedMimeType();
         const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
         chunksRef.current = [];
@@ -270,12 +296,13 @@ export default function JarvisChat() {
           stopSilenceMonitor?.();
           stream.getTracks().forEach((track) => track.stop()); // apaga el LED del micro
           setRecording(false);
+          if (stopGeneration !== generation) return; // se pulso "Parar", no transcribir lo grabado
           const blob = new Blob(chunksRef.current, { type: recorder.mimeType });
-          await transcribeAndSend(blob, recorder.mimeType);
+          await transcribeAndSend(blob, recorder.mimeType, generation);
           // Conversacion continua: en cuanto se envia y se lee la
           // respuesta (si toca), se vuelve a escuchar sola -- sin pulsar
-          // nada. Se corta si el usuario desactivo el modo mientras tanto.
-          if (continuousModeRef.current) {
+          // nada. Se corta si el usuario desactivo el modo o pulso "Parar".
+          if (continuousModeRef.current && stopGeneration === generation) {
             startListening(true);
           }
         };
@@ -284,6 +311,7 @@ export default function JarvisChat() {
         recorder.start();
       })
       .catch((err: DOMException) => {
+        if (stopGeneration !== generation) return;
         if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
           setError(
             "Permiso de micrófono denegado. Revisa el icono de candado/permisos junto a la URL del navegador y permite el micrófono para esta página."
@@ -316,6 +344,28 @@ export default function JarvisChat() {
     }
   }
 
+  // Boton de emergencia "🛑 Parar Jarvis": corta de golpe cualquier audio
+  // sonando, cualquier grabacion en curso y el modo continuo, e invalida
+  // cualquier respuesta que estuviera en camino (para que no siga
+  // hablando en cuanto llegue). Pedido real de usuario: "que si no no se
+  // calla".
+  function stopJarvis() {
+    stopGeneration += 1;
+    currentAudio?.pause();
+    continuousModeRef.current = false;
+    setContinuousMode(false);
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop(); // dispara onstop, que apaga el LED del micro solo
+    }
+    setRecording(false);
+    setLoading(false);
+    setTranscribing(false);
+    setBlockedAudio(null);
+    setError(null);
+  }
+
+  const jarvisIsBusy = loading || transcribing || recording || continuousMode;
+
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
@@ -341,6 +391,15 @@ export default function JarvisChat() {
           <span className="text-amber-500/80">
             Tu navegador no soporta grabación de audio (prueba con Chrome/Edge/Brave/Firefox recientes).
           </span>
+        )}
+        {jarvisIsBusy && (
+          <button
+            onClick={stopJarvis}
+            title="Corta el audio, el micrófono y cualquier respuesta en camino"
+            className="ml-auto rounded border border-red-500/50 bg-red-500/15 px-3 py-1 font-semibold text-red-300 hover:bg-red-500/25"
+          >
+            🛑 Parar
+          </button>
         )}
       </div>
       {continuousMode && (
