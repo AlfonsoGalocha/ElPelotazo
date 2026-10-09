@@ -16,10 +16,26 @@ solo necesita jornada en los partidos programados (los que SI vienen de
 openfootball).
 
 Definicion de "jornada actual": la jornada con el `matchday` mas bajo que
-todavia tiene AL MENOS UN partido con status='scheduled'. Esto cubre
-exactamente el caso pedido: si la jornada 5 tiene partidos pendientes
-(aplazados, o simplemente porque la jornada se juega en varios dias),
-esa sigue siendo la jornada "actual" aunque la jornada 6 ya tenga fecha.
+todavia tiene AL MENOS UN partido 'scheduled' Y que NO esta "superada" por
+una jornada posterior que ya tenga algun partido 'finished' de verdad.
+Esto cubre dos casos a la vez:
+- Jornada 5 con partidos pendientes y jornada 6 ya con fecha pero SIN
+  jugarse todavia: la jornada 5 sigue siendo "la actual" (la 6 no la ha
+  "superado", solo tiene fecha).
+- Jornada 6 con un UNICO partido aplazado muy lejos en el tiempo, mientras
+  la jornada 7 (o posteriores) YA se jugaron y tienen partidos 'finished':
+  la jornada 6 queda descartada como "actual" aunque su numero sea mas
+  bajo, porque el calendario real ya demostro que se siguio jugando sin
+  ella.
+
+Bug real corregido (2026-10-09): la version anterior elegia la jornada por
+el NUMERO de `matchday` mas bajo con algun partido 'scheduled', sin mirar
+si alguna jornada posterior ya se habia jugado. Un partido aplazado
+conserva su numero de jornada ORIGINAL aunque se juegue mucho mas tarde --
+caso real: jornada 6 con un unico partido aplazado al 21 de octubre,
+mientras las jornadas 7/8/9 ya estaban jugadas o jugandose. El numero mas
+bajo (6) "secuestraba" indefinidamente la jornada actual, dejando el Home
+sin partidos reales de esa liga hasta esa fecha lejana.
 
 Limitacion honesta: si `refresh`/`update-fixtures` no se ha ejecutado
 nunca con esta version del codigo, los partidos programados existentes
@@ -59,21 +75,43 @@ def get_current_round(db: Session, competition_code: str) -> RoundInfo | None:
     if competition is None:
         return None
 
-    current_matchday_row = (
+    now = dt.datetime.utcnow()
+    scheduled_rows = (
         db.query(Match.season_id, Match.matchday)
         .filter(
             Match.competition_id == competition.id,
             Match.status == "scheduled",
             Match.matchday.isnot(None),
         )
-        .order_by(Match.matchday.asc())
-        .first()
+        .all()
     )
 
-    if current_matchday_row is None:
+    if not scheduled_rows:
         return _fallback_round(db, competition.id)
 
-    season_id, matchday = current_matchday_row
+    # Candidatos (season_id, matchday) ordenados por matchday ascendente --
+    # el primero que NO este "superado" (ver docstring del modulo) gana.
+    candidates = sorted({(row[0], row[1]) for row in scheduled_rows}, key=lambda c: c[1])
+
+    season_id = matchday = None
+    for candidate_season_id, candidate_matchday in candidates:
+        later_round_already_played = (
+            db.query(Match.id)
+            .filter(
+                Match.competition_id == competition.id,
+                Match.season_id == candidate_season_id,
+                Match.matchday > candidate_matchday,
+                Match.status == "finished",
+            )
+            .first()
+            is not None
+        )
+        if not later_round_already_played:
+            season_id, matchday = candidate_season_id, candidate_matchday
+            break
+    if matchday is None:
+        season_id, matchday = candidates[0]
+
     # Una jornada se juega en varios dias: puede tener partidos YA jugados
     # (viernes/sabado) y otros todavia por jugar (domingo/lunes) a la vez.
     # Sin filtrar por fecha, el Home mostraria partidos que ya pasaron
@@ -81,9 +119,8 @@ def get_current_round(db: Session, competition_code: str) -> RoundInfo | None:
     # a ahora, mires o no su `status` -- un partido recien acabado puede
     # tardar hasta la siguiente pasada del scheduler en marcarse
     # 'finished'). Esto NO cambia que jornada se considera "actual" (eso ya
-    # lo decide la query de arriba, por el primer 'scheduled' pendiente):
-    # solo evita listar, DENTRO de esa jornada, partidos con fecha pasada.
-    now = dt.datetime.utcnow()
+    # lo decide la seleccion de arriba): solo evita listar, DENTRO de esa
+    # jornada, partidos con fecha pasada.
     round_matches = (
         db.query(Match)
         .filter(
