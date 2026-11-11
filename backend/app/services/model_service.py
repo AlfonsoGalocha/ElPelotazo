@@ -17,6 +17,7 @@ from backend.app.models.calibration.metrics import brier_score, log_loss_score
 from backend.app.models.ensemble.ensemble import learn_ensemble_weights
 from backend.app.models.goals.baseline import LeagueAverageBaseline
 from backend.app.models.goals.dixon_coles import DixonColesModel
+from backend.app.models.goals.gradient_boosting import GradientBoostingMarketModel
 from backend.app.models.goals.ml_classifier import MarketClassifierModel
 from backend.app.models.goals.model_selection import SelectedMarketClassifier, pick_best_candidate
 from backend.app.models.goals.multinomial_classifier import MultinomialGroupClassifier
@@ -48,47 +49,51 @@ MIN_CALIBRATION_MATCHES = 60  # ajustar un IsotonicRegression con menos
 
 
 def _choose_ml_source_per_group(
-    ml_classifier: MarketClassifierModel,
-    multinomial_classifier: MultinomialGroupClassifier,
+    candidate_models: dict[str, object],
     eval_finished,
 ) -> dict[str, tuple[str, object]]:
     """Decide, UN SOLO GANADOR POR GRUPO mutuamente excluyente (nunca
-    mercado a mercado dentro del mismo grupo): si "home_win" usara el
-    clasificador independiente y "draw" el conjunto multinomial, sus
-    probabilidades volverian a poder no sumar 1 entre si -- exactamente la
-    inconsistencia que `MultinomialGroupClassifier` existe para evitar.
-    Comparando por la media de log loss de TODO el grupo se preserva esa
-    coherencia por construccion, no por convencion.
+    mercado a mercado dentro del mismo grupo): si "home_win" usara un
+    candidato y "draw" otro distinto, sus probabilidades volverian a poder
+    no sumar 1 entre si -- exactamente la inconsistencia que
+    `MultinomialGroupClassifier` existe para evitar. Comparando por la
+    media de log loss de TODO el grupo se preserva esa coherencia por
+    construccion, no por convencion.
 
-    Devuelve {market_key: (nombre_ganador, modelo_origen)} SOLO para los
-    mercados que pertenecen a algun grupo. Los mercados fuera de cualquier
-    grupo se resuelven aparte en el llamador (unico candidato real:
-    `logistic_independent`, el conjunto no los cubre).
+    `candidate_models`: {nombre: modelo_ya_entrenado}, cualquier numero de
+    candidatos (hoy: clasificador independiente, conjunto multinomial,
+    LightGBM -- ver model_service.train_competition_models). Devuelve
+    {market_key: (nombre_ganador, modelo_origen)} SOLO para los mercados
+    que pertenecen a algun grupo. Los mercados fuera de cualquier grupo se
+    resuelven aparte en el llamador.
     """
+    # El primero es el fallback cuando la comparacion no es valida.
+    default_name = next(iter(candidate_models))
     winners: dict[str, tuple[str, object]] = {}
     for group in MUTUALLY_EXCLUSIVE_GROUPS:
-        losses: dict[str, list[float]] = {"logistic_independent": [], "multinomial_joint": []}
-        sources = {"logistic_independent": ml_classifier, "multinomial_joint": multinomial_classifier}
+        losses: dict[str, list[float]] = {name: [] for name in candidate_models}
         complete = True
         for market_key in group:
             y_true = label_for_market(eval_finished, market_key).to_numpy()
-            p_independent = ml_classifier.predict_market_probabilities(eval_finished).get(market_key)
-            p_joint = multinomial_classifier.predict_market_probabilities(eval_finished).get(market_key)
-            if p_independent is None or p_joint is None:
-                complete = False
+            for name, model in candidate_models.items():
+                p = model.predict_market_probabilities(eval_finished).get(market_key)
+                if p is None:
+                    complete = False
+                    break
+                losses[name].append(log_loss_score(y_true, p))
+            if not complete:
                 break
-            losses["logistic_independent"].append(log_loss_score(y_true, p_independent))
-            losses["multinomial_joint"].append(log_loss_score(y_true, p_joint))
-        # Si un candidato no cubre el grupo entero (p.ej. una sola clase en
-        # el holdout para algun mercado del grupo) no hay comparacion
-        # valida posible: se usa el independiente, mismo comportamiento que
-        # antes de este cambio, nunca un ganador a medias.
-        winner_name = "logistic_independent"
+        # Si algun candidato no cubre el grupo entero (p.ej. una sola clase
+        # en el holdout para algun mercado del grupo) no hay comparacion
+        # valida posible: se usa el primer candidato (comportamiento
+        # identico al de antes de anhadir mas candidatos), nunca un
+        # ganador a medias.
+        winner_name = default_name
         if complete:
             avg_loss = {name: float(np.mean(vals)) for name, vals in losses.items()}
             winner_name = min(avg_loss, key=avg_loss.get)
         for market_key in group:
-            winners[market_key] = (winner_name, sources[winner_name])
+            winners[market_key] = (winner_name, candidate_models[winner_name])
     return winners
 
 
@@ -120,8 +125,15 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     matches = load_matches_dataframe(db, competition.id)
     finished = matches.dropna(subset=["home_goals", "away_goals"])
     if len(finished) < 50:
-        logger.warning("model_service.insufficient_data", extra={"competition": competition_code, "n": len(finished)})
-        return {"competition": competition_code, "status": "insufficient_data", "n_matches": len(finished)}
+        logger.warning(
+            "model_service.insufficient_data",
+            extra={"competition": competition_code, "n": len(finished)},
+        )
+        return {
+            "competition": competition_code,
+            "status": "insufficient_data",
+            "n_matches": len(finished),
+        }
 
     table = build_match_feature_table(matches)
 
@@ -134,14 +146,20 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
 
     baseline = LeagueAverageBaseline().fit(train_table)
     dixon_coles = DixonColesModel().fit(train_table)
-    # Dos candidatos ML independientes: el clasificador binario por mercado
-    # de siempre, y el clasificador CONJUNTO por grupo mutuamente excluyente
-    # (seccion 6, punto 6 de docs/architecture_audit.md -- la correccion de
-    # raiz, no solo el sintoma que ya corrige `renormalize_mutually_exclusive_groups`).
-    # Se entrenan AMBOS y se elige, mercado a mercado, el que generalice
-    # mejor en el holdout -- nunca se sustituye el uno por el otro a ciegas.
-    ml_classifier = MarketClassifierModel().fit(train_table)
-    multinomial_classifier = MultinomialGroupClassifier().fit(train_table)
+    # Tres candidatos ML independientes, TODOS entrenados siempre: el
+    # clasificador binario por mercado de siempre, el clasificador CONJUNTO
+    # por grupo mutuamente excluyente (seccion 6, punto 6 de
+    # docs/architecture_audit.md -- la correccion de raiz, no solo el
+    # sintoma que ya corrige `renormalize_mutually_exclusive_groups`), y
+    # LightGBM (seccion 7: "CatBoost/LightGBM anhadido al ensemble, nunca
+    # sustituyendo a ciegas"). Se elige, mercado a mercado (o grupo a grupo
+    # cuando aplica, ver mas abajo), el que generalice mejor en el holdout
+    # real -- nunca se sustituye uno por otro sin ese backtest.
+    ml_candidate_models: dict[str, object] = {
+        "logistic_independent": MarketClassifierModel().fit(train_table),
+        "multinomial_joint": MultinomialGroupClassifier().fit(train_table),
+        "gradient_boosting": GradientBoostingMarketModel().fit(train_table),
+    }
     selected_ml = SelectedMarketClassifier(feature_columns(table))
 
     metrics: dict = {"markets": {}}
@@ -151,11 +169,17 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
 
     eval_finished = eval_table.dropna(subset=["home_goals", "away_goals"])
     grouped_markets = {m for group in MUTUALLY_EXCLUSIVE_GROUPS for m in group}
+    # "multinomial_joint" no cubre mercados fuera de un grupo (ver
+    # MultinomialGroupClassifier): la comparacion por grupo solo tiene
+    # sentido con los candidatos que SI cubren esos mercados.
     ml_winner_by_group_market = (
-        _choose_ml_source_per_group(ml_classifier, multinomial_classifier, eval_finished)
+        _choose_ml_source_per_group(ml_candidate_models, eval_finished)
         if len(eval_finished) > 0
         else {}
     )
+    ungrouped_candidate_models = {
+        name: model for name, model in ml_candidate_models.items() if name != "multinomial_joint"
+    }
 
     for market_key in MARKET_DEFINITIONS:
         market_metrics = {}
@@ -165,8 +189,10 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
 
             p_baseline = market_probabilities(baseline, eval_finished)[market_key]
             p_dc = market_probabilities(dixon_coles, eval_finished)[market_key]
-            p_ml_independent = ml_classifier.predict_market_probabilities(eval_finished).get(market_key)
-            p_ml_joint = multinomial_classifier.predict_market_probabilities(eval_finished).get(market_key)
+            p_by_candidate = {
+                name: model.predict_market_probabilities(eval_finished).get(market_key)
+                for name, model in ml_candidate_models.items()
+            }
 
             market_metrics["baseline"] = {
                 "brier_score": brier_score(y_true, p_baseline),
@@ -176,10 +202,7 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
                 "brier_score": brier_score(y_true, p_dc),
                 "log_loss": log_loss_score(y_true, p_dc),
             }
-            for candidate_name, p_candidate in (
-                ("logistic_independent", p_ml_independent),
-                ("multinomial_joint", p_ml_joint),
-            ):
+            for candidate_name, p_candidate in p_by_candidate.items():
                 if p_candidate is not None:
                     market_metrics[candidate_name] = {
                         "brier_score": brier_score(y_true, p_candidate),
@@ -191,18 +214,26 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
                 # todos los mercados del mismo grupo usan el MISMO candidato,
                 # para no reintroducir la inconsistencia entre ellos.
                 winner_name, winner_source = ml_winner_by_group_market[market_key]
-                winner = (winner_name, winner_source, p_ml_independent if winner_name == "logistic_independent" else p_ml_joint)
+                winner = (winner_name, winner_source, p_by_candidate[winner_name])
             else:
-                winner = pick_best_candidate(y_true, [("logistic_independent", ml_classifier, p_ml_independent)])
+                candidates = [
+                    (name, model, p_by_candidate[name])
+                    for name, model in ungrouped_candidate_models.items()
+                ]
+                winner = pick_best_candidate(y_true, candidates)
 
             if winner is not None and winner[2] is not None:
                 winner_name, winner_source, p_ml = winner
-                selected_ml.register(market_key, winner_source, winner_name, winner_source.pipelines_[market_key])
+                winner_pipeline = winner_source.pipelines_[market_key]
+                selected_ml.register(market_key, winner_source, winner_name, winner_pipeline)
                 market_metrics["ml_winner"] = winner_name
 
                 weights, ensemble_loss = learn_ensemble_weights([p_dc, p_ml], y_true)
                 ensemble_weights[market_key] = weights[0]
-                market_metrics["ensemble"] = {"weight_statistical": weights[0], "log_loss": ensemble_loss}
+                market_metrics["ensemble"] = {
+                    "weight_statistical": weights[0],
+                    "log_loss": ensemble_loss,
+                }
                 p_ensemble_by_market[market_key] = weights[0] * p_dc + weights[1] * p_ml
             else:
                 p_ensemble_by_market[market_key] = p_dc
@@ -222,7 +253,9 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
             y_true = y_true_by_market.get(market_key)
             if y_true is None or len(set(y_true.tolist())) < 2:
                 continue
-            calibrators[market_key] = IsotonicCalibrator().fit(np.asarray(p_ensemble, dtype=float), y_true)
+            calibrators[market_key] = IsotonicCalibrator().fit(
+                np.asarray(p_ensemble, dtype=float), y_true
+            )
         metrics["calibration"] = {
             "method": "isotonic" if calibrators else None,
             "n_holdout_matches": len(eval_finished),
@@ -292,7 +325,11 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
 
     logger.info(
         "model_service.trained",
-        extra={"competition": competition_code, "model_version_id": model_version.id, "holdout_season": holdout_season},
+        extra={
+            "competition": competition_code,
+            "model_version_id": model_version.id,
+            "holdout_season": holdout_season,
+        },
     )
     return {
         "competition": competition_code,

@@ -28,11 +28,15 @@ from backend.app.prediction.secondary_markets import (
     SECONDARY_MARKET_DEFINITIONS,
     TotalCountPoissonModel,
 )
+from backend.app.prediction.shap_explanation import explain_lightgbm_estimator
 
 KEY_FEATURES_FOR_QUALITY = [
-    "home_goals_for_avg_last5", "away_goals_for_avg_last5",
-    "home_xg_for_avg_last5", "away_xg_for_avg_last5",
-    "home_attack_strength", "away_attack_strength",
+    "home_goals_for_avg_last5",
+    "away_goals_for_avg_last5",
+    "home_xg_for_avg_last5",
+    "away_xg_for_avg_last5",
+    "home_attack_strength",
+    "away_attack_strength",
 ]
 
 
@@ -106,7 +110,11 @@ def predict_markets_for_table(
         model_agreement = model_agreement_by_market[market_key]
         calibration_error = (calibration_errors or {}).get(market_key)
         calibrator = (calibrators or {}).get(market_key)
-        calibrated_probs = calibrator.transform(np.asarray(p_model, dtype=float)) if calibrator is not None else None
+        calibrated_probs = (
+            calibrator.transform(np.asarray(p_model, dtype=float))
+            if calibrator is not None
+            else None
+        )
 
         for i, (_, row) in enumerate(table.iterrows()):
             quote = (market_quotes or {}).get((row["match_id"], market_key))
@@ -118,7 +126,10 @@ def predict_markets_for_table(
             data_quality = compute_data_quality(row, KEY_FEATURES_FOR_QUALITY)
             agreement = model_agreement[i] if not np.isnan(model_agreement[i]) else None
             n_prior_avg = np.nanmean(
-                [row.get("home_goals_for_n_prior", np.nan), row.get("away_goals_for_n_prior", np.nan)]
+                [
+                    row.get("home_goals_for_n_prior", np.nan),
+                    row.get("away_goals_for_n_prior", np.nan),
+                ]
             )
             sample_size_score = float(np.clip((n_prior_avg or 0) / 10.0, 0.0, 1.0))
 
@@ -133,19 +144,28 @@ def predict_markets_for_table(
             )
 
             if ml_model is not None and market_key in ml_model.pipelines_:
-                # class_label/invert: solo los modelos que comparten un
-                # pipeline entre varios mercados (clasificador conjunto por
-                # grupo, ver models/goals/multinomial_classifier.py y
-                # models/goals/model_selection.py) exponen estos metodos;
-                # el resto (MarketClassifierModel) usa los valores por
-                # defecto, comportamiento idéntico al de antes.
-                explanation = explain_logistic_pipeline(
-                    ml_model.pipelines_[market_key],
-                    ml_model.feature_cols_,
-                    row,
-                    class_label=getattr(ml_model, "class_label_for_explanation", lambda _k: None)(market_key),
-                    invert=getattr(ml_model, "invert_for_market", lambda _k: False)(market_key),
-                )
+                pipeline = ml_model.pipelines_[market_key]
+                if hasattr(pipeline, "named_steps"):
+                    # class_label/invert: solo los modelos que comparten un
+                    # pipeline entre varios mercados (clasificador conjunto
+                    # por grupo, ver models/goals/multinomial_classifier.py
+                    # y models/goals/model_selection.py) exponen estos
+                    # metodos; el resto (MarketClassifierModel) usa los
+                    # valores por defecto, comportamiento idéntico al de antes.
+                    label_getter = getattr(ml_model, "class_label_for_explanation", lambda _k: None)
+                    invert_getter = getattr(ml_model, "invert_for_market", lambda _k: False)
+                    explanation = explain_logistic_pipeline(
+                        pipeline,
+                        ml_model.feature_cols_,
+                        row,
+                        class_label=label_getter(market_key),
+                        invert=invert_getter(market_key),
+                    )
+                else:
+                    # Sin `named_steps`: es un estimator LightGBM "pelado"
+                    # (ver models/goals/gradient_boosting.py), sin coef_
+                    # lineales que explicar -- se usa SHAP en su lugar.
+                    explanation = explain_lightgbm_estimator(pipeline, ml_model.feature_cols_, row)
             else:
                 explanation = explain_statistical_inputs(row)
 
@@ -163,14 +183,18 @@ def predict_markets_for_table(
                     confidence=confidence,
                     data_quality=data_quality,
                     explanation=explanation,
-                    market_probability_source=quote.get("market_probability_source") if quote else None,
+                    market_probability_source=(
+                        quote.get("market_probability_source") if quote else None
+                    ),
                     bookmakers_count=quote.get("bookmakers_count") if quote else None,
                     bookmakers_used=bookmakers_used,
                     market_odds_min=quote.get("market_odds_min") if quote else None,
                     market_odds_max=quote.get("market_odds_max") if quote else None,
                     market_odds_median=quote.get("market_odds_median") if quote else None,
                     market_odds_average=quote.get("market_odds_average") if quote else None,
-                    calibrated_probability=float(calibrated_probs[i]) if calibrated_probs is not None else None,
+                    calibrated_probability=(
+                        float(calibrated_probs[i]) if calibrated_probs is not None else None
+                    ),
                 )
             )
     return outputs
@@ -203,7 +227,10 @@ def predict_secondary_markets_for_table(
 
                 data_quality = compute_data_quality(row, KEY_FEATURES_FOR_QUALITY)
                 n_prior_avg = np.nanmean(
-                    [row.get("home_goals_for_n_prior", np.nan), row.get("away_goals_for_n_prior", np.nan)]
+                    [
+                        row.get("home_goals_for_n_prior", np.nan),
+                        row.get("away_goals_for_n_prior", np.nan),
+                    ]
                 )
                 sample_size_score = float(np.clip((n_prior_avg or 0) / 10.0, 0.0, 1.0))
                 confidence = confidence_score(
@@ -224,15 +251,19 @@ def predict_secondary_markets_for_table(
                         fair_odds=float(fair_odds(probs[i])),
                         market_probability=market_probability,
                         market_odds=market_odds,
-                        vig_removed=quote.get("market_probability_source", "").endswith("no_vig")
-                        if quote
-                        else None,
+                        vig_removed=(
+                            quote.get("market_probability_source", "").endswith("no_vig")
+                            if quote
+                            else None
+                        ),
                         edge=compute_edge(float(probs[i]), market_probability),
                         expected_value=compute_expected_value(float(probs[i]), market_odds),
                         confidence=confidence,
                         data_quality=data_quality,
                         explanation=explanation,
-                        market_probability_source=quote.get("market_probability_source") if quote else None,
+                        market_probability_source=(
+                            quote.get("market_probability_source") if quote else None
+                        ),
                         bookmakers_count=quote.get("bookmakers_count") if quote else None,
                         bookmakers_used=bookmakers_used,
                         market_odds_min=quote.get("market_odds_min") if quote else None,

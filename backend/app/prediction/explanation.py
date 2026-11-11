@@ -94,8 +94,12 @@ def explain_logistic_pipeline(
                 "feature": feature_name,
                 "display_name": display_name_for(feature_name),
                 "contribution": float(contributions[idx]),
-                "direction": "increases_probability" if contributions[idx] > 0 else "decreases_probability",
-                "raw_value": None if pd.isna(row.get(feature_name)) else float(row.get(feature_name)),
+                "direction": (
+                    "increases_probability" if contributions[idx] > 0 else "decreases_probability"
+                ),
+                "raw_value": (
+                    None if pd.isna(row.get(feature_name)) else float(row.get(feature_name))
+                ),
             }
         )
     return factors

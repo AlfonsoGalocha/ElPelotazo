@@ -16,6 +16,18 @@ dependencies = [
     "scipy>=1.13",
     "scikit-learn>=1.5,<1.8",
     "joblib>=1.4",
+    # Tercer "vocal" del ensemble de goles (seccion 7 de la revision de
+    # arquitectura: CatBoost/LightGBM como alternativa al LogisticRegression
+    # actual). Se entrena SIEMPRE junto a los demas candidatos ML, pero solo
+    # se usa en produccion para un mercado si gana el backtest en el
+    # holdout real -- ver models/goals/model_selection.py. Nunca sustituye
+    # a ciegas.
+    "lightgbm>=4.0",
+    # Explicabilidad real para el modelo de arboles (LightGBM no expone
+    # coef_, asi que prediction/explanation.py no puede usar el mismo
+    # mecanismo lineal que para LogisticRegression) -- ver
+    # prediction/shap_explanation.py.
+    "shap>=0.45",
     "httpx>=0.27",
     "tenacity>=8.5",
     "structlog>=24.1",

@@ -28,7 +28,9 @@ def synthetic_table():
 
 @pytest.fixture(scope="module")
 def fitted_multinomial(synthetic_table):
-    train = synthetic_table[synthetic_table["season_label"] != synthetic_table["season_label"].iloc[-1]]
+    train = synthetic_table[
+        synthetic_table["season_label"] != synthetic_table["season_label"].iloc[-1]
+    ]
     return MultinomialGroupClassifier().fit(train)
 
 
@@ -68,7 +70,9 @@ def test_pick_best_candidate_chooses_lower_log_loss():
     y_true = np.array([1, 1, 0, 0, 1, 0, 1, 0])
     good = np.array([0.9, 0.8, 0.1, 0.2, 0.9, 0.1, 0.9, 0.1])
     bad = np.full(8, 0.5)
-    winner = pick_best_candidate(y_true, [("good_model", object(), good), ("bad_model", object(), bad)])
+    winner = pick_best_candidate(
+        y_true, [("good_model", object(), good), ("bad_model", object(), bad)]
+    )
     assert winner[0] == "good_model"
 
 
@@ -78,11 +82,15 @@ def test_pick_best_candidate_returns_none_when_no_candidate_available():
 
 
 def test_selected_classifier_delegates_to_the_winning_source_per_market(synthetic_table):
-    train = synthetic_table[synthetic_table["season_label"] != synthetic_table["season_label"].iloc[-1]]
+    train = synthetic_table[
+        synthetic_table["season_label"] != synthetic_table["season_label"].iloc[-1]
+    ]
     independent = MarketClassifierModel().fit(train)
     joint = MultinomialGroupClassifier().fit(train)
 
-    eval_table = synthetic_table[synthetic_table["season_label"] == synthetic_table["season_label"].iloc[-1]]
+    eval_table = synthetic_table[
+        synthetic_table["season_label"] == synthetic_table["season_label"].iloc[-1]
+    ]
     y_true = label_for_market(eval_table, "over_2_5").to_numpy()
     p_independent = independent.predict_market_probabilities(eval_table)["over_2_5"]
     p_joint = joint.predict_market_probabilities(eval_table)["over_2_5"]
@@ -90,7 +98,10 @@ def test_selected_classifier_delegates_to_the_winning_source_per_market(syntheti
     selected = SelectedMarketClassifier(independent.feature_cols_)
     winner = pick_best_candidate(
         y_true,
-        [("logistic_independent", independent, p_independent), ("multinomial_joint", joint, p_joint)],
+        [
+            ("logistic_independent", independent, p_independent),
+            ("multinomial_joint", joint, p_joint),
+        ],
     )
     winner_name, winner_source, _ = winner
     selected.register("over_2_5", winner_source, winner_name, winner_source.pipelines_["over_2_5"])
@@ -99,9 +110,10 @@ def test_selected_classifier_delegates_to_the_winning_source_per_market(syntheti
     expected = p_independent if winner_name == "logistic_independent" else p_joint
     np.testing.assert_allclose(delegated, expected)
     assert selected.winner_by_market["over_2_5"] == winner_name
-    assert log_loss_score(y_true, delegated) <= min(
-        log_loss_score(y_true, p_independent), log_loss_score(y_true, p_joint)
-    ) + 1e-9
+    assert (
+        log_loss_score(y_true, delegated)
+        <= min(log_loss_score(y_true, p_independent), log_loss_score(y_true, p_joint)) + 1e-9
+    )
 
 
 class _FakeProvider(DataProvider):
@@ -157,7 +169,11 @@ def test_train_competition_models_picks_one_coherent_winner_per_group():
         for group in (("home_win", "draw", "away_win"), ("over_2_5", "under_2_5")):
             winners = {market_metrics[m]["ml_winner"] for m in group}
             assert len(winners) == 1, f"ganadores distintos dentro del mismo grupo: {winners}"
-            assert winners.pop() in ("logistic_independent", "multinomial_joint")
+            assert winners.pop() in (
+                "logistic_independent",
+                "multinomial_joint",
+                "gradient_boosting",
+            )
 
         model_version = db.query(ModelVersion).filter_by(id=result["model_version_id"]).one()
         artifact = load_model_artifact(model_version)
@@ -173,4 +189,6 @@ def test_train_competition_models_picks_one_coherent_winner_per_group():
             matches = load_matches_dataframe(db, comp.id)
             table = build_match_feature_table(matches).dropna(subset=["home_goals", "away_goals"])
         probs = selected.predict_market_probabilities(table.head(10))
-        np.testing.assert_allclose(probs["home_win"] + probs["draw"] + probs["away_win"], 1.0, atol=1e-9)
+        np.testing.assert_allclose(
+            probs["home_win"] + probs["draw"] + probs["away_win"], 1.0, atol=1e-9
+        )

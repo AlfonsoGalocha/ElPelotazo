@@ -108,7 +108,8 @@ class MultinomialGroupClassifier:
             else:
                 positive_idx = classes.index(True) if True in classes else classes.index(1)
                 p_positive = proba[:, positive_idx]
-                out[market_key] = 1.0 - p_positive if self._invert_for_market.get(market_key) else p_positive
+                invert = self._invert_for_market.get(market_key)
+                out[market_key] = 1.0 - p_positive if invert else p_positive
         return out
 
     def class_label_for_explanation(self, market_key: str) -> object | None:

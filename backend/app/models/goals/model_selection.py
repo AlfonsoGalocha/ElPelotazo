@@ -49,7 +49,8 @@ class SelectedMarketClassifier:
         self.pipelines_[market_key] = pipeline
         self._source_by_market[market_key] = source_model
         self.winner_by_market[market_key] = winner_name
-        class_label = getattr(source_model, "class_label_for_explanation", lambda _k: None)(market_key)
+        label_getter = getattr(source_model, "class_label_for_explanation", lambda _k: None)
+        class_label = label_getter(market_key)
         if class_label is not None:
             self._class_label_for_market[market_key] = class_label
         if getattr(source_model, "invert_for_market", lambda _k: False)(market_key):

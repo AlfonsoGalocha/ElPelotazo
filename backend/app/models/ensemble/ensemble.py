@@ -53,7 +53,7 @@ def learn_ensemble_weights(
     best_weights: list[float] | None = None
     best_loss = float("inf")
     for combo in _simplex_grid(len(probabilities), grid_step):
-        blended = sum(w * p for w, p in zip(combo, probabilities))
+        blended = sum(w * p for w, p in zip(combo, probabilities, strict=True))
         loss = log_loss_score(y_true, blended)
         if loss < best_loss:
             best_weights, best_loss = list(combo), loss
@@ -62,4 +62,4 @@ def learn_ensemble_weights(
 
 
 def blend_many(probabilities: list[np.ndarray], weights: list[float]) -> np.ndarray:
-    return sum(w * p for w, p in zip(weights, probabilities))
+    return sum(w * p for w, p in zip(weights, probabilities, strict=True))
