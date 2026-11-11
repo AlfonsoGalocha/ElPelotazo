@@ -20,12 +20,13 @@ from backend.app.agent.alerts import generate_alerts_for_current_round
 from backend.app.backtesting.calibration import calibration_report_for_table
 from backend.app.backtesting.engine import run_walk_forward_backtest, summarize_backtest
 from backend.app.backtesting.reports import write_backtest_report
-from backend.app.config.settings import REPO_ROOT
+from backend.app.config.settings import REPO_ROOT, get_settings
 from backend.app.db.database import init_db, session_scope
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
 from backend.app.features.goals import build_match_feature_table, feature_columns
+from backend.app.ingestion.api_football.fixtures_provider import ApiFootballMatchProvider
 from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
 from backend.app.ingestion.football_data.fixtures_provider import OpenFootballFixturesProvider
 from backend.app.ingestion.football_data.history_dataset import ClubFootballMatchDataProvider
@@ -109,46 +110,75 @@ def update(
 @app.command()
 def update_fixtures(competition: str = typer.Option(None)) -> None:
     """Descarga el CALENDARIO real de la temporada en curso (partidos aun no
-    jugados, con fecha real) via openfootball/football.json -- sin esto, no
-    hay ningun partido futuro sobre el que generar predicciones "de hoy".
+    jugados, con fecha real) -- sin esto, no hay ningun partido futuro
+    sobre el que generar predicciones "de hoy".
 
     Tambien trae, de la MISMA fuente, el marcador de los partidos YA
-    jugados de la temporada en curso (sin estadisticas/cuotas, que siguen
-    viniendo de `update`) -- tapagujero mientras el mirror historico de
-    `update` se pone al dia, para que Historico/settlement no se queden
-    parados semanas esperando esa fuente mas lenta.
+    jugados de la temporada en curso (sin estadisticas, que siguen
+    viniendo de `update`) -- para que Historico/settlement no se queden
+    parados esperando el mirror historico de `update` (que puede tardar
+    semanas en reflejar la temporada en curso, bug real reportado por un
+    usuario: histórico parado meses atras aunque ya se hubieran jugado
+    muchas mas jornadas).
+
+    Con API_FOOTBALL_ENABLED=true (ver `update-odds`), usa API-Football en
+    vez de openfootball/football.json: fuente de pago, actualizada en
+    tiempo real, en vez de un dataset mantenido por voluntarios que puede
+    quedarse semanas sin actualizar. Sin esa config, sigue usando
+    openfootball/football.json (gratis) exactamente como antes -- nunca
+    rompe a quien no haya configurado API-Football.
     """
     init_db()
+    settings = get_settings()
     competitions = [competition] if competition else ALL_COMPETITIONS
     season_label = season_label_from_date(dt.date.today())
-    provider = OpenFootballFixturesProvider()
+    use_api_football = settings.api_football_enabled and bool(settings.api_football_key)
+    provider = ApiFootballMatchProvider() if use_api_football else OpenFootballFixturesProvider()
+    source_label = "API-Football" if use_api_football else "openfootball/football.json"
 
     with session_scope() as db:
         for comp in competitions:
             try:
                 n = ingest_matches(db, provider, comp, season_label)
-                typer.echo(f"[update-fixtures] {comp} {season_label}: {n} partidos actualizados")
+                typer.echo(
+                    f"[update-fixtures] {comp} {season_label} ({source_label}): "
+                    f"{n} partidos actualizados"
+                )
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-fixtures] {comp} {season_label}: ERROR {exc}")
 
 
 @app.command()
 def update_odds(competition: str = typer.Option(None)) -> None:
-    """Descarga cuotas REALES de partidos futuros (The Odds API) y las asocia
-    a los partidos ya programados (creados por `update-fixtures`).
+    """Descarga cuotas REALES de partidos futuros y las asocia a los
+    partidos ya programados (creados por `update-fixtures`).
 
-    Requiere ODDS_API_ENABLED=true y ODDS_API_KEY configurados en `.env`
-    (registro gratuito en https://the-odds-api.com, plan free = 500
-    requests/mes). Sin esto configurado, se salta sin error: el resto del
-    sistema sigue funcionando igual, simplemente sin `market_probability`
-    ni `edge` para partidos futuros (los partidos ya jugados si tienen
-    cuotas historicas via `update`).
+    Con API_FOOTBALL_ENABLED=true (y API_FOOTBALL_KEY configurada), usa
+    API-Football: en UN UNICO fetch por partido trae 1X2, goles Over/Under,
+    BTTS Y tarjetas/corners (nunca pide `/odds` dos veces para el mismo
+    partido -- ver `update-secondary-odds`, que se salta solo si detecta
+    que esta config ya lo cubrio). Sin esa config, sigue usando The Odds
+    API exactamente como antes (ODDS_API_ENABLED=true / ODDS_API_KEY en
+    `.env`, registro gratuito en https://the-odds-api.com, plan free = 500
+    requests/mes) -- esa fuente NUNCA cubre tarjetas/corners en ningun
+    plan, solo 1X2/goles.
+
+    Sin ninguna de las dos fuentes configurada, se salta sin error: el
+    resto del sistema sigue funcionando igual, simplemente sin
+    `market_probability` ni `edge` para partidos futuros (los partidos ya
+    jugados si tienen cuotas historicas via `update`).
     """
     init_db()
-    provider = OddsApiProvider()
+    settings = get_settings()
+    use_api_football = settings.api_football_enabled and bool(settings.api_football_key)
+    provider = ApiFootballOddsProvider() if use_api_football else OddsApiProvider()
+    source_label = "API-Football" if use_api_football else "The Odds API"
     if not provider.is_available():
         env_path = REPO_ROOT / ".env"
-        typer.echo("[update-odds] ODDS_API_KEY no configurada: sin cuotas de mercado para partidos futuros.")
+        typer.echo(
+            "[update-odds] Ninguna fuente de cuotas configurada: sin cuotas de mercado "
+            "para partidos futuros."
+        )
         typer.echo(f"[update-odds] Fichero de configuracion esperado: {env_path}")
         if not env_path.exists():
             typer.echo(
@@ -156,7 +186,19 @@ def update_odds(competition: str = typer.Option(None)) -> None:
                 "eso NO es suficiente: copialo primero con 'cp .env.example .env' y luego "
                 "edita el .env nuevo (no el .example)."
             )
-        typer.echo("[update-odds] Registrate gratis en https://the-odds-api.com y en tu .env pon:")
+        typer.echo(
+            "[update-odds] Opcion recomendada (cubre 1X2/goles/BTTS/tarjetas/corners de una vez):"
+        )
+        typer.echo(
+            "[update-odds]   Registrate en https://www.api-football.com "
+            "(o via RapidAPI) y en tu .env pon:"
+        )
+        typer.echo("[update-odds]   API_FOOTBALL_ENABLED=true")
+        typer.echo("[update-odds]   API_FOOTBALL_KEY=<tu-key>")
+        typer.echo("[update-odds] Alternativa gratis (solo 1X2/goles, NUNCA tarjetas/corners):")
+        typer.echo(
+            "[update-odds]   Registrate gratis en https://the-odds-api.com y en tu .env pon:"
+        )
         typer.echo("[update-odds]   ODDS_API_ENABLED=true")
         typer.echo("[update-odds]   ODDS_API_KEY=<tu-key>")
         return
@@ -171,8 +213,9 @@ def update_odds(competition: str = typer.Option(None)) -> None:
                 continue
 
             typer.echo(
-                f"[update-odds] {comp}: la API devolvio {result.fixtures_fetched} partidos futuros, "
-                f"{result.matched} casaron con partidos ya programados en nuestra BD."
+                f"[update-odds] {comp} ({source_label}): la API devolvio "
+                f"{result.fixtures_fetched} partidos futuros, {result.matched} casaron "
+                "con partidos ya programados en nuestra BD."
             )
             if result.fixtures_fetched == 0:
                 typer.echo(
@@ -236,8 +279,22 @@ def update_secondary_odds(competition: str = typer.Option(None)) -> None:
     entorno (red restringida); si el matching de mercados falla, el propio
     comando imprime los nombres de mercado reales que SI vio, para
     ajustarlo en un vistazo.
+
+    Se SALTA sin hacer nada si `update-odds` ya esta usando API-Football
+    como fuente primaria (API_FOOTBALL_ENABLED=true): ese comando ya trae
+    tarjetas/corners en el MISMO fetch de `/odds`, pedirlo aqui otra vez
+    seria duplicar la llamada por partido sin ninguna ganancia.
     """
     init_db()
+    settings = get_settings()
+    if settings.api_football_enabled and settings.api_football_key:
+        typer.echo(
+            "[update-secondary-odds] API-Football ya es la fuente primaria de cuotas "
+            "(ver 'update-odds'): tarjetas/corners se trajeron en ese mismo paso, "
+            "no hay nada que hacer aqui."
+        )
+        return
+
     provider = ApiFootballOddsProvider()
     if not provider.is_available():
         typer.echo(

@@ -1,34 +1,34 @@
-"""Adapter de cuotas REALES de tarjetas y córners (API-Football / api-sports.io).
+"""Adapter de cuotas REALES (API-Football / api-sports.io).
 
-Por que hace falta una fuente DISTINTA de The Odds API: se comprobó que
-The Odds API no ofrece mercados de tarjetas ni córners para fútbol en
-NINGÚN plan (su catálogo se limita a resultado y totales de goles) — no
-es una cuestión de configuración, esos mercados no existen ahí. API-Football
-sí incluye, para bookmakers seleccionados, mercados de tipo "Cards Over/Under"
-y "Corners Over/Under" en su endpoint `/odds`.
+Cubre TODOS los mercados con fuente real que usa este proyecto en un
+UNICO fetch por partido (una sola llamada a `/odds` por `fixture_id`,
+nunca dos): 1X2 (match_result), goles Over/Under (over_under_goals),
+BTTS, y tarjetas/corners (cards_total/corners_total) -- estos dos
+ultimos porque se comprobo que The Odds API no los ofrece para futbol en
+NINGUN plan (su catalogo se limita a resultado y totales de goles), no es
+una cuestion de configuracion.
 
-Fuente: https://www.api-football.com (o vía RapidAPI, mismos datos, distinta
-autenticación — ver `Settings.api_football_use_rapidapi`). Plan gratuito:
-100 requests/día — muy ajustado para 5 ligas si se pide toda la temporada,
-por eso este adapter SOLO pide cuotas para una ventana de fechas concreta
-(pensada para la jornada actual, ver `services/round_service.py`), nunca
-la temporada completa: 1 request de fixtures + 1 request de odds POR
-PARTIDO de esa ventana, típicamente ~10 partidos por liga.
+Fuente: https://www.api-football.com (o via RapidAPI, mismos datos,
+distinta autenticacion -- ver `Settings.api_football_use_rapidapi`). Pide
+cuotas para una VENTANA de fechas (nunca la temporada entera de golpe):
+1 request de fixtures + 1 request de odds POR PARTIDO de esa ventana,
+asi que el coste escala con el numero de partidos consultados, no con
+los dias de la ventana en si.
 
-IMPORTANTE — sin verificar end-to-end: el entorno donde se desarrolló este
-adapter tiene el egress de red restringido a un allowlist que NO incluye
-api-football.com/api-sports.io, así que este código se escribió siguiendo
-la documentación pública de la API pero no pudo probarse contra la API
-real. Por eso el matching de mercados de tarjetas/córners busca por
-SUBCADENA en el nombre del mercado ("card"/"corner", insensible a
-mayúsculas) en vez de un nombre exacto, y por REGEX genérico
-"Over/Under N" en el valor (en vez de asumir un formato exacto): si el
-nombre real difiere ligeramente de lo esperado, sigue funcionando; si no
-se encuentra NADA parecido a tarjetas/córners tras procesar una liga
-entera, se loguea con nivel WARNING la lista completa de nombres de
-mercado vistos, para diagnosticar en un vistazo en vez de fallar en
-silencio (la misma lección aprendida del bug del sport_key de Bundesliga
-en The Odds API).
+IMPORTANTE -- sin verificar end-to-end: el entorno donde se desarrollo
+este adapter tiene el egress de red restringido a un allowlist que NO
+incluye api-football.com/api-sports.io, asi que este codigo se escribio
+siguiendo la documentacion publica de la API pero no pudo probarse contra
+la API real. Por eso el matching de mercados busca por SUBCADENA en el
+nombre del mercado (insensible a mayusculas) en vez de un nombre exacto,
+y el valor de cada seleccion se interpreta con reglas genericas (numero
+tras "over/under", "home"/"draw"/"away" o "1"/"x"/"2", "yes"/"no") en vez
+de asumir un formato exacto: si el nombre/valor real difiere ligeramente
+de lo esperado, sigue funcionando; si para una liga entera no se
+reconoce NADA de un mercado esperado, se loguea con nivel WARNING la
+lista completa de nombres de mercado vistos, para diagnosticar en un
+vistazo en vez de fallar en silencio (misma leccion aprendida del bug del
+sport_key de Bundesliga en The Odds API).
 """
 
 from __future__ import annotations
@@ -36,102 +36,77 @@ from __future__ import annotations
 import datetime as dt
 import re
 
-import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
-
-from backend.app.config.settings import get_settings
+from backend.app.ingestion.api_football.client import LEAGUE_IDS, ApiFootballClient
 from backend.app.ingestion.base import FixtureOddsSnapshot, RawOddsRecord
+from backend.app.utils.dates import season_label as season_label_from_date
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-DIRECT_BASE_URL = "https://v3.football.api-sports.io"
-RAPIDAPI_BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
-RAPIDAPI_HOST = "api-football-v1.p.rapidapi.com"
-
-# IDs de liga de API-Football (estables, documentados publicamente).
-LEAGUE_IDS: dict[str, int] = {
-    "laliga": 140,
-    "premier_league": 39,
-    "bundesliga": 78,
-    "serie_a": 135,
-    "ligue_1": 61,
-}
-
-# Se busca por SUBCADENA (insensible a mayusculas), no por nombre exacto:
-# API-Football puede nombrar el mercado de formas ligeramente distintas
-# segun el bookmaker ("Cards Over/Under", "Total Cards", "Asian Cards"...).
-MARKET_NAME_HINTS = {
-    "cards_total": ("card",),
-    "corners_total": ("corner",),
-}
+# Se busca por SUBCADENA (insensible a mayusculas), no por nombre exacto
+# -- ver docstring del modulo. Los mas especificos (card/corner) van
+# ANTES que "over/under" generico: el nombre real de esos mercados en
+# API-Football tambien contiene la palabra "over/under"
+# ("Cards Over/Under"), asi que si se comprobara el hint generico primero
+# se clasificarian mal.
+MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str]] = [
+    # (market_key interno, hints, tipo_de_valor)
+    ("cards_total", ("card",), "over_under"),
+    ("corners_total", ("corner",), "over_under"),
+    ("btts", ("both teams score", "both teams to score", "btts"), "yes_no"),
+    (
+        "match_result",
+        ("match winner", "1x2", "full time result", "fulltime result"),
+        "match_result",
+    ),
+    ("over_under_goals", ("over/under", "goals over", "total goals"), "over_under"),
+]
 
 # "Over 3.5" / "Under 9.5" / "Over3.5" -> (selection, line)
 OVER_UNDER_VALUE_RE = re.compile(r"(over|under)\s*([\d.]+)", re.IGNORECASE)
 
+MATCH_RESULT_VALUE_MAP = {
+    "home": "home",
+    "1": "home",
+    "draw": "draw",
+    "x": "draw",
+    "away": "away",
+    "2": "away",
+}
 
-class ApiFootballOddsProvider:
+
+class ApiFootballOddsProvider(ApiFootballClient):
     """No implementa `DataProvider` (esa interfaz es para ingesta de
-    PARTIDOS; esta clase solo trae cuotas de mercados secundarios para
-    partidos que YA existen en la BD, igual que `OddsApiProvider`)."""
+    PARTIDOS -- ver fixtures_provider.py; esta clase solo trae cuotas
+    para partidos que YA existen en la BD, igual que `OddsApiProvider`)."""
 
     name = "api_football"
 
-    def __init__(self, http_client: httpx.Client | None = None) -> None:
-        self._client = http_client or httpx.Client(timeout=30.0)
+    DEFAULT_WINDOW_DAYS = 45  # cuanto hacia el futuro se piden cuotas por defecto en fetch_odds()
 
-    def is_available(self) -> bool:
-        settings = get_settings()
-        return settings.api_football_enabled and bool(settings.api_football_key)
+    def fetch_odds(self, competition_code: str) -> list[FixtureOddsSnapshot]:
+        """Interfaz esperada por `data_service.attach_odds_to_scheduled_matches`
+        (mismo contrato que `OddsApiProvider.fetch_odds`): cuotas de TODOS
+        los mercados con fuente real de los proximos partidos programados.
+        Temporada/ventana de fecha calculadas aqui -- The Odds API no
+        necesita esto (devuelve "lo que tenga ahora"), API-Football si."""
+        today = dt.date.today()
+        season_year = int(season_label_from_date(today).split("/")[0])
+        return self.fetch_odds_for_window(
+            competition_code,
+            season_year,
+            today,
+            today + dt.timedelta(days=self.DEFAULT_WINDOW_DAYS),
+        )
 
-    def _headers(self) -> dict[str, str]:
-        settings = get_settings()
-        if settings.api_football_use_rapidapi:
-            return {"X-RapidAPI-Key": settings.api_football_key or "", "X-RapidAPI-Host": RAPIDAPI_HOST}
-        return {"x-apisports-key": settings.api_football_key or ""}
-
-    def _base_url(self) -> str:
-        settings = get_settings()
-        return RAPIDAPI_BASE_URL if settings.api_football_use_rapidapi else DIRECT_BASE_URL
-
-    @retry(
-        reraise=True,
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=2, min=2, max=20),
-        retry=retry_if_exception_type(httpx.HTTPError),
-    )
-    def _get(self, path: str, params: dict) -> list[dict]:
-        url = f"{self._base_url()}{path}"
-        response = self._client.get(url, params=params, headers=self._headers())
-        if response.status_code >= 400:
-            logger.warning(
-                "ingestion.api_football.error_response: path=%s status=%d body=%s",
-                path,
-                response.status_code,
-                response.text[:500],
-            )
-        response.raise_for_status()
-        payload = response.json()
-
-        # CRITICO: API-Football (api-sports.io) devuelve HTTP 200 incluso
-        # cuando hay un error de parametros/plan -- el error real viene
-        # DENTRO del JSON (clave "errors": {...} o [...]), no en el codigo
-        # HTTP. Sin esto, un error real ("esta temporada requiere un plan
-        # de pago", "parametro invalido"...) se traga en silencio y solo se
-        # ve "0 partidos consultados", indistinguible de "no hay partidos
-        # en esas fechas".
-        errors = payload.get("errors")
-        if errors:
-            logger.warning("ingestion.api_football.api_errors: path=%s params=%s errors=%s", path, params, errors)
-        return payload.get("response", [])
-
-    def fetch_secondary_odds(
+    def fetch_odds_for_window(
         self, competition_code: str, season_year: int, date_from: dt.date, date_to: dt.date
     ) -> list[FixtureOddsSnapshot]:
-        """Cuotas de tarjetas/córners para los partidos de una liga entre
-        `date_from` y `date_to` (pensado para la ventana de la jornada
-        actual, no la temporada completa: ver docstring del modulo sobre
-        el limite de 100 requests/dia del plan gratuito)."""
+        """Cuotas (todos los mercados) de los partidos de una liga entre
+        `date_from` y `date_to`. Un unico fetch de `/odds` por partido --
+        nunca se pide dos veces el mismo `fixture_id` para separar
+        mercados "primarios" de "secundarios" (ver `fetch_secondary_odds`,
+        que reusa este mismo resultado en vez de volver a pedirlo)."""
         league_id = LEAGUE_IDS.get(competition_code)
         if league_id is None:
             raise ValueError(f"Competicion no soportada por este adapter: {competition_code}")
@@ -158,17 +133,37 @@ class ApiFootballOddsProvider:
             odds_records, seen = self._parse_odds_response(odds_response)
             market_names_seen |= seen
             if odds_records:
-                snapshots.append(FixtureOddsSnapshot(home_name, away_name, commence_time, odds_records))
+                snapshots.append(
+                    FixtureOddsSnapshot(home_name, away_name, commence_time, odds_records)
+                )
 
         if fixtures and not any(s.odds for s in snapshots):
             logger.warning(
-                "ingestion.api_football.no_cards_or_corners_market_found: "
+                "ingestion.api_football.no_market_found: "
                 "competition=%s fixtures_checked=%d market_names_seen=%s",
                 competition_code,
                 len(fixtures),
                 sorted(market_names_seen),
             )
         return snapshots
+
+    def fetch_secondary_odds(
+        self, competition_code: str, season_year: int, date_from: dt.date, date_to: dt.date
+    ) -> list[FixtureOddsSnapshot]:
+        """Compatibilidad con `update-secondary-odds`: SOLO tarjetas/corners,
+        filtrando el mismo resultado de `fetch_odds_for_window` en vez de
+        volver a pedir `/odds` -- nunca duplica la llamada por partido."""
+        snapshots = self.fetch_odds_for_window(competition_code, season_year, date_from, date_to)
+        secondary = [
+            FixtureOddsSnapshot(
+                s.home_team_raw,
+                s.away_team_raw,
+                s.commence_time,
+                [r for r in s.odds if r.market in ("cards_total", "corners_total")],
+            )
+            for s in snapshots
+        ]
+        return [s for s in secondary if s.odds]
 
     @staticmethod
     def _parse_odds_response(odds_response: list[dict]) -> tuple[list[RawOddsRecord], set[str]]:
@@ -180,25 +175,52 @@ class ApiFootballOddsProvider:
                 for bet in bookmaker.get("bets", []):
                     bet_name = bet.get("name", "")
                     names_seen.add(bet_name)
-                    market_key = next(
+                    spec = next(
                         (
-                            key
-                            for key, hints in MARKET_NAME_HINTS.items()
+                            (market_key, value_kind)
+                            for market_key, hints, value_kind in MARKET_NAME_HINTS
                             if any(hint in bet_name.lower() for hint in hints)
                         ),
                         None,
                     )
-                    if market_key is None:
+                    if spec is None:
                         continue
+                    market_key, value_kind = spec
                     for value in bet.get("values", []):
-                        match = OVER_UNDER_VALUE_RE.search(str(value.get("value", "")))
-                        if not match:
-                            continue
-                        selection = match.group(1).lower()
-                        line = float(match.group(2))
-                        try:
-                            price = float(value.get("odd"))
-                        except (TypeError, ValueError):
-                            continue
-                        records.append(RawOddsRecord(bookmaker_key, market_key, line, selection, price))
+                        record = ApiFootballOddsProvider._parse_value(
+                            bookmaker_key, market_key, value_kind, value
+                        )
+                        if record is not None:
+                            records.append(record)
         return records, names_seen
+
+    @staticmethod
+    def _parse_value(
+        bookmaker: str, market_key: str, value_kind: str, value: dict
+    ) -> RawOddsRecord | None:
+        raw_value = str(value.get("value", ""))
+        try:
+            price = float(value.get("odd"))
+        except (TypeError, ValueError):
+            return None
+
+        if value_kind == "over_under":
+            match = OVER_UNDER_VALUE_RE.search(raw_value)
+            if not match:
+                return None
+            selection, line = match.group(1).lower(), float(match.group(2))
+            return RawOddsRecord(bookmaker, market_key, line, selection, price)
+
+        if value_kind == "match_result":
+            selection = MATCH_RESULT_VALUE_MAP.get(raw_value.strip().lower())
+            if selection is None:
+                return None
+            return RawOddsRecord(bookmaker, market_key, None, selection, price)
+
+        if value_kind == "yes_no":
+            normalized = raw_value.strip().lower()
+            if normalized not in ("yes", "no"):
+                return None
+            return RawOddsRecord(bookmaker, market_key, None, normalized, price)
+
+        return None
