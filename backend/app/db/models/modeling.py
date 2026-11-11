@@ -59,6 +59,13 @@ class Prediction(Base):
     # `None` cuando no hubo holdout suficiente para calibrar ese mercado
     # (nunca se inventa un valor) -- ver MIN_CALIBRATION_MATCHES.
     calibrated_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Intervalo de incertidumbre sobre `model_probability` (ver
+    # prediction/uncertainty.py): Wilson score interval por tamanho de
+    # muestra efectivo, ensanchado por desacuerdo entre submodelos.
+    # `None` cuando no se pudo calcular (nunca un intervalo degenerado
+    # p.ej. [p, p] que sugeriria certeza absoluta inexistente).
+    uncertainty_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uncertainty_high: Mapped[float | None] = mapped_column(Float, nullable=True)
     market_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
     market_odds: Mapped[float | None] = mapped_column(Float, nullable=True)
     fair_odds: Mapped[float] = mapped_column(Float)

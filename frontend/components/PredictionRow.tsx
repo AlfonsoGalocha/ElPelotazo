@@ -57,6 +57,14 @@ export default function PredictionRow({ prediction }: { prediction: Prediction }
       <div className="text-slate-300">
         <div className="text-[10px] uppercase text-slate-500">Modelo</div>
         {pct(prediction.model_probability)}
+        {prediction.uncertainty_low !== null && prediction.uncertainty_high !== null && (
+          <div
+            className="text-[10px] text-slate-500"
+            title="Intervalo de incertidumbre: cuanto podria moverse esta probabilidad segun el tamano de muestra y el acuerdo entre modelos"
+          >
+            [{pct(prediction.uncertainty_low)}–{pct(prediction.uncertainty_high)}]
+          </div>
+        )}
       </div>
       <div className="text-slate-300">
         <div className="text-[10px] uppercase text-slate-500">Mercado</div>

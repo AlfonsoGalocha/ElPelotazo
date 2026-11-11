@@ -246,6 +246,8 @@ def generate_predictions_for_competition(
             market_odds_median=output.market_odds_median,
             market_odds_average=output.market_odds_average,
             calibrated_probability=output.calibrated_probability,
+            uncertainty_low=output.uncertainty_low,
+            uncertainty_high=output.uncertainty_high,
         )
         # `signal_score` se calcula y CONGELA aqui, con los datos de mercado
         # vigentes en este momento (seccion 9 del brief: snapshot inmutable).

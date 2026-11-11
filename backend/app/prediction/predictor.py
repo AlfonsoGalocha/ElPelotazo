@@ -29,6 +29,7 @@ from backend.app.prediction.secondary_markets import (
     TotalCountPoissonModel,
 )
 from backend.app.prediction.shap_explanation import explain_lightgbm_estimator
+from backend.app.prediction.uncertainty import compute_uncertainty_interval
 
 KEY_FEATURES_FOR_QUALITY = [
     "home_goals_for_avg_last5",
@@ -62,6 +63,8 @@ class MarketPredictionOutput:
     market_odds_median: float | None = None
     market_odds_average: float | None = None
     calibrated_probability: float | None = None
+    uncertainty_low: float | None = None
+    uncertainty_high: float | None = None
 
 
 def predict_markets_for_table(
@@ -169,6 +172,10 @@ def predict_markets_for_table(
             else:
                 explanation = explain_statistical_inputs(row)
 
+            uncertainty_low, uncertainty_high = compute_uncertainty_interval(
+                float(p_model[i]), n_prior_avg, agreement
+            )
+
             outputs.append(
                 MarketPredictionOutput(
                     match_id=int(row["match_id"]),
@@ -195,6 +202,8 @@ def predict_markets_for_table(
                     calibrated_probability=(
                         float(calibrated_probs[i]) if calibrated_probs is not None else None
                     ),
+                    uncertainty_low=uncertainty_low,
+                    uncertainty_high=uncertainty_high,
                 )
             )
     return outputs
@@ -243,6 +252,9 @@ def predict_secondary_markets_for_table(
                     )
                 )
                 explanation = explain_logistic_pipeline(model.pipeline_, model.feature_cols_, row)
+                uncertainty_low, uncertainty_high = compute_uncertainty_interval(
+                    float(probs[i]), n_prior_avg, model_agreement=None
+                )
                 outputs.append(
                     MarketPredictionOutput(
                         match_id=int(row["match_id"]),
@@ -270,6 +282,8 @@ def predict_secondary_markets_for_table(
                         market_odds_max=quote.get("market_odds_max") if quote else None,
                         market_odds_median=quote.get("market_odds_median") if quote else None,
                         market_odds_average=quote.get("market_odds_average") if quote else None,
+                        uncertainty_low=uncertainty_low,
+                        uncertainty_high=uncertainty_high,
                     )
                 )
     return outputs

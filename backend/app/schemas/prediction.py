@@ -29,6 +29,8 @@ class PredictionOut(BaseModel):
     expected_value: float | None
     confidence: float
     data_quality: float
+    uncertainty_low: float | None = None
+    uncertainty_high: float | None = None
     signal_tier: str
     explanation: list[PredictionFactorOut]
     model_version_id: int

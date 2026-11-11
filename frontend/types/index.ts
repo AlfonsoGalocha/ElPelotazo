@@ -56,6 +56,8 @@ export interface Prediction {
   expected_value: number | null;
   confidence: number;
   data_quality: number;
+  uncertainty_low: number | null;
+  uncertainty_high: number | null;
   signal_tier: SignalTier;
   explanation: PredictionFactor[];
   model_version_id: number;

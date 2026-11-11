@@ -49,6 +49,8 @@ def serialize_prediction(
         "expected_value": prediction.expected_value,
         "confidence": prediction.confidence,
         "data_quality": prediction.data_quality,
+        "uncertainty_low": prediction.uncertainty_low,
+        "uncertainty_high": prediction.uncertainty_high,
         "signal_tier": signal_tier(prediction.confidence, prediction.data_quality),
         "explanation": prediction.explanation.get("factors", []),
         "model_version_id": prediction.model_version_id,
