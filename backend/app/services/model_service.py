@@ -33,6 +33,7 @@ from backend.app.prediction.secondary_markets import (
     label_for_secondary_market,
 )
 from backend.app.services.match_service import load_matches_dataframe
+from backend.app.services.mlflow_tracking import log_training_run
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -331,7 +332,7 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
             "holdout_season": holdout_season,
         },
     )
-    return {
+    training_result = {
         "competition": competition_code,
         "status": "trained",
         "model_version_id": model_version.id,
@@ -339,6 +340,8 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
         "holdout_season": holdout_season,
         "metrics": metrics,
     }
+    log_training_run(competition_code, training_result, settings)
+    return training_result
 
 
 def load_latest_model_version(db: Session, market_family: str = "goals") -> ModelVersion | None:

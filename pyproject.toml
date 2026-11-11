@@ -28,6 +28,11 @@ dependencies = [
     # mecanismo lineal que para LogisticRegression) -- ver
     # prediction/shap_explanation.py.
     "shap>=0.45",
+    # Tracking de experimentos de entrenamiento (seccion 'MLOps' de la
+    # revision de arquitectura) -- desactivado por defecto
+    # (MLFLOW_ENABLED=true), file store local (sin servidor) por defecto.
+    # Ver services/mlflow_tracking.py.
+    "mlflow>=3.0",
     "httpx>=0.27",
     "tenacity>=8.5",
     "structlog>=24.1",

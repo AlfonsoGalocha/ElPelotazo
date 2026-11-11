@@ -167,6 +167,23 @@ class Settings(BaseSettings):
     # (seccion 13: "Leagues: Premier / La Liga / Serie A").
     agent_alert_leagues: list[str] = []
 
+    # --- MLflow (tracking de entrenamientos, seccion 'experiment tracking'
+    # del brief profesional) ---
+    # Desactivado por defecto (mismo patron que agent_enabled/agent_alerts_enabled:
+    # nunca anhadir una dependencia operativa nueva sin que el usuario lo
+    # decida a proposito). Cuando esta activo, cada `train_competition_models`
+    # registra params/metrics de ESE entrenamiento en un tracking store local
+    # (file:// por defecto, sin necesitar un servidor MLflow) -- puramente
+    # informativo, nunca cambia que modelo se usa en produccion (eso sigue
+    # decidiendolo el backtest real, ver models/goals/model_selection.py).
+    mlflow_enabled: bool = False
+    # `None` -> SQLite local en <repo>/mlruns.db (sin servidor; MLflow >= 3
+    # rechaza el file store plano "file://..." por defecto, ver
+    # services/mlflow_tracking.py). Se puede apuntar a un servidor MLflow
+    # real (http://...) si se despliega uno.
+    mlflow_tracking_uri: str | None = None
+    mlflow_experiment_name: str = "football-edge-detector"
+
     @property
     def model_artifacts_path(self) -> Path:
         path = REPO_ROOT / self.model_artifacts_dir
