@@ -17,6 +17,13 @@ class CompetitionOut(BaseModel):
     code: str
     name: str
     country: str
+    # CompetitionConfig (ver db/models/core.py): `None` en competiciones
+    # ya existentes antes de anhadir estos campos, tratado como el
+    # default documentado alli ("CORE"/habilitada/prioridad 0), nunca
+    # como ausencia de dato real.
+    tier: str | None = None
+    enabled: bool | None = None
+    priority: int | None = None
 
     model_config = {"from_attributes": True}
 
