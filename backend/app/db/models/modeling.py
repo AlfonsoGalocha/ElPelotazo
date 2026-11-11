@@ -119,6 +119,12 @@ class PredictionResult(Base):
     # (seccion 8 del brief). `None` si no se pudo derivar (nunca inventado).
     actual_result: Mapped[str | None] = mapped_column(String(32), nullable=True)
     settled_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # Closing Line Value (ver market/clv.py): cuanto se movio la cuota de
+    # consenso entre generar la prediccion y el cierre del mercado.
+    # `None` explicito cuando no hay historico suficiente (MatchOddsHistory
+    # append-only, solo existe desde que se anhadio esta tabla -- nunca
+    # retroactivo) para calcularlo, nunca un numero inventado.
+    closing_line_value: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     prediction: Mapped[Prediction] = relationship(back_populates="result")
 

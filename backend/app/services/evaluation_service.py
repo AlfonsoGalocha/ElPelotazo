@@ -38,9 +38,11 @@ from backend.app.backtesting.metrics import (
 )
 from backend.app.models.calibration.metrics import expected_calibration_error
 from backend.app.db.models.core import Competition
-from backend.app.db.models.matches import Match
+from backend.app.db.models.matches import Match, MatchOddsHistory
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.features.goals import build_match_feature_table
+from backend.app.market.clv import compute_clv
+from backend.app.market.consensus import compute_market_consensus
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS, label_for_market
 from backend.app.prediction.secondary_markets import (
     SECONDARY_MARKET_DEFINITIONS,
@@ -55,6 +57,39 @@ def _label_for_any_market(table, market_key: str):
     if market_key in SECONDARY_MARKET_DEFINITIONS:
         return label_for_secondary_market(table, market_key)
     return None
+
+
+def _closing_consensus_odds(db: Session, match_id: int, market_key: str) -> float | None:
+    """Cuota de CONSENSO de cierre (ver market/clv.py) para (match_id,
+    market_key): de `MatchOddsHistory` (append-only), toma la ULTIMA fila
+    registrada por bookmaker (su precio mas cercano al pitido inicial) y
+    calcula el consenso igual que en produccion (`market/consensus.py`).
+    `None` si el mercado no tiene cuota real conocida (ver
+    ALL_MARKET_TO_ODDS_LOOKUP) o si no hay historico registrado todavia
+    para este partido (nunca inventado)."""
+    from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP
+
+    lookup = ALL_MARKET_TO_ODDS_LOOKUP.get(market_key)
+    if lookup is None:
+        return None
+    market, line, selection = lookup
+
+    rows = (
+        db.query(MatchOddsHistory)
+        .filter_by(match_id=match_id, market=market, line=line)
+        .order_by(MatchOddsHistory.recorded_at.asc())
+        .all()
+    )
+    if not rows:
+        return None
+
+    latest_by_bookmaker: dict[str, MatchOddsHistory] = {}
+    for row in rows:
+        latest_by_bookmaker[(row.bookmaker, row.selection)] = row
+    closing_rows = list(latest_by_bookmaker.values())
+
+    consensus = compute_market_consensus(closing_rows, market, line, selection)
+    return consensus.market_odds
 
 
 def settle_finished_predictions(db: Session, competition_code: str | None = None) -> int:
@@ -124,12 +159,15 @@ def settle_finished_predictions(db: Session, competition_code: str | None = None
                     if home_goals == home_goals and away_goals == away_goals  # not NaN
                     else None
                 )
+                closing_odds = _closing_consensus_odds(db, prediction.match_id, prediction.market)
+                clv = compute_clv(prediction.market_odds, closing_odds)
                 db.add(
                     PredictionResult(
                         prediction_id=prediction.id,
                         outcome=outcome,
                         actual_result=actual_result,
                         settled_at=dt.datetime.utcnow(),
+                        closing_line_value=clv,
                     )
                 )
                 created += 1

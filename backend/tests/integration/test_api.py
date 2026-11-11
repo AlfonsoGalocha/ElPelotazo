@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, Season
-from backend.app.db.models.matches import Match, MatchOdds
+from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory
 from backend.app.db.models.modeling import Prediction
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.ingestion.odds.provider import FixtureOddsSnapshot
@@ -509,6 +509,15 @@ def test_top_signals_default_scope_excludes_next_round_even_with_higher_edge(see
         ).delete(synchronize_session=False)
         db.query(MatchOdds).filter(
             MatchOdds.match_id.in_([current_round_match_id, next_round_match_id])
+        ).delete(synchronize_session=False)
+        # El borrado masivo (`Query.delete()`) nunca dispara cascades de
+        # ORM (`cascade="all, delete-orphan"` solo aplica a
+        # `session.delete(objeto)`) -- MatchOddsHistory (append-only,
+        # ver market/clv.py) hay que limpiarla aqui tambien a mano, o
+        # quedaria huerfana con un match_id que SQLite puede reciclar para
+        # un partido nuevo y no relacionado (bug real, ver test_clv.py).
+        db.query(MatchOddsHistory).filter(
+            MatchOddsHistory.match_id.in_([current_round_match_id, next_round_match_id])
         ).delete(synchronize_session=False)
         db.query(Match).filter(Match.id.in_([current_round_match_id, next_round_match_id])).delete(
             synchronize_session=False
