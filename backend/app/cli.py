@@ -25,7 +25,7 @@ from backend.app.db.database import init_db, session_scope
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
-from backend.app.features.goals import build_match_feature_table
+from backend.app.features.goals import build_match_feature_table, feature_columns
 from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
 from backend.app.ingestion.football_data.fixtures_provider import OpenFootballFixturesProvider
 from backend.app.ingestion.football_data.history_dataset import ClubFootballMatchDataProvider
@@ -35,6 +35,7 @@ from backend.app.ingestion.football_data.provider import (
 )
 from backend.app.ingestion.odds.provider import OddsApiProvider
 from backend.app.models.goals.dixon_coles import DixonColesModel
+from backend.app.monitoring.drift import feature_drift_report
 from backend.app.services.data_service import (
     attach_odds_to_scheduled_matches,
     attach_secondary_odds_to_scheduled_matches,
@@ -579,6 +580,54 @@ def calibration_report(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report_data, indent=2, default=str))
     typer.echo(f"[calibration-report] informe completo escrito en {output_path}")
+
+
+@app.command()
+def detect_drift(
+    competition: str, current_window: int = 50, output: str | None = None
+) -> None:
+    """Deteccion de cambios de distribucion (PSI, ver monitoring/drift.py)
+    en las features de entrada: compara los ultimos `current_window`
+    partidos JUGADOS contra el resto del historico. PURAMENTE INFORMATIVO
+    -- nunca bloquea `refresh`/`train`, solo da visibilidad de que algo se
+    esta moviendo en los datos para decidir con datos si hace falta
+    reentrenar antes de lo habitual.
+    """
+    init_db()
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=competition).one_or_none()
+        if comp is None:
+            typer.echo(f"Competicion no encontrada: {competition}")
+            raise typer.Exit(1)
+        matches = load_matches_dataframe(db, comp.id)
+        table = build_match_feature_table(matches)
+
+    report_data = feature_drift_report(table, feature_columns(table), current_window=current_window)
+    if report_data["status"] != "ok":
+        typer.echo(
+            f"[detect-drift] {competition}: datos insuficientes "
+            f"({report_data['n_matches']} partidos, se necesitan {report_data['required']})"
+        )
+        return
+
+    significant = report_data["features_with_significant_drift"]
+    moderate = report_data["features_with_moderate_drift"]
+    typer.echo(
+        f"[detect-drift] {competition}: {len(report_data['features'])} features evaluadas "
+        f"(referencia={report_data['n_reference']}, actual={report_data['n_current']}) -- "
+        f"{len(significant)} con drift significativo, {len(moderate)} moderado"
+    )
+    for name in significant:
+        typer.echo(f"  [SIGNIFICATIVO] {name}: PSI={report_data['features'][name]['psi']:.3f}")
+    for name in moderate:
+        typer.echo(f"  [moderado] {name}: PSI={report_data['features'][name]['psi']:.3f}")
+
+    output_path = (
+        Path(output) if output else REPO_ROOT / "data" / "processed" / f"drift_{competition}.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report_data, indent=2, default=str))
+    typer.echo(f"[detect-drift] informe completo escrito en {output_path}")
 
 
 @app.command()
