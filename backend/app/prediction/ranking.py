@@ -29,11 +29,15 @@ from backend.app.prediction.market_quality import market_quality_tier
 class ExclusionReason(str, Enum):
     NO_MARKET = "sin_mercado"  # no hay market_probability/market_odds en absoluto
     INVALID_ODDS = "cuota_invalida"  # cuota <= 1.0 o por debajo del minimo configurado
-    ODDS_TOO_HIGH = "cuota_demasiado_alta"  # cuota por encima del maximo configurado (ver max_signal_odds)
+    ODDS_TOO_HIGH = (
+        "cuota_demasiado_alta"  # cuota por encima del maximo configurado (ver max_signal_odds)
+    )
     INVALID_EDGE = "edge_invalido"  # edge ausente o por debajo del minimo configurado
     INSUFFICIENT_BOOKMAKERS = "pocas_casas"  # menos casas que el minimo configurado
     LOW_DATA_QUALITY = "calidad_datos_baja"  # data_quality por debajo del minimo configurado
-    STALE_ODDS = "cuota_desactualizada"  # mas antigua que max_odds_age_minutes (desactivado por defecto)
+    STALE_ODDS = (
+        "cuota_desactualizada"  # mas antigua que max_odds_age_minutes (desactivado por defecto)
+    )
 
 
 @dataclass
@@ -176,11 +180,23 @@ def signal_score(
 
 
 def rank_signals(
-    predictions: list[Prediction], settings: Settings | None = None
+    predictions: list[Prediction],
+    settings: Settings | None = None,
+    market_track_records: dict[tuple[str, str], float] | None = None,
 ) -> tuple[list[RankedSignal], list[ExcludedSignal]]:
     """Aplica el filtro de calidad y ordena las que pasan por `signal_score`
     descendente. Devuelve tambien las excluidas con su motivo, para
-    depuracion (seccion 13: nunca "desaparecen" en silencio)."""
+    depuracion (seccion 13: nunca "desaparecen" en silencio).
+
+    `market_track_records`: opcional, {(competition_code, market): valor en
+    [0,1]} -- ver services/evaluation_service.py::market_track_records(),
+    que calcula el valor real a partir de predicciones ya liquidadas. Esta
+    funcion sigue siendo PURA (sin acceso a BD): el llamador calcula el
+    dict una vez por request y lo pasa aqui. Un mercado/competicion ausente
+    del dict (historico insuficiente, o `None` cuando no se calculo en
+    absoluto) usa el valor neutro por defecto de `signal_score` (1.0),
+    nunca un numero inventado.
+    """
     settings = settings or get_settings()
     included: list[RankedSignal] = []
     excluded: list[ExcludedSignal] = []
@@ -190,7 +206,12 @@ def rank_signals(
         if reason is not None:
             excluded.append(ExcludedSignal(prediction=prediction, reason=reason))
             continue
-        included.append(RankedSignal(prediction=prediction, score=signal_score(prediction)))
+        track_record = None
+        if market_track_records and prediction.match is not None:
+            key = (prediction.match.competition.code, prediction.market)
+            track_record = market_track_records.get(key)
+        score = signal_score(prediction, market_track_record=track_record)
+        included.append(RankedSignal(prediction=prediction, score=score))
 
     included.sort(key=lambda s: s.score, reverse=True)
     return included, excluded

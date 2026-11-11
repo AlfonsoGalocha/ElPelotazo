@@ -5,10 +5,15 @@ import datetime as dt
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match, MatchOdds
+from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionResult
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.normalization.competitions import COMPETITIONS
 from backend.app.services.data_service import ingest_matches
-from backend.app.services.evaluation_service import evaluate_settled_predictions
+from backend.app.services.evaluation_service import (
+    MIN_SETTLED_FOR_TRACK_RECORD,
+    evaluate_settled_predictions,
+    market_track_records,
+)
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import generate_predictions_for_competition
 from backend.tests.fixtures.synthetic import generate_synthetic_matches
@@ -70,7 +75,9 @@ def test_evaluate_settled_predictions_grades_a_now_finished_match():
 
     with session_scope() as db:
         comp = db.query(Competition).filter_by(code=competition_code).one()
-        season = db.query(Season).filter_by(competition_id=comp.id).order_by(Season.id.desc()).first()
+        season = (
+            db.query(Season).filter_by(competition_id=comp.id).order_by(Season.id.desc()).first()
+        )
         match = Match(
             provider="evaluation_test_manual",
             provider_id="eval-future-fixture-1",
@@ -144,7 +151,127 @@ def test_evaluate_settled_predictions_grades_a_now_finished_match():
         assert remaining.status == "finished"
 
 
+def _seed_settled_predictions(
+    db, competition_code: str, market: str, pairs: list[tuple[float, bool]]
+) -> None:
+    """Inserta directamente N (Prediction, PredictionResult) ya liquidados
+    para (competition_code, market), sin pasar por el pipeline completo de
+    entrenamiento/prediccion -- aqui solo interesa la consulta de
+    `market_track_records`, no reprobar el settlement end-to-end (ya
+    cubierto en test_settlement.py)."""
+    COMPETITIONS.setdefault(competition_code, (competition_code, "Testland"))
+    comp = Competition(code=competition_code, name=competition_code, country="Testland")
+    db.add(comp)
+    db.flush()
+    season = Season(competition_id=comp.id, label="2024-2025")
+    db.add(season)
+    model_version = ModelVersion(
+        name="track-record-test",
+        version="v1",
+        market_family="goals",
+        features=[],
+        hyperparameters={},
+        metrics={},
+        dataset_version="test",
+    )
+    db.add(model_version)
+    db.flush()
+
+    for i, (probability, outcome) in enumerate(pairs):
+        match = Match(
+            provider="track_record_test",
+            provider_id=f"track-record-{competition_code}-{market}-{i}",
+            competition_id=comp.id,
+            season_id=season.id,
+            kickoff_utc=dt.datetime.utcnow() - dt.timedelta(days=1),
+            home_team_id=1,
+            away_team_id=2,
+            status="finished",
+            home_goals=1,
+            away_goals=0,
+        )
+        db.add(match)
+        db.flush()
+        prediction = Prediction(
+            match_id=match.id,
+            market=market,
+            line=2.5,
+            selection="over",
+            model_version_id=model_version.id,
+            model_probability=probability,
+            fair_odds=1 / probability,
+            confidence=0.8,
+            data_quality=0.8,
+            explanation={},
+            features_used={},
+            created_at=dt.datetime.utcnow(),
+        )
+        db.add(prediction)
+        db.flush()
+        db.add(
+            PredictionResult(
+                prediction_id=prediction.id, outcome=outcome, settled_at=dt.datetime.utcnow()
+            )
+        )
+    db.flush()
+
+
+def test_market_track_records_empty_below_minimum_settled_sample():
+    """Menos liquidaciones que MIN_SETTLED_FOR_TRACK_RECORD: nunca se
+    inventa un numero sobre una muestra insuficiente, el mercado queda
+    AUSENTE del dict (no en 0.0 ni en 1.0)."""
+    competition_code = "track-record-too-few"
+    pairs = [(0.8, True)] * (MIN_SETTLED_FOR_TRACK_RECORD - 1)
+    with session_scope() as db:
+        _seed_settled_predictions(db, competition_code, "over_2_5", pairs)
+
+    with session_scope() as db:
+        records = market_track_records(db, competition_code=competition_code)
+    assert (competition_code, "over_2_5") not in records
+
+
+def test_market_track_records_well_calibrated_market_scores_near_one():
+    competition_code = "track-record-well-calibrated"
+    # 80% de probabilidad predicha, ~80% de aciertos reales: calibracion casi perfecta.
+    pairs = [(0.8, True)] * 32 + [(0.8, False)] * 8
+    with session_scope() as db:
+        _seed_settled_predictions(db, competition_code, "over_2_5", pairs)
+
+    with session_scope() as db:
+        records = market_track_records(db, competition_code=competition_code)
+    assert records[(competition_code, "over_2_5")] > 0.9
+
+
+def test_market_track_records_poorly_calibrated_market_scores_lower():
+    competition_code = "track-record-poorly-calibrated"
+    # 90% de probabilidad predicha pero solo 30% de aciertos reales: mala calibracion.
+    pairs = [(0.9, True)] * 12 + [(0.9, False)] * 28
+    with session_scope() as db:
+        _seed_settled_predictions(db, competition_code, "over_2_5", pairs)
+
+    with session_scope() as db:
+        records = market_track_records(db, competition_code=competition_code)
+    assert records[(competition_code, "over_2_5")] < 0.5
+
+
+def test_market_track_records_is_per_competition_and_market():
+    with session_scope() as db:
+        _seed_settled_predictions(
+            db, "track-record-scope-a", "over_2_5", [(0.8, True)] * 32 + [(0.8, False)] * 8
+        )
+        _seed_settled_predictions(
+            db, "track-record-scope-b", "btts", [(0.9, True)] * 12 + [(0.9, False)] * 28
+        )
+
+    with session_scope() as db:
+        scoped = market_track_records(db, competition_code="track-record-scope-a")
+    assert ("track-record-scope-a", "over_2_5") in scoped
+    assert ("track-record-scope-b", "btts") not in scoped
+
+
 def test_evaluate_settled_predictions_empty_db_returns_no_competitions():
     with session_scope() as db:
-        report = evaluate_settled_predictions(db, competition_code="a_competition_that_does_not_exist")
+        report = evaluate_settled_predictions(
+            db, competition_code="a_competition_that_does_not_exist"
+        )
     assert report == {"competitions": {}}
