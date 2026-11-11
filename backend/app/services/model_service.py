@@ -14,7 +14,7 @@ from backend.app.db.models.modeling import ModelVersion
 from backend.app.features.goals import build_match_feature_table, feature_columns
 from backend.app.models.calibration.calibrators import IsotonicCalibrator
 from backend.app.models.calibration.metrics import brier_score, log_loss_score
-from backend.app.models.ensemble.ensemble import learn_ensemble_weight
+from backend.app.models.ensemble.ensemble import learn_ensemble_weights
 from backend.app.models.goals.baseline import LeagueAverageBaseline
 from backend.app.models.goals.dixon_coles import DixonColesModel
 from backend.app.models.goals.ml_classifier import MarketClassifierModel
@@ -117,10 +117,10 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
                     "brier_score": brier_score(y_true, p_ml),
                     "log_loss": log_loss_score(y_true, p_ml),
                 }
-                weight, ensemble_loss = learn_ensemble_weight(p_dc, p_ml, y_true)
-                ensemble_weights[market_key] = weight
-                market_metrics["ensemble"] = {"weight_statistical": weight, "log_loss": ensemble_loss}
-                p_ensemble_by_market[market_key] = weight * p_dc + (1 - weight) * p_ml
+                weights, ensemble_loss = learn_ensemble_weights([p_dc, p_ml], y_true)
+                ensemble_weights[market_key] = weights[0]
+                market_metrics["ensemble"] = {"weight_statistical": weights[0], "log_loss": ensemble_loss}
+                p_ensemble_by_market[market_key] = weights[0] * p_dc + weights[1] * p_ml
             else:
                 p_ensemble_by_market[market_key] = p_dc
         metrics["markets"][market_key] = market_metrics
