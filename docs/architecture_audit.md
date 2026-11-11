@@ -474,3 +474,132 @@ En el mismo orden de prioridad que dejaria el equipo si se retomara hoy:
    falta un filtro de query explicito `odds_min`/`odds_max` si se quiere
    acotar el propio segmento por rango de cuota, no solo ver el
    desglose).
+
+## 10. Fase 9 (sesion 2026-11): "motor profesional de prediccion"
+
+El usuario pidio explicitamente "el modelo mas preciso que haya en el
+mundo" y dio permiso para decidir e implementar todo sin pedir
+confirmacion por fase, tras una auditoria Fase 1 propia de esta sesion
+(no la de las secciones 1-9 de arriba, que son de la sesion anterior).
+Esa auditoria Fase 1 identifico gaps reales frente a un brief mucho mas
+ambicioso (CatBoost/LightGBM, Poisson bivariado, MLflow, SHAP, Shin's
+method, deteccion de drift, CLV, cuantificacion de incertidumbre) y
+propuso un orden de implementacion por impacto/esfuerzo. Esta sesion
+ejecuto esa lista completa, con la misma disciplina que las sesiones
+anteriores: nunca sustituir un componente que funciona sin backtest real,
+tests en verde en cada commit, nunca inventar un numero sin datos
+suficientes.
+
+**1. Clasificador multinomial conjunto por grupo** (la correccion de RAIZ
+que la seccion 6 punto 6 de este documento dejaba pendiente):
+`models/goals/multinomial_classifier.py::MultinomialGroupClassifier` -- un
+unico modelo por grupo mutuamente excluyente (home_win/draw/away_win,
+over_2_5/under_2_5) en vez de N binarios independientes, con probabilidades
+que suman 1 por construccion. **Nunca sustituye al clasificador
+independiente a ciegas**: `models/goals/model_selection.py` compara ambos
+(mas LightGBM, ver punto 2) por log loss real en el holdout, GRUPO A GRUPO
+(nunca mercado a mercado dentro del mismo grupo -- un bug real detectado
+por un test propio de esta sesion antes de llegar a produccion: elegir
+ganadores distintos para "home_win" y "draw" reintroduce la misma
+inconsistencia que se queria corregir). La decision queda trazada en
+`ModelVersion.metrics["markets"][mercado]["ml_winner"]`.
+
+**2. LightGBM como tercer candidato** (`models/goals/gradient_boosting.py`):
+se entrena SIEMPRE junto a los otros dos y compite por el mismo backtest.
+Hiperparametros deliberadamente conservadores tras comprobar
+EMPIRICAMENTE que una configuracion mas agresiva sobreajusta en datasets
+de unos cientos de partidos (peor que adivinar al 50% en el holdout) --
+documentado en el modulo, no solo en el commit. Explicabilidad real via
+SHAP (`prediction/shap_explanation.py`) para cuando este candidato gana,
+ya que no expone coeficientes lineales.
+
+**3. Ensemble generalizado de 2 a N modelos**
+(`models/ensemble/ensemble.py::learn_ensemble_weights`): grid search sobre
+pesos no negativos que suman 1 para cualquier numero de candidatos, no
+solo 2 -- paso previo necesario para los puntos 1 y 2.
+
+**4. `market_track_record` conectado por fin a `signal_score`**
+(seccion 4 de este documento dejaba el parametro sin cablear):
+`services/evaluation_service.py::market_track_records()` calcula "1 -
+error de calibracion historico" por (competicion, mercado) sobre
+predicciones YA LIQUIDADAS, con un minimo de 30 liquidaciones antes de
+confiar en el numero. Cableado en los 3 endpoints de ranking real y en el
+`signal_score` CONGELADO al generar la prediccion.
+
+**5. Cuantificacion de incertidumbre** (`prediction/uncertainty.py`):
+intervalo de Wilson sobre `model_probability` usando el tamanho de
+muestra efectivo (partidos previos conocidos por equipo), ensanchado por
+el desacuerdo entre submodelos. `Prediction.uncertainty_low/high`
+persistidos y mostrados en el frontend junto a la probabilidad.
+
+**6. Deteccion de drift** (`monitoring/drift.py`): Population Stability
+Index (metrica estandar de scoring de riesgo crediticio, umbrales
+0.10/0.25 ampliamente usados) comparando los ultimos N partidos jugados
+contra el resto del historico, por feature. Comando CLI
+`football-edge detect-drift`, puramente informativo, nunca bloquea
+refresh/train.
+
+**7. Shin's method: investigado, NO implementado.** Se intento verificar
+la formula cerrada (parametro z, expresion con raiz cuadrada) contra una
+fuente autoritativa antes de escribir codigo -- el entorno de esta sesion
+no tenia acceso de red a ninguna fuente que lo confirmara (arxiv.org,
+karlwhelan.com, en.wikipedia.org, todas bloqueadas por la politica de red
+del entorno). Implementar una formula de probabilidad sin poder
+verificarla arriesgaba corromper `market_probability`/edge en silencio --
+peor que no implementarla. Documentado en `market/vig.py` con esta
+justificacion explicita; sigue en pie la normalizacion proporcional.
+
+**8. Infraestructura de CLV (Closing Line Value)**: tabla nueva
+APPEND-ONLY `MatchOddsHistory` (`db/models/matches.py`), escrita en
+paralelo a `MatchOdds` (que sigue borrando-y-reemplazando el snapshot
+vigente) -- limite honesto, solo existe desde este cambio, CLV nunca
+puede calcularse retroactivamente. `market/clv.py` + cableado en
+`settle_finished_predictions`. Bug real encontrado escribiendo los tests
+(solo reproducible con la suite completa, nunca en aislamiento): `Match`
+no tenia cascade hacia `MatchOddsHistory`, asi que borrar un partido
+(`reset_scheduled`) dejaba historico huerfano que SQLite podia "adoptar"
+en un partido nuevo que reciclara el mismo id -- corregido con el mismo
+cascade que `odds`/`statistics` ya tenian.
+
+**9. CompetitionConfig** (`tier`/`enabled`/`priority` en `Competition`,
+seccion 14/15 de este documento): nullable a proposito, porque
+`_sync_missing_columns` anhade columnas sin DEFAULT a nivel de BD y una
+columna NOT NULL habria dejado las competiciones ya existentes con NULL,
+invisibles ante un filtro `WHERE enabled = true`.
+
+**10. MLflow** (`services/mlflow_tracking.py`): desactivado por defecto,
+nunca propaga un fallo hacia el entrenamiento real. Backend SQLite local
+por defecto, no file store plano -- MLflow >= 3 pone ese backend en
+maintenance mode y lo rechaza salvo que se fuerce explicitamente,
+descubierto escribiendo el test de este modulo.
+
+**Disciplina mantenida en los 10 puntos**: cada uno se commiteo por
+separado con la suite completa en verde antes del siguiente (de 203 tests
+al empezar esta fase a 256 al cerrarla), lint sin anhadir deuda nueva
+sobre la ya existente, y `npm run build` del frontend verificado despues
+de cada cambio que tocaba la API. Tres bugs reales encontrados y
+corregidos ANTES de llegar a produccion, todos por tests escritos en esta
+misma sesion (no reportados por el usuario): la seleccion de modelo ML
+mercado-a-mercado dentro de un grupo (punto 1), el cascade de borrado
+faltante para `MatchOddsHistory` (punto 8), y el file store de MLflow
+deprecado (punto 10) -- los tres documentados en sus modulos
+correspondientes, no solo aqui.
+
+**Honestamente, no es "el modelo mas preciso del mundo"** -- esa frase no
+tiene una definicion verificable. Lo que si es cierto: cada mejora de esta
+fase se valida contra un backtest real antes de usarse en produccion
+(nunca una sustitucion a ciegas), y donde no se pudo verificar algo con
+confianza suficiente (Shin's method) se dejo documentado en vez de
+adivinado. Pendiente para una sesion futura, en el mismo orden de
+prioridad que se dejaria hoy:
+
+1. Conectar CLV/incertidumbre a `signal_score`/`market_quality` (hoy son
+   informativos, mostrados pero no usados para rankear).
+2. Backtest real comparando el clasificador multinomial/LightGBM contra
+   el baseline anterior con datos de produccion reales (esta sesion solo
+   verifico con datos sinteticos y el holdout de entrenamiento normal).
+3. Revisar Shin's method si en el futuro hay acceso de red a una fuente
+   verificable, o si el usuario pega el texto exacto del paper.
+4. Extender `GradientBoostingMarketModel` a una variante conjunta por
+   grupo (como `MultinomialGroupClassifier` pero con arboles) si el
+   binario independiente demuestra ser el cuello de botella.
