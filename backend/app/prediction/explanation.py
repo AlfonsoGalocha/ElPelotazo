@@ -43,16 +43,45 @@ def display_name_for(feature_name: str) -> str:
     return FEATURE_DISPLAY_NAMES.get(feature_name, _humanize(feature_name))
 
 
-def explain_logistic_pipeline(pipeline, feature_cols: list[str], row: pd.Series, top_n: int = 5) -> list[dict]:
+def explain_logistic_pipeline(
+    pipeline,
+    feature_cols: list[str],
+    row: pd.Series,
+    top_n: int = 5,
+    class_label: object | None = None,
+    invert: bool = False,
+) -> list[dict]:
     """Funciona tanto con LogisticRegression (coef_ shape (1, n_features))
     como con PoissonRegressor (coef_ shape (n_features,)) — ambos exponen
     coeficientes lineales sobre las features estandarizadas, asi que la
-    contribucion (coef * valor_estandarizado) se interpreta igual."""
+    contribucion (coef * valor_estandarizado) se interpreta igual.
+
+    `class_label`: solo relevante para un `estimator.coef_` con MAS de una
+    fila (p.ej. LogisticRegression(multi_class="multinomial") de un
+    clasificador conjunto por grupo, ver models/goals/multinomial_classifier.py)
+    -- selecciona la fila de `coef_` que corresponde a esa clase via
+    `estimator.classes_`, en vez de aplanar filas de clases distintas entre
+    si (lo que mezclaria la direccion de mercados diferentes). `None` (caso
+    binario estandar, una sola fila): se usa esa unica fila sin ambigueedad.
+
+    `invert`: el mercado que se esta explicando es el COMPLEMENTO exacto de
+    la clase positiva del pipeline (p.ej. "under_2_5" entrenado como
+    complemento de "over_2_5" en un clasificador conjunto de 2 mercados) --
+    la contribucion de cada feature a AUMENTAR este mercado es la opuesta a
+    la que aumenta la clase positiva del pipeline.
+    """
     imputer, scaler, estimator = pipeline.named_steps.values()
     raw_values = row[feature_cols].to_numpy(dtype=float).reshape(1, -1)
     imputed = imputer.transform(raw_values)
     scaled = scaler.transform(imputed)[0]
-    coefs = np.asarray(estimator.coef_).reshape(-1)
+    coef_matrix = np.asarray(estimator.coef_)
+    if coef_matrix.ndim == 1 or coef_matrix.shape[0] == 1:
+        coefs = coef_matrix.reshape(-1)
+    else:
+        classes = list(estimator.classes_)
+        coefs = coef_matrix[classes.index(class_label)]
+    if invert:
+        coefs = -coefs
 
     contributions = scaled * coefs
     order = np.argsort(-np.abs(contributions))[:top_n]

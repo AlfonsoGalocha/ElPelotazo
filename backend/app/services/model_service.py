@@ -18,8 +18,11 @@ from backend.app.models.ensemble.ensemble import learn_ensemble_weights
 from backend.app.models.goals.baseline import LeagueAverageBaseline
 from backend.app.models.goals.dixon_coles import DixonColesModel
 from backend.app.models.goals.ml_classifier import MarketClassifierModel
+from backend.app.models.goals.model_selection import SelectedMarketClassifier, pick_best_candidate
+from backend.app.models.goals.multinomial_classifier import MultinomialGroupClassifier
 from backend.app.prediction.market_labels import (
     MARKET_DEFINITIONS,
+    MUTUALLY_EXCLUSIVE_GROUPS,
     label_for_market,
     renormalize_mutually_exclusive_groups,
 )
@@ -42,6 +45,51 @@ MIN_CALIBRATION_MATCHES = 60  # ajustar un IsotonicRegression con menos
 # puntos que esto sobreajusta al ruido del holdout (seccion 11 del brief):
 # se prefiere NO calibrar (calibrated_probability queda None) a calibrar mal
 # con una muestra insuficiente.
+
+
+def _choose_ml_source_per_group(
+    ml_classifier: MarketClassifierModel,
+    multinomial_classifier: MultinomialGroupClassifier,
+    eval_finished,
+) -> dict[str, tuple[str, object]]:
+    """Decide, UN SOLO GANADOR POR GRUPO mutuamente excluyente (nunca
+    mercado a mercado dentro del mismo grupo): si "home_win" usara el
+    clasificador independiente y "draw" el conjunto multinomial, sus
+    probabilidades volverian a poder no sumar 1 entre si -- exactamente la
+    inconsistencia que `MultinomialGroupClassifier` existe para evitar.
+    Comparando por la media de log loss de TODO el grupo se preserva esa
+    coherencia por construccion, no por convencion.
+
+    Devuelve {market_key: (nombre_ganador, modelo_origen)} SOLO para los
+    mercados que pertenecen a algun grupo. Los mercados fuera de cualquier
+    grupo se resuelven aparte en el llamador (unico candidato real:
+    `logistic_independent`, el conjunto no los cubre).
+    """
+    winners: dict[str, tuple[str, object]] = {}
+    for group in MUTUALLY_EXCLUSIVE_GROUPS:
+        losses: dict[str, list[float]] = {"logistic_independent": [], "multinomial_joint": []}
+        sources = {"logistic_independent": ml_classifier, "multinomial_joint": multinomial_classifier}
+        complete = True
+        for market_key in group:
+            y_true = label_for_market(eval_finished, market_key).to_numpy()
+            p_independent = ml_classifier.predict_market_probabilities(eval_finished).get(market_key)
+            p_joint = multinomial_classifier.predict_market_probabilities(eval_finished).get(market_key)
+            if p_independent is None or p_joint is None:
+                complete = False
+                break
+            losses["logistic_independent"].append(log_loss_score(y_true, p_independent))
+            losses["multinomial_joint"].append(log_loss_score(y_true, p_joint))
+        # Si un candidato no cubre el grupo entero (p.ej. una sola clase en
+        # el holdout para algun mercado del grupo) no hay comparacion
+        # valida posible: se usa el independiente, mismo comportamiento que
+        # antes de este cambio, nunca un ganador a medias.
+        winner_name = "logistic_independent"
+        if complete:
+            avg_loss = {name: float(np.mean(vals)) for name, vals in losses.items()}
+            winner_name = min(avg_loss, key=avg_loss.get)
+        for market_key in group:
+            winners[market_key] = (winner_name, sources[winner_name])
+    return winners
 
 
 def _pick_holdout_season(table) -> str | None:
@@ -86,7 +134,15 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
 
     baseline = LeagueAverageBaseline().fit(train_table)
     dixon_coles = DixonColesModel().fit(train_table)
+    # Dos candidatos ML independientes: el clasificador binario por mercado
+    # de siempre, y el clasificador CONJUNTO por grupo mutuamente excluyente
+    # (seccion 6, punto 6 de docs/architecture_audit.md -- la correccion de
+    # raiz, no solo el sintoma que ya corrige `renormalize_mutually_exclusive_groups`).
+    # Se entrenan AMBOS y se elige, mercado a mercado, el que generalice
+    # mejor en el holdout -- nunca se sustituye el uno por el otro a ciegas.
     ml_classifier = MarketClassifierModel().fit(train_table)
+    multinomial_classifier = MultinomialGroupClassifier().fit(train_table)
+    selected_ml = SelectedMarketClassifier(feature_columns(table))
 
     metrics: dict = {"markets": {}}
     ensemble_weights: dict[str, float] = {}
@@ -94,6 +150,13 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     y_true_by_market: dict[str, object] = {}
 
     eval_finished = eval_table.dropna(subset=["home_goals", "away_goals"])
+    grouped_markets = {m for group in MUTUALLY_EXCLUSIVE_GROUPS for m in group}
+    ml_winner_by_group_market = (
+        _choose_ml_source_per_group(ml_classifier, multinomial_classifier, eval_finished)
+        if len(eval_finished) > 0
+        else {}
+    )
+
     for market_key in MARKET_DEFINITIONS:
         market_metrics = {}
         if len(eval_finished) > 0:
@@ -102,7 +165,8 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
 
             p_baseline = market_probabilities(baseline, eval_finished)[market_key]
             p_dc = market_probabilities(dixon_coles, eval_finished)[market_key]
-            p_ml = ml_classifier.predict_market_probabilities(eval_finished).get(market_key)
+            p_ml_independent = ml_classifier.predict_market_probabilities(eval_finished).get(market_key)
+            p_ml_joint = multinomial_classifier.predict_market_probabilities(eval_finished).get(market_key)
 
             market_metrics["baseline"] = {
                 "brier_score": brier_score(y_true, p_baseline),
@@ -112,11 +176,30 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
                 "brier_score": brier_score(y_true, p_dc),
                 "log_loss": log_loss_score(y_true, p_dc),
             }
-            if p_ml is not None:
-                market_metrics["ml_classifier"] = {
-                    "brier_score": brier_score(y_true, p_ml),
-                    "log_loss": log_loss_score(y_true, p_ml),
-                }
+            for candidate_name, p_candidate in (
+                ("logistic_independent", p_ml_independent),
+                ("multinomial_joint", p_ml_joint),
+            ):
+                if p_candidate is not None:
+                    market_metrics[candidate_name] = {
+                        "brier_score": brier_score(y_true, p_candidate),
+                        "log_loss": log_loss_score(y_true, p_candidate),
+                    }
+
+            if market_key in grouped_markets:
+                # Ganador decidido A NIVEL DE GRUPO (ver _choose_ml_source_per_group):
+                # todos los mercados del mismo grupo usan el MISMO candidato,
+                # para no reintroducir la inconsistencia entre ellos.
+                winner_name, winner_source = ml_winner_by_group_market[market_key]
+                winner = (winner_name, winner_source, p_ml_independent if winner_name == "logistic_independent" else p_ml_joint)
+            else:
+                winner = pick_best_candidate(y_true, [("logistic_independent", ml_classifier, p_ml_independent)])
+
+            if winner is not None and winner[2] is not None:
+                winner_name, winner_source, p_ml = winner
+                selected_ml.register(market_key, winner_source, winner_name, winner_source.pipelines_[market_key])
+                market_metrics["ml_winner"] = winner_name
+
                 weights, ensemble_loss = learn_ensemble_weights([p_dc, p_ml], y_true)
                 ensemble_weights[market_key] = weights[0]
                 market_metrics["ensemble"] = {"weight_statistical": weights[0], "log_loss": ensemble_loss}
@@ -181,7 +264,7 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
         {
             "baseline": baseline,
             "dixon_coles": dixon_coles,
-            "ml_classifier": ml_classifier,
+            "ml_classifier": selected_ml,
             "ensemble_weights": ensemble_weights,
             "calibrators": calibrators,
             "cards_model": secondary_models["cards"],

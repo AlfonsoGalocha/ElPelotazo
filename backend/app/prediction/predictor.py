@@ -133,8 +133,18 @@ def predict_markets_for_table(
             )
 
             if ml_model is not None and market_key in ml_model.pipelines_:
+                # class_label/invert: solo los modelos que comparten un
+                # pipeline entre varios mercados (clasificador conjunto por
+                # grupo, ver models/goals/multinomial_classifier.py y
+                # models/goals/model_selection.py) exponen estos metodos;
+                # el resto (MarketClassifierModel) usa los valores por
+                # defecto, comportamiento idéntico al de antes.
                 explanation = explain_logistic_pipeline(
-                    ml_model.pipelines_[market_key], ml_model.feature_cols_, row
+                    ml_model.pipelines_[market_key],
+                    ml_model.feature_cols_,
+                    row,
+                    class_label=getattr(ml_model, "class_label_for_explanation", lambda _k: None)(market_key),
+                    invert=getattr(ml_model, "invert_for_market", lambda _k: False)(market_key),
                 )
             else:
                 explanation = explain_statistical_inputs(row)
