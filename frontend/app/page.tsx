@@ -67,11 +67,9 @@ export default async function TodayPage() {
       <div>
         <h1 className="mb-1 text-xl font-semibold text-slate-100">Jornada actual</h1>
         <p className="mb-4 text-sm text-slate-500">
-          Partidos pendientes de la jornada en curso de cada liga (no simplemente "los próximos
-          partidos que haya"): mientras queden partidos sin jugar de una jornada, esa sigue siendo la
-          jornada actual aunque la siguiente ya tenga fecha. Probabilidad estimada, probabilidad de
-          mercado (consenso de varias casas de apuestas cuando hay cuotas reales disponibles) y edge
-          estadístico. Nunca es una certeza: revisa siempre la confianza y la calidad de los datos.
+          Lo que dice el modelo sobre los partidos que quedan por jugar de la jornada en curso de
+          cada liga. Nunca es una certeza — toca "Ver todos los mercados" en cualquier partido si
+          quieres el desglose completo.
         </p>
       </div>
 
