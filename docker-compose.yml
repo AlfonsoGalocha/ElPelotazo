@@ -15,7 +15,13 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U football"]
+      # Bug preexistente, inofensivo pero confuso en los logs: sin '-d', el
+      # nombre de BD por defecto de libpq es el del USUARIO ('football'),
+      # no POSTGRES_DB ('football_edge') -- Postgres respondia FATAL
+      # "database football does not exist" en CADA chequeo (cada 5s), y
+      # pg_isready lo interpretaba igualmente como "servidor arriba" (de
+      # ahi que nunca se notara), pero llenaba el log de ruido real.
+      test: ["CMD-SHELL", "pg_isready -U football -d football_edge"]
       interval: 5s
       timeout: 5s
       retries: 10
