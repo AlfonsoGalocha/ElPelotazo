@@ -124,7 +124,17 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
     home_team_id = resolve_team_id(db, record.provider, record.home_team_raw)
     away_team_id = resolve_team_id(db, record.provider, record.away_team_raw)
     referee_id = resolve_referee_id(db, record.referee_raw)
-    kickoff = dt.datetime.fromisoformat(record.date)
+    # Bug real reportado por el usuario: API-Football da `fixture.date` CON
+    # offset (p.ej. "2026-10-05T14:00:00+00:00"), a diferencia de
+    # openfootball/el dataset historico (sin offset) -- `fromisoformat` lo
+    # parsea como datetime "offset-aware", y restarlo contra
+    # `Match.kickoff_utc` (siempre naive en toda la BD, ver `commence_time
+    # .replace(tzinfo=None)` mas abajo para el mismo problema con cuotas)
+    # lanzaba `TypeError: can't subtract offset-naive and offset-aware
+    # datetimes` en el primer partido con un duplicado absorbible --
+    # abortando TODA la ingesta de esa competicion desde el primer fixture,
+    # en cada ejecucion, sin que nunca llegara un solo partido nuevo.
+    kickoff = dt.datetime.fromisoformat(record.date).replace(tzinfo=None)
 
     match = (
         db.query(Match)
