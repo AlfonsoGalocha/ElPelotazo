@@ -17,6 +17,30 @@ class Competition(Base):
     code: Mapped[str] = mapped_column(String(16), unique=True)  # p.ej. "E0", "SP1"
     name: Mapped[str] = mapped_column(String(120))  # p.ej. "Premier League"
     country: Mapped[str] = mapped_column(String(64))
+    # CompetitionConfig centralizado (seccion 14/15 de la revision de
+    # arquitectura, antes sin campos propios -- cada decision de
+    # priorizacion vivia dispersa en codigo). "CORE" = las ligas del MVP
+    # ya seguidas de verdad; "EXPERIMENTAL" = anhadidas para probar
+    # cobertura de datos antes de confiar en sus predicciones igual que
+    # las CORE. Puramente informativo por ahora (no cambia el pipeline de
+    # entrenamiento/prediccion, que trata todas las competiciones igual) --
+    # lo unico que consume esto hoy es el listado publico de /competitions
+    # (api/routes/competitions.py), que oculta las deshabilitadas.
+    #
+    # NULLABLE a proposito, aunque conceptualmente tengan un valor por
+    # defecto: `_sync_missing_columns` (db/database.py) anhade columnas via
+    # `ALTER TABLE ADD COLUMN` SIN DEFAULT a nivel de BD, asi que cualquier
+    # fila YA EXISTENTE quedaria con NULL, no con el default de Python (que
+    # solo aplica a filas nuevas insertadas por el ORM). Si estas columnas
+    # fueran NOT NULL, un filtro `WHERE enabled = true` excluiria en
+    # silencio TODAS las competiciones ya existentes tras esta migracion --
+    # exactamente lo que este patron existe para evitar. El codigo que lee
+    # estos campos trata `None` como el default (`tier or "CORE"`,
+    # `enabled is not False`, `priority or 0`), nunca los deja fuera de un
+    # filtro por ser NULL.
+    tier: Mapped[str | None] = mapped_column(String(16), nullable=True, default="CORE")
+    enabled: Mapped[bool | None] = mapped_column(nullable=True, default=True)
+    priority: Mapped[int | None] = mapped_column(nullable=True, default=0)  # mayor = antes
 
     seasons: Mapped[list[Season]] = relationship(back_populates="competition")
 

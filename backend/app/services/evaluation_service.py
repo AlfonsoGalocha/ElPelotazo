@@ -36,12 +36,18 @@ from backend.app.backtesting.metrics import (
     performance_by_edge_bucket,
     performance_by_probability_bucket,
 )
+from backend.app.models.calibration.metrics import expected_calibration_error
 from backend.app.db.models.core import Competition
-from backend.app.db.models.matches import Match
+from backend.app.db.models.matches import Match, MatchOddsHistory
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.features.goals import build_match_feature_table
+from backend.app.market.clv import compute_clv
+from backend.app.market.consensus import compute_market_consensus
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS, label_for_market
-from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS, label_for_secondary_market
+from backend.app.prediction.secondary_markets import (
+    SECONDARY_MARKET_DEFINITIONS,
+    label_for_secondary_market,
+)
 from backend.app.services.match_service import load_matches_dataframe
 
 
@@ -51,6 +57,39 @@ def _label_for_any_market(table, market_key: str):
     if market_key in SECONDARY_MARKET_DEFINITIONS:
         return label_for_secondary_market(table, market_key)
     return None
+
+
+def _closing_consensus_odds(db: Session, match_id: int, market_key: str) -> float | None:
+    """Cuota de CONSENSO de cierre (ver market/clv.py) para (match_id,
+    market_key): de `MatchOddsHistory` (append-only), toma la ULTIMA fila
+    registrada por bookmaker (su precio mas cercano al pitido inicial) y
+    calcula el consenso igual que en produccion (`market/consensus.py`).
+    `None` si el mercado no tiene cuota real conocida (ver
+    ALL_MARKET_TO_ODDS_LOOKUP) o si no hay historico registrado todavia
+    para este partido (nunca inventado)."""
+    from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP
+
+    lookup = ALL_MARKET_TO_ODDS_LOOKUP.get(market_key)
+    if lookup is None:
+        return None
+    market, line, selection = lookup
+
+    rows = (
+        db.query(MatchOddsHistory)
+        .filter_by(match_id=match_id, market=market, line=line)
+        .order_by(MatchOddsHistory.recorded_at.asc())
+        .all()
+    )
+    if not rows:
+        return None
+
+    latest_by_bookmaker: dict[str, MatchOddsHistory] = {}
+    for row in rows:
+        latest_by_bookmaker[(row.bookmaker, row.selection)] = row
+    closing_rows = list(latest_by_bookmaker.values())
+
+    consensus = compute_market_consensus(closing_rows, market, line, selection)
+    return consensus.market_odds
 
 
 def settle_finished_predictions(db: Session, competition_code: str | None = None) -> int:
@@ -120,12 +159,15 @@ def settle_finished_predictions(db: Session, competition_code: str | None = None
                     if home_goals == home_goals and away_goals == away_goals  # not NaN
                     else None
                 )
+                closing_odds = _closing_consensus_odds(db, prediction.match_id, prediction.market)
+                clv = compute_clv(prediction.market_odds, closing_odds)
                 db.add(
                     PredictionResult(
                         prediction_id=prediction.id,
                         outcome=outcome,
                         actual_result=actual_result,
                         settled_at=dt.datetime.utcnow(),
+                        closing_line_value=clv,
                     )
                 )
                 created += 1
@@ -231,9 +273,13 @@ def real_performance_report(
         query = query.filter(Prediction.model_version_id == model_version_id)
 
     rows = query.all()
-    segments: dict[tuple[str, str, int], list[tuple[Prediction, PredictionResult]]] = defaultdict(list)
+    segments: dict[tuple[str, str, int], list[tuple[Prediction, PredictionResult]]] = defaultdict(
+        list
+    )
     for prediction, result, competition, _match in rows:
-        segments[(competition.code, prediction.market, prediction.model_version_id)].append((prediction, result))
+        segments[(competition.code, prediction.market, prediction.model_version_id)].append(
+            (prediction, result)
+        )
 
     report: dict = {"segments": []}
     for (comp_code, market_key, model_version), items in segments.items():
@@ -243,7 +289,11 @@ def real_performance_report(
 
         quality = model_quality_metrics(y_true, y_prob)
         has_odds = ~np.isnan(odds)
-        strategy = market_strategy_metrics(y_true[has_odds], y_prob[has_odds], odds[has_odds]) if has_odds.any() else None
+        strategy = (
+            market_strategy_metrics(y_true[has_odds], y_prob[has_odds], odds[has_odds])
+            if has_odds.any()
+            else None
+        )
         by_probability = performance_by_probability_bucket(y_true, y_prob)
         by_edge = performance_by_edge_bucket(y_true, y_prob, odds) if has_odds.any() else []
 
@@ -262,3 +312,56 @@ def real_performance_report(
 
     report["segments"].sort(key=lambda s: (s["competition_code"], s["market"]))
     return report
+
+
+MIN_SETTLED_FOR_TRACK_RECORD = 30  # mismo criterio que MIN_CALIBRATION_MATCHES
+# en model_service.py: con menos liquidaciones que esto, el error de
+# calibracion historico es ruido, no señal -- se prefiere "sin dato
+# todavia" (ausente del dict) a inventar un numero sobre una muestra
+# insuficiente.
+
+
+def market_track_records(
+    db: Session, competition_code: str | None = None
+) -> dict[tuple[str, str], float]:
+    """ "1 - error de calibracion historico" por (competicion, mercado), para
+    pasar directamente a prediction/ranking.py::rank_signals (parametro
+    `market_track_records`) -- la pieza que docs/architecture_audit.md
+    (seccion 4) deja pendiente de conectar: `signal_score` ya aceptaba este
+    parametro desde esa sesion, pero nada lo calculaba con datos reales
+    hasta ahora.
+
+    Usa SOLO predicciones ya liquidadas (`PredictionResult`), igual fuente
+    de verdad que `/models/performance`, agregado aqui sobre TODAS las
+    versiones de modelo de ese mercado: el track record es del TIPO de
+    mercado (p.ej. "over_2_5" en general), no de una version concreta --
+    coincide con como `signal_score` lo documenta ("rendimiento historico
+    observado de ESTE TIPO de mercado").
+
+    `ranking.py::rank_signals` sigue siendo una funcion PURA (sin acceso a
+    BD): esta es la unica funcion que toca la BD, el llamador (capa de
+    API/servicio) la invoca una vez por request y pasa el dict resultante.
+    """
+    query = (
+        db.query(Prediction, PredictionResult, Competition)
+        .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
+        .join(Match, Match.id == Prediction.match_id)
+        .join(Competition, Competition.id == Match.competition_id)
+    )
+    if competition_code:
+        query = query.filter(Competition.code == competition_code)
+
+    observations: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
+    for prediction, result, competition in query.all():
+        key = (competition.code, prediction.market)
+        observations[key].append((bool(result.outcome), prediction.model_probability))
+
+    records: dict[tuple[str, str], float] = {}
+    for key, pairs in observations.items():
+        if len(pairs) < MIN_SETTLED_FOR_TRACK_RECORD:
+            continue
+        y_true = np.array([outcome for outcome, _ in pairs])
+        y_prob = np.array([prob for _, prob in pairs])
+        ece = expected_calibration_error(y_true, y_prob)
+        records[key] = float(np.clip(1.0 - ece, 0.0, 1.0))
+    return records

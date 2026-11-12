@@ -46,6 +46,17 @@ class Match(Base):
         back_populates="match", uselist=False, cascade="all, delete-orphan"
     )
     odds: Mapped[list[MatchOdds]] = relationship(back_populates="match", cascade="all, delete-orphan")
+    # Sin esto, borrar un Match (p.ej. `reset_scheduled`, que SI borra el
+    # partido entero -- ver cli.py) dejaria filas de MatchOddsHistory
+    # huerfanas con una FK apuntando a un id ya libre. SQLite reutiliza
+    # rowids de filas borradas: un Match NUEVO podria recibir ese mismo id
+    # y "heredar" el historico de cuotas de un partido completamente
+    # distinto y ya borrado, corrompiendo closing_line_value en silencio
+    # (bug real, detectado por un test de este mismo cambio que fallaba
+    # solo al correr la suite completa -- nunca en aislamiento). Mismo
+    # cascade que `odds`/`statistics`: borrar el partido borra TODO su
+    # rastro, nunca deja referencias colgando.
+    odds_history: Mapped[list[MatchOddsHistory]] = relationship(cascade="all, delete-orphan")
 
     competition = relationship("Competition", foreign_keys=[competition_id])
     home_team = relationship("Team", foreign_keys=[home_team_id])
@@ -107,6 +118,36 @@ class MatchOdds(Base):
     recorded_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
     match: Mapped[Match] = relationship(back_populates="odds")
+
+
+class MatchOddsHistory(Base):
+    """Igual forma que `MatchOdds`, pero APPEND-ONLY: nunca se borra ni se
+    actualiza una fila existente, siempre se INSERTA una nueva (ver
+    services/data_service.py, escrita en paralelo a `MatchOdds` cada vez
+    que se registra una cuota). `MatchOdds` sigue siendo "borra e inserta"
+    a proposito (es el snapshot VIGENTE que usa el resto del sistema para
+    el consenso de mercado en vivo); esta tabla es la UNICA fuente real
+    para calcular `closing_line_value` despues (market/clv.py), porque
+    `MatchOdds` por si sola nunca conservo el movimiento de la cuota en el
+    tiempo.
+
+    Limite honesto: esta tabla empieza vacia en el momento de anhadir esta
+    migracion -- el historico de cuotas previo se sobrescribia, asi que
+    CLV solo puede calcularse para partidos cuyas cuotas se registraron
+    DESPUES de este cambio, nunca retroactivamente.
+    """
+
+    __tablename__ = "match_odds_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"))
+    bookmaker: Mapped[str] = mapped_column(String(64))
+    market: Mapped[str] = mapped_column(String(64))
+    line: Mapped[float | None] = mapped_column(Float, nullable=True)
+    selection: Mapped[str] = mapped_column(String(32))
+    price: Mapped[float] = mapped_column(Float)
+    snapshot_type: Mapped[str] = mapped_column(String(16), default="closing")
+    recorded_at: Mapped[dt.datetime] = mapped_column(DateTime)
 
 
 class PlayerMatchStatistics(Base):

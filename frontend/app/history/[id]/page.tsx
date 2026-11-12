@@ -18,6 +18,25 @@ function ResultCell({ prediction }: { prediction: HistoryPrediction }) {
   );
 }
 
+// Closing Line Value (ver backend/app/market/clv.py): cuanto se movio la
+// cuota entre generar la prediccion y el cierre del mercado. Distinto de
+// "acertada/fallada" a proposito -- un CLV positivo consistente es señal
+// de valor real detectado antes de que el mercado se moviera, con
+// independencia de si ESTA prediccion concreta acerto o no.
+function ClvCell({ prediction }: { prediction: HistoryPrediction }) {
+  if (prediction.closing_line_value === null) {
+    return <span className="text-xs text-slate-500">—</span>;
+  }
+  const pct = prediction.closing_line_value * 100;
+  const color = pct > 0 ? "text-edge-positive" : pct < 0 ? "text-edge-negative" : "text-slate-400";
+  return (
+    <span className={`text-xs ${color}`} title="Closing Line Value: cuanto se movio la cuota desde que se generó la predicción hasta el cierre del mercado">
+      {pct >= 0 ? "+" : ""}
+      {pct.toFixed(1)}%
+    </span>
+  );
+}
+
 export default async function HistoryDetailPage({ params }: { params: { id: string } }) {
   const matchId = Number(params.id);
   if (Number.isNaN(matchId)) notFound();
@@ -55,6 +74,7 @@ export default async function HistoryDetailPage({ params }: { params: { id: stri
               <th className="px-3 py-2">Mercado</th>
               <th className="px-3 py-2">Cuota</th>
               <th className="px-3 py-2">Edge</th>
+              <th className="px-3 py-2">CLV</th>
               <th className="px-3 py-2">Resultado real</th>
               <th className="px-3 py-2">Estado</th>
             </tr>
@@ -98,6 +118,9 @@ export default async function HistoryDetailPage({ params }: { params: { id: stri
                 </td>
                 <td className="px-3 py-2">{p.market_odds !== null ? p.market_odds.toFixed(2) : "—"}</td>
                 <td className="px-3 py-2">{p.edge !== null ? `${(p.edge * 100).toFixed(1)} pp` : "—"}</td>
+                <td className="px-3 py-2">
+                  <ClvCell prediction={p} />
+                </td>
                 <td className="px-3 py-2 text-slate-300">{p.actual_result ?? "—"}</td>
                 <td className="px-3 py-2">
                   <ResultCell prediction={p} />
@@ -106,7 +129,7 @@ export default async function HistoryDetailPage({ params }: { params: { id: stri
             ))}
             {predictions.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-4 text-center text-slate-500">
+                <td colSpan={8} className="px-3 py-4 text-center text-slate-500">
                   Sin predicciones guardadas para este partido.
                 </td>
               </tr>

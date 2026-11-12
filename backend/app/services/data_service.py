@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from backend.app.db.models.core import Competition
-from backend.app.db.models.matches import Match, MatchOdds, MatchStatistics
+from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory, MatchStatistics
 from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
 from backend.app.ingestion.base import DataProvider, FixtureOddsSnapshot, RawMatchRecord
 from backend.app.ingestion.odds.provider import OddsApiProvider
@@ -270,6 +270,7 @@ def _attach_odds_snapshots(
                 unmatched_examples.append((snapshot.home_team_raw, snapshot.away_team_raw))
             continue
 
+        recorded_at = dt.datetime.utcnow()
         for odds in snapshot.odds:
             db.query(MatchOdds).filter_by(
                 match_id=match.id, bookmaker=odds.bookmaker, market=odds.market, line=odds.line, selection=odds.selection
@@ -286,7 +287,24 @@ def _attach_odds_snapshots(
                     # partido para un fixture programado, nunca cuotas en
                     # vivo durante el juego (esta fuente no las provee).
                     snapshot_type="pre_match",
-                    recorded_at=dt.datetime.utcnow(),
+                    recorded_at=recorded_at,
+                )
+            )
+            # Append-only, EN PARALELO a la fila de arriba (que si se borra
+            # y reemplaza): unica forma de conservar el movimiento real de
+            # la cuota en el tiempo para poder calcular closing_line_value
+            # despues (ver market/clv.py) -- MatchOdds por si sola nunca
+            # lo conservaba (se sobrescribia en cada refresco).
+            db.add(
+                MatchOddsHistory(
+                    match_id=match.id,
+                    bookmaker=odds.bookmaker,
+                    market=odds.market,
+                    line=odds.line,
+                    selection=odds.selection,
+                    price=odds.price,
+                    snapshot_type="pre_match",
+                    recorded_at=recorded_at,
                 )
             )
         matched_match_ids.append(match.id)

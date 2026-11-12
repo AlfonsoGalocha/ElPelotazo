@@ -30,6 +30,7 @@ def _serialize_history_prediction(prediction: Prediction, is_best: bool) -> dict
         "actual_result": result.actual_result if result else None,
         "is_correct": result.outcome if result else None,
         "settled_at": result.settled_at if result else None,
+        "closing_line_value": result.closing_line_value if result else None,
     }
 
 

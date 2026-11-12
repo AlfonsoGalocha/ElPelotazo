@@ -29,6 +29,8 @@ class PredictionOut(BaseModel):
     expected_value: float | None
     confidence: float
     data_quality: float
+    uncertainty_low: float | None = None
+    uncertainty_high: float | None = None
     signal_tier: str
     explanation: list[PredictionFactorOut]
     model_version_id: int
@@ -111,6 +113,10 @@ class HistoryPredictionOut(PredictionOut):
     actual_result: str | None = None
     is_correct: bool | None = None
     settled_at: dt.datetime | None = None
+    # Closing Line Value (ver market/clv.py): `None` hasta que haya
+    # historico de cuotas suficiente (MatchOddsHistory, solo desde que se
+    # anhadio esa tabla -- nunca retroactivo).
+    closing_line_value: float | None = None
 
 
 class MatchHistoryOut(BaseModel):

@@ -13,7 +13,13 @@ router = APIRouter(prefix="/competitions", tags=["competitions"])
 
 @router.get("", response_model=list[CompetitionOut])
 def list_competitions(db: Session = Depends(get_db)) -> list[Competition]:
-    return db.query(Competition).order_by(Competition.name).all()
+    """Nunca devuelve una competicion deshabilitada explicitamente
+    (`enabled is False`, ver db/models/core.py::Competition) -- `None`
+    (competiciones ya existentes antes de anhadir ese campo) cuenta como
+    habilitada, nunca se oculta por falta de dato."""
+    competitions = db.query(Competition).all()
+    visible = [c for c in competitions if c.enabled is not False]
+    return sorted(visible, key=lambda c: (-(c.priority or 0), c.name))
 
 
 @router.get("/{competition_code}/current-round", response_model=RoundOut)
@@ -23,7 +29,9 @@ def current_round(competition_code: str, db: Session = Depends(get_db)) -> dict:
     pendientes. Nunca "los proximos partidos que haya" sin mas."""
     round_info = get_current_round(db, competition_code)
     if round_info is None:
-        raise HTTPException(status_code=404, detail="Sin partidos programados para esta competicion")
+        raise HTTPException(
+            status_code=404, detail="Sin partidos programados para esta competicion"
+        )
     return {
         "competition_code": competition_code,
         "round": round_info.round,

@@ -19,6 +19,7 @@ from backend.app.schemas.prediction import (
     PredictionOut,
     SignalDetailOut,
 )
+from backend.app.services.evaluation_service import market_track_records
 from backend.app.services.round_service import get_current_round, get_next_round
 from backend.app.utils.logging import get_logger
 
@@ -48,6 +49,8 @@ def serialize_prediction(
         "expected_value": prediction.expected_value,
         "confidence": prediction.confidence,
         "data_quality": prediction.data_quality,
+        "uncertainty_low": prediction.uncertainty_low,
+        "uncertainty_high": prediction.uncertainty_high,
         "signal_tier": signal_tier(prediction.confidence, prediction.data_quality),
         "explanation": prediction.explanation.get("factors", []),
         "model_version_id": prediction.model_version_id,
@@ -367,7 +370,8 @@ def top_signals(
         min_bookmakers,
     ).all()
     by_match = _group_by_match(candidates)
-    included, excluded = rank_signals(candidates, settings)
+    track_records = market_track_records(db, competition_code)
+    included, excluded = rank_signals(candidates, settings, track_records)
     if excluded:
         logger.info(
             "ranking.top_signals.excluded: total=%d reasons=%s",
@@ -440,7 +444,8 @@ def best_predictions(
         min_bookmakers,
     ).all()
     by_match = _group_by_match(candidates)
-    included, _ = rank_signals(candidates, settings)
+    track_records = market_track_records(db, competition_code)
+    included, _ = rank_signals(candidates, settings, track_records)
     included = _filter_by_quality(included, quality, settings)
     included = [
         s
@@ -487,7 +492,8 @@ def best_of_day(
         db, None, True, None, None, None, None, "current_round", competition_code, None, None
     ).all()
     by_match = _group_by_match(candidates)
-    included, _ = rank_signals(candidates, settings)
+    track_records = market_track_records(db, competition_code)
+    included, _ = rank_signals(candidates, settings, track_records)
 
     strict_min_edge = settings.min_edge_pp * 2
     checked: list[dict] = []

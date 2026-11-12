@@ -18,6 +18,7 @@ from backend.app.prediction.predictor import (
 )
 from backend.app.prediction.ranking import signal_score
 from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
+from backend.app.services.evaluation_service import market_track_records
 from backend.app.services.match_service import load_matches_dataframe
 from backend.app.services.model_service import load_model_artifact
 from backend.app.utils.logging import get_logger
@@ -211,6 +212,13 @@ def generate_predictions_for_competition(
             synchronize_session=False
         )
 
+    # `market_track_record` (ver prediction/ranking.py::signal_score) para el
+    # `signal_score` CONGELADO: se calcula UNA VEZ por competicion con el
+    # conocimiento real disponible en este momento, para que el snapshot
+    # historico refleje lo mismo que el ranking en vivo habria usado -- no
+    # el valor neutro por defecto.
+    track_records = market_track_records(db, competition_code)
+
     predictions = []
     for output in outputs:
         line, selection = _market_line_and_selection(output.market)
@@ -238,13 +246,16 @@ def generate_predictions_for_competition(
             market_odds_median=output.market_odds_median,
             market_odds_average=output.market_odds_average,
             calibrated_probability=output.calibrated_probability,
+            uncertainty_low=output.uncertainty_low,
+            uncertainty_high=output.uncertainty_high,
         )
         # `signal_score` se calcula y CONGELA aqui, con los datos de mercado
         # vigentes en este momento (seccion 9 del brief: snapshot inmutable).
         # Nunca se recalcula despues con umbrales/pesos mas nuevos: si la
         # formula cambia, solo afecta a predicciones generadas A PARTIR de
         # ese cambio, no reescribe el pasado.
-        prediction.signal_score = signal_score(prediction)
+        track_record = track_records.get((competition_code, output.market))
+        prediction.signal_score = signal_score(prediction, market_track_record=track_record)
         db.add(prediction)
         predictions.append(prediction)
 

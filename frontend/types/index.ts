@@ -56,6 +56,8 @@ export interface Prediction {
   expected_value: number | null;
   confidence: number;
   data_quality: number;
+  uncertainty_low: number | null;
+  uncertainty_high: number | null;
   signal_tier: SignalTier;
   explanation: PredictionFactor[];
   model_version_id: number;
@@ -92,6 +94,9 @@ export interface HistoryPrediction extends Prediction {
   actual_result: string | null;
   is_correct: boolean | null;
   settled_at: string | null;
+  // Closing Line Value (ver backend/app/market/clv.py): null hasta que
+  // haya historico de cuotas suficiente (nunca retroactivo).
+  closing_line_value: number | null;
 }
 
 export interface MatchHistory {

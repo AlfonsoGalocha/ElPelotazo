@@ -55,7 +55,9 @@ def test_prediction_with_odds_above_max_is_excluded():
     improbable (modelo ~12%, cuota justa 8, mercado ofrece 15) es
     matematicamente un edge real pero no una prediccion practica para
     destacar -- sigue siendo mas probable que falle que que acierte."""
-    prediction = _prediction(model_probability=0.125, market_probability=0.0667, market_odds=15.0, edge=0.058)
+    prediction = _prediction(
+        model_probability=0.125, market_probability=0.0667, market_odds=15.0, edge=0.058
+    )
     assert evaluate_quality_gate(prediction) == ExclusionReason.ODDS_TOO_HIGH
 
 
@@ -112,11 +114,19 @@ def test_score_of_extreme_probability_tiny_edge_is_near_zero():
     """98% de probabilidad a cuota 1.02 (mercado tambien ~98%): edge casi
     nulo. No deberia puntuar alto solo por la probabilidad altisima."""
     near_certain_low_value = _prediction(
-        model_probability=0.98, market_probability=0.975, market_odds=1.02, edge=0.005, confidence=0.8,
+        model_probability=0.98,
+        market_probability=0.975,
+        market_odds=1.02,
+        edge=0.005,
+        confidence=0.8,
         data_quality=0.8,
     )
     solid_value = _prediction(
-        model_probability=0.80, market_probability=0.70, market_odds=1.35, edge=0.10, confidence=0.8,
+        model_probability=0.80,
+        market_probability=0.70,
+        market_odds=1.35,
+        edge=0.10,
+        confidence=0.8,
         data_quality=0.8,
     )
     assert signal_score(near_certain_low_value) < signal_score(solid_value)
@@ -133,7 +143,9 @@ def test_score_keeps_high_probability_and_mediocre_high_edge_in_comparable_range
     de un 10% de diferencia entre si en vez de una diferencia de varias
     veces."""
     solid_value = _prediction(model_probability=0.80, edge=0.10, confidence=0.8, data_quality=0.8)
-    mediocre_high_edge = _prediction(model_probability=0.55, edge=0.22, confidence=0.8, data_quality=0.8)
+    mediocre_high_edge = _prediction(
+        model_probability=0.55, edge=0.22, confidence=0.8, data_quality=0.8
+    )
 
     ratio = signal_score(mediocre_high_edge) / signal_score(solid_value)
     assert ratio < 1.10  # comparable, no un dominio aplastante del edge en bruto
@@ -158,8 +170,12 @@ def test_rank_signals_separates_included_and_excluded_with_reasons():
 
 
 def test_rank_signals_orders_by_score_descending():
-    low = _prediction(match_id=1, model_probability=0.85, market_probability=0.80, market_odds=1.50, edge=0.05)
-    high = _prediction(match_id=2, model_probability=0.80, market_probability=0.70, market_odds=1.60, edge=0.10)
+    low = _prediction(
+        match_id=1, model_probability=0.85, market_probability=0.80, market_odds=1.50, edge=0.05
+    )
+    high = _prediction(
+        match_id=2, model_probability=0.80, market_probability=0.70, market_odds=1.60, edge=0.10
+    )
 
     included, _ = rank_signals([low, high])
 
@@ -185,7 +201,9 @@ def test_signal_score_market_track_record_defaults_to_neutral():
     por falta de dato (seccion 1: 'no se inventa evidencia negativa')."""
     prediction = _prediction()
     assert signal_score(prediction) == signal_score(prediction, market_track_record=1.0)
-    assert signal_score(prediction, market_track_record=0.5) == pytest.approx(signal_score(prediction) * 0.5)
+    assert signal_score(prediction, market_track_record=0.5) == pytest.approx(
+        signal_score(prediction) * 0.5
+    )
 
 
 def test_rank_signals_excludes_cuota_1_02_even_with_extreme_probability():
@@ -201,3 +219,50 @@ def test_rank_signals_excludes_cuota_1_02_even_with_extreme_probability():
     included, excluded = rank_signals([near_certain_low_value])
     assert included == []
     assert excluded[0].reason == ExclusionReason.INVALID_ODDS
+
+
+class _FakeCompetition:
+    def __init__(self, code: str) -> None:
+        self.code = code
+
+
+class _FakeMatch:
+    def __init__(self, competition_code: str) -> None:
+        self.competition = _FakeCompetition(competition_code)
+
+
+def test_rank_signals_looks_up_market_track_record_by_competition_and_market():
+    """Fase 9: rank_signals ahora puede recibir el track record REAL
+    (services/evaluation_service.py::market_track_records) y lo aplica por
+    (competition_code, market) de cada prediccion, no un numero global."""
+    good_history = _prediction(match_id=1, market="over_2_5")
+    good_history.match = _FakeMatch("laliga")
+    bad_history = _prediction(match_id=2, market="over_2_5")
+    bad_history.match = _FakeMatch("premier")
+
+    track_records = {("laliga", "over_2_5"): 1.0, ("premier", "over_2_5"): 0.4}
+    included, _ = rank_signals([good_history, bad_history], market_track_records=track_records)
+
+    scores = {s.prediction.match_id: s.score for s in included}
+    assert scores[1] == pytest.approx(scores[2] / 0.4)
+
+
+def test_rank_signals_defaults_to_neutral_when_match_or_entry_is_missing():
+    """Sin relacion `match` cargada (tipico en tests que no tocan BD) o sin
+    entrada para esa (competicion, mercado) en el dict (historico
+    insuficiente): nunca debe reventar, y el score debe ser el neutro de
+    siempre (seccion 1: 'no inventar evidencia negativa ni positiva')."""
+    no_match_relation = _prediction(match_id=1)
+    assert no_match_relation.match is None
+
+    with_match_but_unknown_history = _prediction(match_id=2)
+    with_match_but_unknown_history.match = _FakeMatch("serie_a")
+
+    included_a, _ = rank_signals(
+        [no_match_relation], market_track_records={("laliga", "over_2_5"): 0.5}
+    )
+    included_b, _ = rank_signals(
+        [with_match_but_unknown_history], market_track_records={("laliga", "over_2_5"): 0.5}
+    )
+    assert included_a[0].score == pytest.approx(signal_score(no_match_relation))
+    assert included_b[0].score == pytest.approx(signal_score(with_match_but_unknown_history))

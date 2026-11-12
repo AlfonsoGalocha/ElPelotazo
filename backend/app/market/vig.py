@@ -9,6 +9,24 @@ sofisticadas (metodo de Shin, que modela probabilidad de informacion
 privilegiada) que quedan documentadas como mejora futura pero no se
 implementan en el MVP para mantener el calculo auditable y simple.
 
+Investigado de nuevo en la sesion de "motor profesional de prediccion"
+(2026-11): se intento verificar la formula cerrada de Shin (la expresion
+con raiz cuadrada y el parametro z de "dinero informado", resuelto para
+que las probabilidades resultantes sumen 1) contra una fuente autoritativa
+antes de implementarla, siguiendo el mismo principio que el resto de este
+proyecto ("nunca inventar, todo auditable"). El entorno de esta sesion no
+tenia acceso de red a ninguna fuente academica/de referencia para
+confirmarla (arxiv.org, karlwhelan.com, en.wikipedia.org -- todas
+bloqueadas por la politica de red del entorno). Implementar una formula de
+probabilidad sin poder verificarla es exactamente el tipo de riesgo que
+este modulo existe para evitar: una formula sutilmente incorrecta
+corromperia `market_probability`/edge en silencio, peor que no
+implementarla. Queda deliberadamente deferida otra vez, con esta
+justificacion explicita en vez de un "TODO" sin contexto -- una sesion
+futura con acceso a una fuente verificable (o a la que el usuario pegue el
+texto exacto del paper de Shin) puede completarla con los tests de
+regresion que ya exigiria cualquier cambio en este modulo.
+
 Solo aplica cuando se tienen TODAS las selecciones de un mercado (p.ej.
 Over 2.5 y Under 2.5 a la vez). Si solo hay una cuota, no se puede quitar el
 vig y se debe usar la probabilidad implicita bruta, dejandolo explicito.
