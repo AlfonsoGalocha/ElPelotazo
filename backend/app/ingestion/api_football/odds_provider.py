@@ -51,9 +51,25 @@ logger = get_logger(__name__)
 # se clasificarian mal.
 MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str, tuple[str, ...]]] = [
     # (market_key interno, hints, tipo_de_valor, excluye)
-    ("cards_total", ("card",), "over_under", ("half", "team", "result")),
-    ("corners_total", ("corner",), "over_under", ("half", "team", "result")),
-    ("btts", ("both teams score", "both teams to score", "btts"), "yes_no", ()),
+    ("cards_total", ("card",), "over_under", ("half", "halves", "team", "result")),
+    ("corners_total", ("corner",), "over_under", ("half", "halves", "team", "result")),
+    # Bug real reportado por el usuario (cuota de "ambos marcan" sin
+    # sentido, confirmado contra la respuesta real): API-Football devuelve
+    # "Both Teams Score" (partido completo, el unico correcto), PERO
+    # TAMBIEN "Both Teams Score - First Half", "Both Teams To Score -
+    # Second Half" y "Both Teams To Score in Both Halves" (esta variante
+    # ni siquiera usa "half" en singular, de ahi el "halves" en el
+    # excluye) -- las cuatro contienen "both teams score"/"both teams to
+    # score" como subcadena, mismo bug que en goles (ver mas abajo). NO se
+    # excluye "team" aqui (a diferencia de los demas mercados): el propio
+    # hint correcto "both teams score"/"both teams to score" ya contiene
+    # "team", excluirlo autoexcluiria el caso bueno.
+    (
+        "btts",
+        ("both teams score", "both teams to score", "btts"),
+        "yes_no",
+        ("half", "halves", "result"),
+    ),
     (
         "match_result",
         ("match winner", "1x2", "full time result", "fulltime result"),
@@ -79,7 +95,7 @@ MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str, tuple[str, ...]]] = [
         "over_under_goals",
         ("over/under", "goals over", "total goals"),
         "over_under",
-        ("half", "team", "result"),
+        ("half", "halves", "team", "result"),
     ),
 ]
 
