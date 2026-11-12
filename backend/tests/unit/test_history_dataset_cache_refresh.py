@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import os
+import time
+
 import pandas as pd
 
-from backend.app.ingestion.football_data.history_dataset import ClubFootballMatchDataProvider
+from backend.app.ingestion.football_data.history_dataset import (
+    CACHE_MAX_AGE,
+    ClubFootballMatchDataProvider,
+)
 
 _MINIMAL_CSV = (
     "MatchDate,Division,HomeTeam,AwayTeam,FTHome,FTAway,HTHome,HTAway,"
@@ -29,12 +35,16 @@ class _FakeHttpClient:
         return None
 
 
-def test_refresh_cache_forces_a_real_redownload(tmp_path, monkeypatch):
-    """Bug real corregido: `force_refresh` existia como parametro pero
-    nunca se invocaba en `True` desde ningun sitio, asi que una vez
-    descargado el CSV la primera vez, `update` jamas volvia a comprobar
-    si habia partidos nuevos jugados. `refresh_cache()` debe forzar una
-    redescarga real en la SIGUIENTE llamada a `fetch_matches`."""
+def test_refresh_cache_forces_a_real_redownload_when_cache_is_stale(tmp_path):
+    """Bug real corregido (version anterior): `force_refresh` existia como
+    parametro pero nunca se invocaba en `True` desde ningun sitio, asi que
+    una vez descargado el CSV la primera vez, `update` jamas volvia a
+    comprobar si habia partidos nuevos jugados. `refresh_cache()` debe
+    forzar una redescarga real en la SIGUIENTE llamada a `fetch_matches`
+    -- pero SOLO si el cache ya es mas viejo que `CACHE_MAX_AGE` (ver
+    siguiente test: bug real reportado por el usuario, la version anterior
+    de este arreglo sobrecorregia y redescargaba los 45MB en cada
+    llamada)."""
     cache_path = tmp_path / "matches.csv"
     fake_client = _FakeHttpClient(_MINIMAL_CSV.encode())
     provider = ClubFootballMatchDataProvider(http_client=fake_client, cache_path=cache_path)
@@ -47,11 +57,37 @@ def test_refresh_cache_forces_a_real_redownload(tmp_path, monkeypatch):
     provider.fetch_matches("laliga", "2023/24")
     assert fake_client.calls == 1
 
-    # Tras refresh_cache(), la siguiente llamada SI debe volver a descargar.
+    # Se envejece el fichero artificialmente mas alla de CACHE_MAX_AGE --
+    # AHORA SI debe volver a descargar al llamar a refresh_cache().
+    stale_mtime = time.time() - (CACHE_MAX_AGE.total_seconds() + 60)
+    os.utime(cache_path, (stale_mtime, stale_mtime))
+
     provider.refresh_cache()
     assert not cache_path.exists()
     provider.fetch_matches("laliga", "2023/24")
     assert fake_client.calls == 2
+
+
+def test_refresh_cache_does_nothing_if_cache_is_still_fresh(tmp_path):
+    """Bug real reportado por el usuario: antes de este arreglo,
+    `refresh_cache()` borraba y forzaba una redescarga REAL de los 45MB
+    del CSV en CADA `update`/`refresh`, aunque el resultado no pudiera
+    haber cambiado en los ultimos segundos -- el scheduler ya llama a este
+    paso cada 6h, y el usuario ademas lo relanzaba a mano varias veces en
+    la misma sesion de depuracion. Un cache recien descargado (segundos de
+    antiguedad) debe sobrevivir a `refresh_cache()` sin tocarlo."""
+    cache_path = tmp_path / "matches.csv"
+    fake_client = _FakeHttpClient(_MINIMAL_CSV.encode())
+    provider = ClubFootballMatchDataProvider(http_client=fake_client, cache_path=cache_path)
+
+    provider.fetch_matches("laliga", "2023/24")
+    assert fake_client.calls == 1
+
+    provider.refresh_cache()
+    assert cache_path.exists()  # NO se borro: el cache sigue "fresco"
+
+    provider.fetch_matches("laliga", "2023/24")
+    assert fake_client.calls == 1  # NO volvio a descargar
 
 
 def test_refresh_cache_is_safe_to_call_before_any_download(tmp_path):

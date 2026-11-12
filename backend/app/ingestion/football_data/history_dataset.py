@@ -27,6 +27,7 @@ fuente (se deja `None` explicitamente, nunca se inventa una cuota).
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 
 import httpx
@@ -46,6 +47,15 @@ DATASET_URL = (
     "/master/data/Matches.csv"
 )
 CACHE_PATH = REPO_ROOT / "data" / "external" / "club_football_match_data_matches.csv"
+
+# Bug real reportado por el usuario: sin esto, `refresh_cache()` se
+# descargaba el CSV entero (45MB, desde GitHub) en CADA `update`/`refresh`,
+# aunque las temporadas cerradas no cambien nunca y la actual, al venir de
+# un mirror comunitario, como mucho se actualiza una vez al dia. No tiene
+# sentido re-descargar mas a menudo de lo que el propio scheduler de
+# docker-compose.yml vuelve a llamar a este paso (cada 6h) -- ese es el
+# limite real de "cuanto puede haber cambiado" el resultado de verdad.
+CACHE_MAX_AGE = dt.timedelta(hours=6)
 
 
 class ClubFootballMatchDataProvider(DataProvider):
@@ -88,22 +98,35 @@ class ClubFootballMatchDataProvider(DataProvider):
 
     def refresh_cache(self) -> None:
         """Fuerza una re-descarga real en la proxima llamada a
-        `fetch_matches`, ignorando el cache en disco.
+        `fetch_matches` SOLO si el cache en disco ya tiene mas de
+        `CACHE_MAX_AGE`, ignorandolo si no.
 
-        BUG REAL corregido: una vez descargado el CSV la primera vez,
-        `_load_dataframe()` nunca volvia a comprobar si habia partidos
-        nuevos jugados -- `force_refresh` existia como parametro pero
-        nada lo pasaba nunca en `True`. El sintoma exacto: `football-edge
-        update` (o `refresh`, que lo incluye) se podia re-ejecutar cien
-        veces despues de que terminara una jornada entera y JAMAS se
-        actualizaban los resultados reales, silenciosamente -- el cache
-        de 45MB en `data/external/` se quedaba congelado en el estado del
-        primer `update` que se ejecuto en el proyecto. Sin esto, no hay
-        forma de que "recopilar los datos reales tras la jornada"
-        funcione nunca, por mucho que se reentrene despues."""
+        BUG REAL corregido (version anterior): una vez descargado el CSV
+        la primera vez, `_load_dataframe()` nunca volvia a comprobar si
+        habia partidos nuevos jugados -- `force_refresh` existia como
+        parametro pero nada lo pasaba nunca en `True`. El cache de 45MB se
+        quedaba congelado en el estado del primer `update` del proyecto
+        para siempre.
+
+        BUG REAL corregido (esta version, reportado por el usuario): el
+        arreglo de arriba sobrecorrigio -- forzaba una redescarga REAL de
+        los 45MB en CADA `update`/`refresh`, aunque el resultado no
+        pudiera haber cambiado en los ultimos segundos/minutos. Ahora solo
+        se redescarga si el fichero en disco tiene mas de `CACHE_MAX_AGE`;
+        dentro de esa ventana, se reutiliza tal cual (mismo criterio que
+        ya usa `update()` para saltarse temporadas cerradas: no repetir
+        trabajo que no puede dar un resultado distinto)."""
         self._df = None
-        if self._cache_path.exists():
-            self._cache_path.unlink()
+        if not self._cache_path.exists():
+            return
+        age = dt.datetime.now() - dt.datetime.fromtimestamp(self._cache_path.stat().st_mtime)
+        if age < CACHE_MAX_AGE:
+            logger.info(
+                "ingestion.club_football_match_data.cache_still_fresh",
+                extra={"age_seconds": age.total_seconds()},
+            )
+            return
+        self._cache_path.unlink()
 
     def fetch_matches(self, competition_code: str, season_label: str) -> list[RawMatchRecord]:
         div_code = COMPETITION_DIV_CODES.get(competition_code)
