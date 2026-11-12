@@ -799,3 +799,74 @@ def test_predictions_current_round_endpoint_serializes_correctly(seeded_competit
     for prediction in body["predictions"]:
         assert isinstance(prediction["match"], dict)
         assert "home_team" in prediction["match"]
+
+
+def test_predictions_current_round_falls_back_to_next_round_when_current_round_is_empty(
+    seeded_competition_code,
+):
+    """Pedido real del usuario: la portada se quedaba vacia cuando la
+    jornada "actual" (el matchday mas bajo con algun partido 'scheduled',
+    ver round_service.py) ya no tiene NINGUN partido con kickoff futuro --
+    p.ej. un partido cuyo pitido ya sono pero el scheduler todavia no lo
+    marco 'finished'. En ese caso el endpoint debe caer a la jornada
+    SIGUIENTE (que si tiene partidos futuros) en vez de devolver vacio, y
+    marcarlo explicitamente via `is_next_round` (igual que `is_fallback`
+    para el caso sin matchday)."""
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        season = db.query(Match).filter_by(competition_id=comp.id).first().season_id
+
+        # Jornada "actual" (matchday mas bajo): su unico partido ya paso de
+        # hora pero sigue 'scheduled' -- round_matches (kickoff >= now)
+        # queda vacio para esta jornada.
+        stale_current_match = Match(
+            provider="integration_test_manual",
+            provider_id="stale-current-round-fixture",
+            competition_id=comp.id,
+            season_id=season,
+            kickoff_utc=dt.datetime.utcnow() - dt.timedelta(hours=3),
+            home_team_id=5,
+            away_team_id=6,
+            status="scheduled",
+            matchday=20,
+        )
+        next_round_match = Match(
+            provider="integration_test_manual",
+            provider_id="real-next-round-fixture",
+            competition_id=comp.id,
+            season_id=season,
+            kickoff_utc=dt.datetime.utcnow() + dt.timedelta(days=2),
+            home_team_id=7,
+            away_team_id=8,
+            status="scheduled",
+            matchday=21,
+        )
+        db.add_all([stale_current_match, next_round_match])
+        db.flush()
+        next_round_kickoff = next_round_match.kickoff_utc
+        next_round_match_id = next_round_match.id
+
+        snapshots = [
+            FixtureOddsSnapshot(
+                home_team_raw="IntegrationTeam7",
+                away_team_raw="IntegrationTeam8",
+                commence_time=next_round_kickoff.replace(tzinfo=dt.timezone.utc),
+                odds=[
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+                ],
+            ),
+        ]
+        attach_odds_to_scheduled_matches(db, _FakeOddsProvider(snapshots), seeded_competition_code)
+
+    with session_scope() as db:
+        generate_predictions_for_competition(db, seeded_competition_code, next_round_kickoff.date())
+
+    client = TestClient(app)
+    response = client.get(f"/predictions/current-round?competition_code={seeded_competition_code}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["round"]["round"] == 21
+    assert body["round"]["is_next_round"] is True
+    assert len(body["predictions"]) > 0
+    assert all(p["match"]["id"] == next_round_match_id for p in body["predictions"])

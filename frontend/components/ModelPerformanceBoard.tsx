@@ -147,11 +147,12 @@ function SegmentCard({ segment }: { segment: PerformanceSegment }) {
 
 // Filtro por liga (pedido por el usuario): todos los segmentos (de todas
 // las ligas) ya se traen server-side (page.tsx) -- aqui solo se decide
-// cuales mostrar, sin volver a pedir nada a la API. Por defecto se
-// muestran todas.
+// cuales mostrar, sin volver a pedir nada a la API. De SELECCION, no de
+// exclusion (pedido explicito: "tengo que deseleccionar" era el problema):
+// empieza sin ninguna marcada, el usuario elige que liga(s) quiere ver.
 export default function ModelPerformanceBoard({ segments }: { segments: PerformanceSegment[] }) {
   const leagueCodes = [...new Set(segments.map((s) => s.competition_code))].sort();
-  const [selected, setSelected] = useState<string[]>(leagueCodes);
+  const [selected, setSelected] = useState<string[]>([]);
 
   function toggle(code: string) {
     setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
@@ -197,7 +198,7 @@ export default function ModelPerformanceBoard({ segments }: { segments: Performa
         <div className="rounded-lg border border-surface-border bg-surface-raised p-6 text-sm text-slate-500">
           {segments.length === 0
             ? "Todavía no hay predicciones liquidadas."
-            : "No hay ninguna liga seleccionada."}
+            : "Elige una o varias ligas arriba para ver su rendimiento."}
         </div>
       )}
 

@@ -47,6 +47,19 @@ export default async function TopSignalsPage({
     minEdge !== undefined ||
     minBookmakers !== undefined ||
     quality !== "ALL";
+  // Pedido explicito del usuario ("quitame tanto filtro"): solo Jornada +
+  // Competicion quedan siempre visibles (lo que se usa a diario). El resto
+  // sigue existiendo tal cual (nada se borra de la API ni se pierde al
+  // recargar), solo detras de "Filtros avanzados" -- abierto por defecto
+  // si ya habia alguno de esos puesto, para no esconder un filtro activo.
+  const hasAdvancedFilter =
+    Boolean(date) ||
+    hasFairOddsFilter ||
+    sortBy !== "score" ||
+    (searchParams.days !== undefined && searchParams.days !== "4") ||
+    minEdge !== undefined ||
+    minBookmakers !== undefined ||
+    quality !== "ALL";
 
   const [predictions, competitions] = await Promise.all([
     getTopSignals({
@@ -105,18 +118,6 @@ export default async function TopSignalsPage({
           <option value="next_round">Próxima jornada</option>
           <option value="all_upcoming">Todas las próximas</option>
         </select>
-        <label htmlFor="days" className="ml-1">
-          (días si &quot;todas&quot;):
-        </label>
-        <input
-          id="days"
-          type="number"
-          name="days"
-          min="1"
-          max="30"
-          defaultValue={searchParams.days ?? "4"}
-          className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
-        />
         <label htmlFor="competition_code" className="ml-2">
           Competición:
         </label>
@@ -133,91 +134,6 @@ export default async function TopSignalsPage({
             </option>
           ))}
         </select>
-        <label htmlFor="date" className="ml-2">
-          O fecha concreta:
-        </label>
-        <input
-          id="date"
-          type="date"
-          name="date"
-          defaultValue={date ?? ""}
-          className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
-        />
-        <label htmlFor="sort_by" className="ml-2">
-          Ordenar por:
-        </label>
-        <select
-          id="sort_by"
-          name="sort_by"
-          defaultValue={sortBy}
-          className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
-        >
-          <option value="score">Puntuación (por defecto)</option>
-          <option value="edge">Edge (mayor a menor)</option>
-        </select>
-        <label htmlFor="min_fair_odds" className="ml-2">
-          Cuota justa entre:
-        </label>
-        <input
-          id="min_fair_odds"
-          type="number"
-          name="min_fair_odds"
-          step="0.01"
-          min="1"
-          placeholder="1.00"
-          defaultValue={searchParams.min_fair_odds ?? ""}
-          className="w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
-        />
-        <span>y</span>
-        <input
-          id="max_fair_odds"
-          type="number"
-          name="max_fair_odds"
-          step="0.01"
-          min="1"
-          placeholder="2.00"
-          defaultValue={searchParams.max_fair_odds ?? ""}
-          className="w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
-        />
-        <label htmlFor="min_edge" className="ml-2">
-          Edge mínimo (pp):
-        </label>
-        <input
-          id="min_edge"
-          type="number"
-          name="min_edge"
-          step="0.5"
-          min="0"
-          placeholder="0"
-          defaultValue={searchParams.min_edge ?? ""}
-          className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
-        />
-        <label htmlFor="min_bookmakers" className="ml-2">
-          Casas mín.:
-        </label>
-        <input
-          id="min_bookmakers"
-          type="number"
-          name="min_bookmakers"
-          min="1"
-          placeholder="1"
-          defaultValue={searchParams.min_bookmakers ?? ""}
-          className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
-        />
-        <label htmlFor="quality" className="ml-2">
-          Calidad de mercado:
-        </label>
-        <select
-          id="quality"
-          name="quality"
-          defaultValue={quality}
-          className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
-        >
-          <option value="ALL">Todas</option>
-          <option value="HIGH">Alta</option>
-          <option value="MEDIUM">Media</option>
-          <option value="LOW">Baja</option>
-        </select>
         <button type="submit" className="rounded border border-surface-border px-3 py-1 hover:bg-surface-raised">
           Aplicar
         </button>
@@ -226,6 +142,115 @@ export default async function TopSignalsPage({
             Quitar filtros
           </a>
         )}
+
+        <details className="mt-1 w-full" open={hasAdvancedFilter}>
+          <summary className="cursor-pointer text-xs text-slate-500 hover:text-slate-300">
+            Filtros avanzados
+          </summary>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <label htmlFor="days">(días si &quot;todas las próximas&quot;):</label>
+            <input
+              id="days"
+              type="number"
+              name="days"
+              min="1"
+              max="30"
+              defaultValue={searchParams.days ?? "4"}
+              className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+            />
+            <label htmlFor="date" className="ml-2">
+              O fecha concreta:
+            </label>
+            <input
+              id="date"
+              type="date"
+              name="date"
+              defaultValue={date ?? ""}
+              className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+            />
+            <label htmlFor="sort_by" className="ml-2">
+              Ordenar por:
+            </label>
+            <select
+              id="sort_by"
+              name="sort_by"
+              defaultValue={sortBy}
+              className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+            >
+              <option value="score">Puntuación (por defecto)</option>
+              <option value="edge">Edge (mayor a menor)</option>
+            </select>
+            <label htmlFor="min_fair_odds" className="ml-2">
+              Cuota justa entre:
+            </label>
+            <input
+              id="min_fair_odds"
+              type="number"
+              name="min_fair_odds"
+              step="0.01"
+              min="1"
+              placeholder="1.00"
+              defaultValue={searchParams.min_fair_odds ?? ""}
+              className="w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+            />
+            <span>y</span>
+            <input
+              id="max_fair_odds"
+              type="number"
+              name="max_fair_odds"
+              step="0.01"
+              min="1"
+              placeholder="2.00"
+              defaultValue={searchParams.max_fair_odds ?? ""}
+              className="w-20 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+            />
+            <label htmlFor="min_edge" className="ml-2">
+              Edge mínimo (pp):
+            </label>
+            <input
+              id="min_edge"
+              type="number"
+              name="min_edge"
+              step="0.5"
+              min="0"
+              placeholder="0"
+              defaultValue={searchParams.min_edge ?? ""}
+              className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+            />
+            <label htmlFor="min_bookmakers" className="ml-2">
+              Casas mín.:
+            </label>
+            <input
+              id="min_bookmakers"
+              type="number"
+              name="min_bookmakers"
+              min="1"
+              placeholder="1"
+              defaultValue={searchParams.min_bookmakers ?? ""}
+              className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+            />
+            <label htmlFor="quality" className="ml-2">
+              Calidad de mercado:
+            </label>
+            <select
+              id="quality"
+              name="quality"
+              defaultValue={quality}
+              className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+            >
+              <option value="ALL">Todas</option>
+              <option value="HIGH">Alta</option>
+              <option value="MEDIUM">Media</option>
+              <option value="LOW">Baja</option>
+            </select>
+            <button
+              type="submit"
+              className="rounded border border-surface-border px-3 py-1 hover:bg-surface-raised"
+            >
+              Aplicar
+            </button>
+          </div>
+        </details>
       </form>
 
       <div className="overflow-hidden rounded-lg border border-surface-border">

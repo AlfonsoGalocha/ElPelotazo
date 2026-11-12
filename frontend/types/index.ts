@@ -29,6 +29,7 @@ export interface RoundInfo {
   round_end: string | null;
   next_round: number | null;
   is_fallback: boolean;
+  is_next_round: boolean;
   match_ids: number[];
 }
 

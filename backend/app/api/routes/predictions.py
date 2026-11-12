@@ -126,6 +126,17 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
     "jornada actual" y sus limitaciones honestas (fallback por fecha si
     los fixtures no tienen `matchday` todavia)."""
     round_info = get_current_round(db, competition_code)
+    is_next_round = False
+    # La jornada "actual" puede no tener YA ningun partido por jugar (todos
+    # finalizados o con kickoff ya pasado, ver round_service.py) sin que
+    # eso signifique que no hay nada que mostrar: la jornada siguiente ya
+    # puede tener fecha. Pedido explicito del usuario: "quiero que me
+    # enseñe los de la jornada siguiente" en vez de una portada vacia.
+    if round_info is None or not round_info.match_ids:
+        next_info = get_next_round(db, competition_code)
+        if next_info is not None and next_info.match_ids:
+            round_info = next_info
+            is_next_round = True
     if round_info is None:
         return {"round": None, "predictions": []}
 
@@ -142,6 +153,7 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
             "round_end": round_info.round_end,
             "next_round": round_info.next_round,
             "is_fallback": round_info.is_fallback,
+            "is_next_round": is_next_round,
             "match_ids": round_info.match_ids,
         },
         "predictions": [serialize_prediction(p) for p in predictions],

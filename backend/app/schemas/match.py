@@ -51,4 +51,5 @@ class RoundOut(BaseModel):
     round_end: dt.datetime | None
     next_round: int | None
     is_fallback: bool
+    is_next_round: bool = False
     match_ids: list[int]
