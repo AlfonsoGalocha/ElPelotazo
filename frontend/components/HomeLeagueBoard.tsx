@@ -18,7 +18,9 @@ interface CompetitionBlock {
 
 // Filtro por liga (pedido por el usuario): los datos de TODAS las ligas ya
 // se traen server-side (page.tsx) -- aqui solo se decide cuales mostrar,
-// sin volver a pedir nada a la API. Por defecto se muestran todas.
+// sin volver a pedir nada a la API. De SELECCION, no de exclusion (mismo
+// pedido explicito que en /model: "tengo que deseleccionar" era el
+// problema): empieza sin ninguna marcada.
 export default function HomeLeagueBoard({
   competitionBlocks,
   modelOnly,
@@ -26,7 +28,7 @@ export default function HomeLeagueBoard({
   competitionBlocks: CompetitionBlock[];
   modelOnly: Prediction[];
 }) {
-  const [selected, setSelected] = useState<string[]>(() => competitionBlocks.map((b) => b.code));
+  const [selected, setSelected] = useState<string[]>([]);
 
   function toggle(code: string) {
     setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
@@ -71,7 +73,7 @@ export default function HomeLeagueBoard({
 
       {visibleBlocks.length === 0 && (
         <div className="rounded border border-surface-border bg-surface-raised p-6 text-sm text-slate-400">
-          No hay ninguna liga seleccionada.
+          Elige una o varias ligas arriba para ver sus partidos.
         </div>
       )}
 

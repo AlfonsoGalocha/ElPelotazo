@@ -218,3 +218,28 @@ def test_get_next_round_is_none_when_current_round_is_a_fallback(db_session):
     )
 
     assert get_next_round(db_session, "test_league_fallback_next") is None
+
+
+def test_get_next_round_is_none_when_its_matches_already_kicked_off(db_session):
+    """Bug real reportado por el usuario: una liga con datos atrasados (el
+    scheduler todavia no marco 'finished' un partido ya jugado) hacia que
+    `get_current_round` cayera a esta jornada "siguiente" via el fallback
+    de la API -- pero si SUS partidos tambien quedaron atras sin marcarse
+    'finished', se mostraba una jornada entera ya jugada hace semanas
+    etiquetada como "proxima jornada". `get_next_round` debe ignorar
+    partidos cuyo kickoff ya paso, igual que `get_current_round`."""
+    competition, season = _make_competition_with_season(db_session, "test_league_stale_next")
+    teams = [_make_team(db_session, f"S{i}") for i in range(4)]
+    now = dt.datetime.utcnow()
+
+    # Jornada actual (4): su unico partido ya paso de hora pero sigue
+    # 'scheduled' -- round_matches de get_current_round queda vacio.
+    _make_match(
+        db_session, competition, season, teams[0], teams[1], now - dt.timedelta(hours=3), "scheduled", 4, "stale1"
+    )
+    # Jornada "siguiente" (5): TAMBIEN ya paso de hora, igual de atrasada.
+    _make_match(
+        db_session, competition, season, teams[2], teams[3], now - dt.timedelta(hours=1), "scheduled", 5, "stale2"
+    )
+
+    assert get_next_round(db_session, "test_league_stale_next") is None
