@@ -11,6 +11,7 @@ interface CompetitionBlock {
   name: string;
   roundLabel: string;
   isFallback: boolean;
+  isNextRound: boolean;
   dateRange: string;
   matches: Prediction[][];
 }
@@ -96,6 +97,11 @@ export default function HomeLeagueBoard({
             <p className="mb-3 text-xs text-amber-500/80">
               Esta liga aún no tiene datos de jornada real para sus próximos partidos (fixtures
               pendientes de refrescar): se muestra por fecha en su lugar.
+            </p>
+          )}
+          {block.isNextRound && (
+            <p className="mb-3 text-xs text-amber-500/80">
+              La jornada actual ya no tiene partidos por jugar: se muestra la jornada siguiente.
             </p>
           )}
           <div className="flex flex-col gap-4">

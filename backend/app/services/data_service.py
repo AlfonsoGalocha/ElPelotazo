@@ -160,18 +160,21 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
     if match.statistics is None:
         match.statistics = MatchStatistics(match_id=match.id)
     stats = match.statistics
-    stats.home_shots = record.home_shots
-    stats.away_shots = record.away_shots
-    stats.home_shots_on_target = record.home_shots_on_target
-    stats.away_shots_on_target = record.away_shots_on_target
-    stats.home_corners = record.home_corners
-    stats.away_corners = record.away_corners
-    stats.home_fouls = record.home_fouls
-    stats.away_fouls = record.away_fouls
-    stats.home_yellow_cards = record.home_yellow_cards
-    stats.away_yellow_cards = record.away_yellow_cards
-    stats.home_red_cards = record.home_red_cards
-    stats.away_red_cards = record.away_red_cards
+    # Mismo bug (y mismo arreglo) que las cuotas justo abajo: una fuente que
+    # NO trae una estadistica concreta (p.ej. `api_football`/`fixtures_provider.py`
+    # nunca trae tiros/corners/tarjetas, solo goles) manda `None` en ese
+    # campo de `RawMatchRecord` -- sobreescribir incondicionalmente borraria
+    # datos reales ya conseguidos por OTRA fuente (p.ej. el historico CSV)
+    # para el mismo partido absorbido como duplicado. Se conserva el valor
+    # existente campo a campo cuando la fuente actual no trae ese dato.
+    for field in (
+        "home_shots", "away_shots", "home_shots_on_target", "away_shots_on_target",
+        "home_corners", "away_corners", "home_fouls", "away_fouls",
+        "home_yellow_cards", "away_yellow_cards", "home_red_cards", "away_red_cards",
+    ):
+        value = getattr(record, field)
+        if value is not None:
+            setattr(stats, field, value)
 
     # SOLO se tocan las cuotas si esta fuente concreta las trae. Bug real
     # detectado: `openfootball_fixtures` (el calendario) NUNCA trae cuotas

@@ -4,6 +4,17 @@ import BestOfDayWidget from "@/components/BestOfDayWidget";
 import BestPredictionsWidget from "@/components/BestPredictionsWidget";
 import HomeLeagueBoard from "@/components/HomeLeagueBoard";
 
+// Pedido explicito del usuario ("quiero mas orden... que me ponga las
+// mejores predicciones"): dentro de la jornada, los partidos con una
+// señal mas fuerte (mayor edge de su mejor prediccion) van primero -- la
+// hora de inicio sigue visible en cada tarjeta, solo deja de ser el orden
+// principal. Un partido sin ninguna prediccion con edge valido todavia
+// (p.ej. sin mercado real aun) cae al final, ordenado por fecha entre si.
+function bestEdge(predictions: Prediction[]): number {
+  const best = predictions.find((p) => p.is_best_prediction);
+  return best?.edge ?? -Infinity;
+}
+
 function groupByMatch(predictions: Prediction[]): Prediction[][] {
   const byMatch = new Map<number, Prediction[]>();
   for (const p of predictions) {
@@ -11,9 +22,11 @@ function groupByMatch(predictions: Prediction[]): Prediction[][] {
     list.push(p);
     byMatch.set(p.match.id, list);
   }
-  return [...byMatch.values()].sort(
-    (a, b) => new Date(a[0].match.kickoff_utc).getTime() - new Date(b[0].match.kickoff_utc).getTime()
-  );
+  return [...byMatch.values()].sort((a, b) => {
+    const edgeDiff = bestEdge(b) - bestEdge(a);
+    if (edgeDiff !== 0) return edgeDiff;
+    return new Date(a[0].match.kickoff_utc).getTime() - new Date(b[0].match.kickoff_utc).getTime();
+  });
 }
 
 function formatRange(start: string | null, end: string | null): string {
@@ -31,6 +44,7 @@ export default async function TodayPage() {
     name: string;
     roundLabel: string;
     isFallback: boolean;
+    isNextRound: boolean;
     dateRange: string;
     matches: Prediction[][];
   }[] = [];
@@ -51,6 +65,7 @@ export default async function TodayPage() {
         roundLabel:
           data.round!.round !== null ? `Jornada ${data.round!.round}` : "Próximos partidos",
         isFallback: data.round!.is_fallback,
+        isNextRound: data.round!.is_next_round,
         dateRange: formatRange(data.round!.round_start, data.round!.round_end),
         matches: groupByMatch(data.predictions),
       }));
