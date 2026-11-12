@@ -117,6 +117,63 @@ def test_cards_market_is_not_misclassified_as_generic_over_under():
     assert records[0].market == "cards_total"
 
 
+def test_full_match_over_under_is_not_overwritten_by_half_time_markets():
+    """Bug real reportado por el usuario (cuota de "Mas de 1.5 goles" no
+    coincidia con la real): API-Football devuelve "Goals Over/Under"
+    (partido completo), "Goals Over/Under First Half" y "Goals Over/Under
+    - Second Half" para el MISMO bookmaker -- las tres contienen la
+    subcadena "over/under", asi que las tres se clasificaban como
+    `over_under_goals` del partido completo. Al procesarse en orden,
+    Bet365 "Over 1.5" del partido completo (1.10, el real) quedaba
+    sobreescrito por el de la segunda parte (1.57) porque ambos generan la
+    misma clave (bookmaker, linea=1.5, seleccion=over). Solo debe
+    sobrevivir el valor del partido completo."""
+    response = [
+        {
+            "bookmakers": [
+                {
+                    "name": "Bet365",
+                    "bets": [
+                        {
+                            "name": "Goals Over/Under",
+                            "values": [
+                                {"value": "Over 1.5", "odd": "1.10"},
+                                {"value": "Under 1.5", "odd": "7.00"},
+                            ],
+                        },
+                        {
+                            "name": "Goals Over/Under First Half",
+                            "values": [
+                                {"value": "Over 1.5", "odd": "1.91"},
+                                {"value": "Under 1.5", "odd": "1.80"},
+                            ],
+                        },
+                        {
+                            "name": "Goals Over/Under - Second Half",
+                            "values": [
+                                {"value": "Over 1.5", "odd": "1.57"},
+                                {"value": "Under 1.5", "odd": "2.25"},
+                            ],
+                        },
+                        {
+                            "name": "Home Team Total Goals(1st Half)",
+                            "values": [{"value": "Over 1.5", "odd": "3.14"}],
+                        },
+                        {
+                            "name": "Result/Total Goals",
+                            "values": [{"value": "Home/Over 3.5", "odd": "2.62"}],
+                        },
+                    ],
+                }
+            ]
+        }
+    ]
+    records, _ = ApiFootballOddsProvider._parse_odds_response(response)
+    goals_records = [r for r in records if r.market == "over_under_goals" and r.line == 1.5]
+    by_selection = {r.selection: r.price for r in goals_records}
+    assert by_selection == {"over": 1.10, "under": 7.00}
+
+
 def test_league_ids_cover_all_five_mvp_leagues():
     from backend.app.ingestion.api_football.odds_provider import LEAGUE_IDS
 

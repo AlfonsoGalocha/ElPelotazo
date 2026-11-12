@@ -49,17 +49,38 @@ logger = get_logger(__name__)
 # API-Football tambien contiene la palabra "over/under"
 # ("Cards Over/Under"), asi que si se comprobara el hint generico primero
 # se clasificarian mal.
-MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str]] = [
-    # (market_key interno, hints, tipo_de_valor)
-    ("cards_total", ("card",), "over_under"),
-    ("corners_total", ("corner",), "over_under"),
-    ("btts", ("both teams score", "both teams to score", "btts"), "yes_no"),
+MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str, tuple[str, ...]]] = [
+    # (market_key interno, hints, tipo_de_valor, excluye)
+    ("cards_total", ("card",), "over_under", ("half", "team", "result")),
+    ("corners_total", ("corner",), "over_under", ("half", "team", "result")),
+    ("btts", ("both teams score", "both teams to score", "btts"), "yes_no", ()),
     (
         "match_result",
         ("match winner", "1x2", "full time result", "fulltime result"),
         "match_result",
+        (),
     ),
-    ("over_under_goals", ("over/under", "goals over", "total goals"), "over_under"),
+    # Bug real reportado por el usuario (cuota de "Más de 1.5 goles" no
+    # coincidia con la real del todo): API-Football devuelve "Goals
+    # Over/Under" (partido completo, el unico correcto aqui), PERO TAMBIEN
+    # "Goals Over/Under First Half", "Goals Over/Under - Second Half" y
+    # "Home/Away Team Total Goals(1st/2nd Half)" -- todos contienen
+    # "over/under"/"total goals" como subcadena, asi que antes del
+    # `excluye` de abajo se clasificaban TAMBIEN como `over_under_goals`
+    # del partido completo. Como varios bets del MISMO bookmaker acababan
+    # compitiendo por la misma clave (bookmaker, linea, seleccion), el que
+    # se procesara ULTIMO ganaba en silencio -- en produccion, el valor
+    # guardado para "Over 1.5 goles" de Bet365 era en realidad el de la
+    # SEGUNDA PARTE (1.57), no el del partido completo (1.10 real).
+    # "Result/Total Goals" (p.ej. "Home/Over 3.5", un mercado compuesto
+    # resultado+goles) tambien colaba via "total goals"; se excluye por
+    # contener "result".
+    (
+        "over_under_goals",
+        ("over/under", "goals over", "total goals"),
+        "over_under",
+        ("half", "team", "result"),
+    ),
 ]
 
 # "Over 3.5" / "Under 9.5" / "Over3.5" -> (selection, line)
@@ -175,11 +196,13 @@ class ApiFootballOddsProvider(ApiFootballClient):
                 for bet in bookmaker.get("bets", []):
                     bet_name = bet.get("name", "")
                     names_seen.add(bet_name)
+                    bet_name_lower = bet_name.lower()
                     spec = next(
                         (
                             (market_key, value_kind)
-                            for market_key, hints, value_kind in MARKET_NAME_HINTS
-                            if any(hint in bet_name.lower() for hint in hints)
+                            for market_key, hints, value_kind, excludes in MARKET_NAME_HINTS
+                            if any(hint in bet_name_lower for hint in hints)
+                            and not any(exclude in bet_name_lower for exclude in excludes)
                         ),
                         None,
                     )
