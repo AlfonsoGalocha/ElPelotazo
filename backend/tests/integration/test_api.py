@@ -331,7 +331,9 @@ def test_prediction_detail_endpoint_shows_bookmaker_breakdown_and_explanation(se
     body = response.json()
 
     bookmakers = {row["bookmaker"] for row in body["bookmaker_odds"]}
-    assert bookmakers == {"bet365", "pinnacle"}
+    # Nombre canonico (normalization/bookmakers.py), no el raw "bet365"/
+    # "pinnacle" tal cual vino de la fuente de cuotas.
+    assert bookmakers == {"Bet365", "Pinnacle"}
     for row in body["bookmaker_odds"]:
         assert row["diff_from_consensus"] is not None
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sqlalchemy.orm import Session
 
@@ -17,6 +17,7 @@ from backend.app.ingestion.base import (
     RawOddsRecord,
 )
 from backend.app.ingestion.odds.provider import OddsApiProvider
+from backend.app.normalization.bookmakers import canonical_bookmaker
 from backend.app.normalization.competitions import resolve_competition_id, resolve_season_id
 from backend.app.normalization.players import resolve_referee_id
 from backend.app.normalization.teams import resolve_team_id
@@ -230,7 +231,10 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
             db.add(
                 MatchOdds(
                     match_id=match.id,
-                    bookmaker=odds.bookmaker,
+                    # Mismo motivo que en `_attach_odds_snapshots`: nombre
+                    # canonico, no el raw de la fuente (el dataset
+                    # historico trae "bet365" en minuscula).
+                    bookmaker=canonical_bookmaker(odds.bookmaker),
                     market=odds.market,
                     line=odds.line,
                     selection=odds.selection,
@@ -322,13 +326,25 @@ def _attach_odds_snapshots(
         # precios distintos. Se deduplica ANTES de tocar la BD (se
         # conserva la ULTIMA vista para esa clave) y se avisa con WARNING,
         # nunca se mezclan/promedian en silencio.
+        # Normaliza el nombre de la casa ANTES de deduplicar/guardar: la
+        # misma casa real llega con nombres distintos segun la fuente
+        # (api_football manda "1xBet"/"William Hill", the_odds_api manda su
+        # `key` tecnico "onexbet"/"williamhill") -- bug real reportado por
+        # el usuario ("las cuotas no tienen sentido"): sin esto, una misma
+        # casa se contaba DOS VECES en el consenso (`bookmakers_used`
+        # inflado), y como las dos fuentes pueden traer el precio en
+        # momentos distintos, podian arrastrar la mediana en direcciones
+        # contradictorias. Ver normalization/bookmakers.py: solo fusiona
+        # pares CONFIRMADOS como la misma casa GLOBAL, nunca variantes
+        # regionales (esas SI son libros distintos con cuotas propias).
         deduped_odds: dict[tuple[str, str, float | None, str], RawOddsRecord] = {}
         duplicate_keys: set[tuple[str, str, float | None, str]] = set()
         for odds in snapshot.odds:
-            key = (odds.bookmaker, odds.market, odds.line, odds.selection)
+            bookmaker = canonical_bookmaker(odds.bookmaker)
+            key = (bookmaker, odds.market, odds.line, odds.selection)
             if key in deduped_odds:
                 duplicate_keys.add(key)
-            deduped_odds[key] = odds
+            deduped_odds[key] = replace(odds, bookmaker=bookmaker)
         if duplicate_keys:
             logger.warning(
                 "%s.duplicate_odds_in_single_fetch: match_id=%d keys=%s",
