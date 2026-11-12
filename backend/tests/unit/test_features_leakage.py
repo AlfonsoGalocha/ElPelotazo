@@ -120,5 +120,4 @@ def test_feature_columns_excludes_raw_same_match_statistics():
 
     # Las versiones rolling (legitimas) si deben seguir presentes.
     assert "home_shots_for_avg_last5" in cols
-    assert "home_xg_for_avg_last5" in cols
     assert "home_yellow_cards_for_avg_last5" in cols

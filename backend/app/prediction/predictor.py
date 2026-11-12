@@ -31,11 +31,15 @@ from backend.app.prediction.secondary_markets import (
 from backend.app.prediction.shap_explanation import explain_lightgbm_estimator
 from backend.app.prediction.uncertainty import compute_uncertainty_interval
 
+# "home_xg_for_avg_last5"/"away_xg_for_avg_last5" quitados a proposito
+# (pedido del usuario, ver features/form.py): nunca existieron de verdad
+# (ninguna fuente trae xG), asi que llevaban desde siempre restando
+# artificialmente 2 de 6 al numerador de completeness_score sin que
+# faltara ningun dato real -- quitarlos hace el score mas preciso, no
+# solo mas silencioso.
 KEY_FEATURES_FOR_QUALITY = [
     "home_goals_for_avg_last5",
     "away_goals_for_avg_last5",
-    "home_xg_for_avg_last5",
-    "away_xg_for_avg_last5",
     "home_attack_strength",
     "away_attack_strength",
 ]

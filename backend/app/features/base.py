@@ -43,6 +43,10 @@ def build_team_match_long(matches: pd.DataFrame) -> pd.DataFrame:
     ).copy()
     away["is_home"] = False
 
+    # "xg" quitado a proposito (pedido del usuario, ver features/form.py):
+    # ninguna fuente rellena home_xg/away_xg nunca, calcular xg_for/
+    # xg_against aqui solo para que nadie los usara despues era trabajo
+    # muerto.
     stat_pairs = {
         "shots": ("home_shots", "away_shots"),
         "shots_on_target": ("home_shots_on_target", "away_shots_on_target"),
@@ -50,7 +54,6 @@ def build_team_match_long(matches: pd.DataFrame) -> pd.DataFrame:
         "fouls": ("home_fouls", "away_fouls"),
         "yellow_cards": ("home_yellow_cards", "away_yellow_cards"),
         "red_cards": ("home_red_cards", "away_red_cards"),
-        "xg": ("home_xg", "away_xg"),
     }
     for stat, (home_col, away_col) in stat_pairs.items():
         if home_col in matches.columns and away_col in matches.columns:

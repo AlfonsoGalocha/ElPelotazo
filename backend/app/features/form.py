@@ -6,9 +6,15 @@ import pandas as pd
 
 from backend.app.features.base import WINDOWS, rolling_prior_mean, sample_size_prior
 
+# "xg_for"/"xg_against" quitados a proposito (pedido del usuario): ninguna
+# fuente de datos los rellena nunca (RawMatchRecord no tiene campo de xG),
+# asi que esas columnas estaban siempre vacias en las 5 ligas -- puro
+# ruido en los logs de entrenamiento (sklearn avisando de que no podia
+# imputarlas) sin aportar nada al modelo. Si algun dia se conecta una
+# fuente real de xG, se reanhaden aqui.
 FORM_STATS = ["goals_for", "goals_against", "shots_for", "shots_against",
               "shots_on_target_for", "shots_on_target_against", "corners_for",
-              "corners_against", "xg_for", "xg_against",
+              "corners_against",
               "yellow_cards_for", "yellow_cards_against",
               "red_cards_for", "red_cards_against", "fouls_for", "fouls_against"]
 

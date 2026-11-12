@@ -31,9 +31,7 @@ interface CompetitionGroup {
 // liga" -- agrupa por competicion y, dentro de cada una, se queda SOLO
 // con la jornada mas alta que tenga partidos finalizados (si ninguno
 // trae `matchday`, p.ej. historico muy antiguo, se queda con los mas
-// recientes por fecha tal cual). Filtro de liga: de EXCLUSION (todas
-// seleccionadas por defecto), al contrario que en Home/Modelo -- aqui lo
-// util por defecto es ver la ultima jornada de TODAS las ligas a la vez.
+// recientes por fecha tal cual).
 function groupByCompetitionLatestMatchday(rows: MatchHistory[]): CompetitionGroup[] {
   const byCode = new Map<string, MatchHistory[]>();
   for (const row of rows) {
@@ -55,7 +53,10 @@ function groupByCompetitionLatestMatchday(rows: MatchHistory[]): CompetitionGrou
 export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
   const groups = groupByCompetitionLatestMatchday(rows);
   const allCodes = groups.map((g) => g.code);
-  const [selected, setSelected] = useState<string[]>(allCodes);
+  // Regla fija del usuario para TODOS los filtros de liga de la app: de
+  // SELECCION, empieza vacio (nunca de deseleccion con todo marcado por
+  // defecto) -- mismo criterio que Home y Modelo.
+  const [selected, setSelected] = useState<string[]>([]);
 
   function toggle(code: string) {
     setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
@@ -99,7 +100,7 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
 
       {visibleGroups.length === 0 && (
         <div className="rounded-lg border border-surface-border bg-surface-raised p-6 text-sm text-slate-500">
-          No hay ninguna liga seleccionada.
+          Elige una o varias ligas arriba para ver su última jornada jugada.
         </div>
       )}
 
