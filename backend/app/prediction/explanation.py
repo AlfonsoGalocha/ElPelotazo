@@ -70,7 +70,15 @@ def explain_logistic_pipeline(
     la que aumenta la clase positiva del pipeline.
     """
     imputer, scaler, estimator = pipeline.named_steps.values()
-    raw_values = row[feature_cols].to_numpy(dtype=float).reshape(1, -1)
+    # DataFrame (no un array suelto): el imputer se entrenó con nombres de
+    # columna (ver ml_classifier.py/multinomial_classifier.py, siempre
+    # X = finished[feature_cols]) -- pasarle un ndarray sin nombres aqui
+    # generaba el aviso de sklearn "X does not have valid feature names"
+    # en cada explicacion calculada (una por prediccion), puro ruido en
+    # los logs sin afectar al resultado (sklearn solo compara por
+    # POSICION cuando faltan los nombres, que es igualmente correcto aqui
+    # porque `feature_cols` ya viene en el mismo orden que en el fit).
+    raw_values = pd.DataFrame([row[feature_cols].to_numpy(dtype=float)], columns=feature_cols)
     imputed = imputer.transform(raw_values)
     scaled = scaler.transform(imputed)[0]
     coef_matrix = np.asarray(estimator.coef_)
