@@ -174,6 +174,64 @@ def test_full_match_over_under_is_not_overwritten_by_half_time_markets():
     assert by_selection == {"over": 1.10, "under": 7.00}
 
 
+def test_btts_is_not_overwritten_by_half_time_or_both_halves_markets():
+    """Bug real reportado por el usuario ("cuota 3 en ambos marcan, la real
+    esta a 1.50"): confirmado contra la respuesta real de API-Football
+    para Bet365 -- "Both Teams Score" (partido completo, Yes=1.44/No=2.62,
+    el real), "Both Teams Score - First Half" (Yes=3.25/No=1.33) y "Both
+    Teams To Score - Second Half" (Yes=2.50/No=1.50) comparten subcadena y
+    se clasificaban todas como `btts` del partido completo. "Both Teams To
+    Score in Both Halves" (Marathonbet, Yes=7.40/No=1.06) ni siquiera usa
+    "half" en singular -- por eso el excluye lleva tambien "halves"."""
+    response = [
+        {
+            "bookmakers": [
+                {
+                    "name": "Bet365",
+                    "bets": [
+                        {
+                            "name": "Both Teams Score",
+                            "values": [
+                                {"value": "Yes", "odd": "1.44"},
+                                {"value": "No", "odd": "2.62"},
+                            ],
+                        },
+                        {
+                            "name": "Both Teams Score - First Half",
+                            "values": [
+                                {"value": "Yes", "odd": "3.25"},
+                                {"value": "No", "odd": "1.33"},
+                            ],
+                        },
+                        {
+                            "name": "Both Teams To Score - Second Half",
+                            "values": [
+                                {"value": "Yes", "odd": "2.50"},
+                                {"value": "No", "odd": "1.50"},
+                            ],
+                        },
+                        {
+                            "name": "Both Teams To Score in Both Halves",
+                            "values": [
+                                {"value": "Yes", "odd": "7.40"},
+                                {"value": "No", "odd": "1.06"},
+                            ],
+                        },
+                        {
+                            "name": "Results/Both Teams Score",
+                            "values": [{"value": "Home/Yes", "odd": "2.50"}],
+                        },
+                    ],
+                }
+            ]
+        }
+    ]
+    records, _ = ApiFootballOddsProvider._parse_odds_response(response)
+    btts_records = [r for r in records if r.market == "btts"]
+    by_selection = {r.selection: r.price for r in btts_records}
+    assert by_selection == {"yes": 1.44, "no": 2.62}
+
+
 def test_league_ids_cover_all_five_mvp_leagues():
     from backend.app.ingestion.api_football.odds_provider import LEAGUE_IDS
 
