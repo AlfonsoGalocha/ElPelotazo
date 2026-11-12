@@ -16,6 +16,34 @@ interface CompetitionBlock {
   matches: Prediction[][];
 }
 
+const PAGE_SIZE = 5;
+
+function bestEdge(predictions: Prediction[]): number {
+  const best = predictions.find((p) => p.is_best_prediction);
+  return best?.edge ?? -Infinity;
+}
+
+// Pedido real del usuario: bloques de 5 en 5 en vez de una lista infinita.
+function PaginatedMatches({ matches }: { matches: Prediction[][] }) {
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const visible = matches.slice(0, visibleCount);
+  return (
+    <div className="flex flex-col gap-4">
+      {visible.map((group) => (
+        <MatchCard key={group[0].match.id} predictions={group} />
+      ))}
+      {visibleCount < matches.length && (
+        <button
+          onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+          className="self-start rounded border border-surface-border px-3 py-1.5 text-xs text-slate-400 hover:bg-surface-raised"
+        >
+          Ver {Math.min(PAGE_SIZE, matches.length - visibleCount)} más ({matches.length - visibleCount} restantes)
+        </button>
+      )}
+    </div>
+  );
+}
+
 // Filtro por liga (pedido por el usuario): los datos de TODAS las ligas ya
 // se traen server-side (page.tsx) -- aqui solo se decide cuales mostrar,
 // sin volver a pedir nada a la API. De SELECCION, no de exclusion (mismo
@@ -37,6 +65,19 @@ export default function HomeLeagueBoard({
   const allSelected = selected.length === competitionBlocks.length;
   const visibleBlocks = competitionBlocks.filter((b) => selected.includes(b.code));
   const visibleModelOnly = modelOnly.filter((p) => selected.includes(p.match.competition.code));
+
+  // Pedido real del usuario: "si no hay ninguna seleccionada al menos que
+  // me salgan las mejores predicciones del dia" -- en vez de una pantalla
+  // vacia, se juntan TODOS los partidos de TODAS las ligas (ya traidos
+  // server-side, sin otra llamada a la API) y se ordenan por la señal mas
+  // fuerte, independientemente de que liga sea.
+  const topAcrossAllLeagues =
+    selected.length === 0
+      ? competitionBlocks
+          .flatMap((b) => b.matches)
+          .sort((a, b) => bestEdge(b) - bestEdge(a))
+          .slice(0, PAGE_SIZE)
+      : [];
 
   return (
     <>
@@ -72,8 +113,21 @@ export default function HomeLeagueBoard({
       )}
 
       {visibleBlocks.length === 0 && (
-        <div className="rounded border border-surface-border bg-surface-raised p-6 text-sm text-slate-400">
-          Elige una o varias ligas arriba para ver sus partidos.
+        <div>
+          <div className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Mejores predicciones del día
+          </div>
+          {topAcrossAllLeagues.length === 0 ? (
+            <div className="rounded border border-surface-border bg-surface-raised p-6 text-sm text-slate-400">
+              Elige una o varias ligas arriba, o vuelve cuando haya predicciones con señal.
+            </div>
+          ) : (
+            <div className="flex flex-col gap-4">
+              {topAcrossAllLeagues.map((group) => (
+                <MatchCard key={group[0].match.id} predictions={group} />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -106,11 +160,7 @@ export default function HomeLeagueBoard({
               La jornada actual ya no tiene partidos por jugar: se muestra la jornada siguiente.
             </p>
           )}
-          <div className="flex flex-col gap-4">
-            {block.matches.map((group) => (
-              <MatchCard key={group[0].match.id} predictions={group} />
-            ))}
-          </div>
+          <PaginatedMatches matches={block.matches} />
         </div>
       ))}
 
