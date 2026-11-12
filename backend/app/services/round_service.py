@@ -166,12 +166,20 @@ def get_next_round(db: Session, competition_code: str) -> RoundInfo | None:
     if current is None or current.is_fallback or current.next_round is None:
         return None
 
+    # Bug real detectado (reportado por el usuario): sin filtrar por fecha,
+    # una jornada "siguiente" cuyos partidos ya pasaron de hora -- fuente de
+    # datos atrasada que ni siquiera llego a marcarlos 'finished' -- se
+    # mostraba igualmente, etiquetada como "proxima jornada" con partidos ya
+    # jugados hace semanas. Mismo criterio que `get_current_round`: solo
+    # cuenta un partido de esta jornada si su pitido todavia no ha sonado.
+    now = dt.datetime.utcnow()
     round_matches = (
         db.query(Match)
         .filter(
             Match.competition_id == current.competition_id,
             Match.season_id == current.season_id,
             Match.matchday == current.next_round,
+            Match.kickoff_utc >= now,
         )
         .all()
     )
