@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory, MatchStatistics
 from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
-from backend.app.ingestion.base import DataProvider, FixtureOddsSnapshot, RawMatchRecord
+from backend.app.ingestion.base import (
+    DataProvider,
+    FixtureOddsSnapshot,
+    RawMatchRecord,
+    RawOddsRecord,
+)
 from backend.app.ingestion.odds.provider import OddsApiProvider
 from backend.app.normalization.competitions import resolve_competition_id, resolve_season_id
 from backend.app.normalization.players import resolve_referee_id
@@ -303,7 +308,36 @@ def _attach_odds_snapshots(
             continue
 
         recorded_at = dt.datetime.utcnow()
+        # Bug real reportado por el usuario: si el mismo (bookmaker, market,
+        # line, selection) aparece MAS DE UNA VEZ en `snapshot.odds` (una
+        # unica respuesta de la API con una entrada repetida -- real,
+        # observado 10 veces seguidas para el mismo book/linea -- posible
+        # indicio de que el proveedor agrupa variantes del mercado, p.ej.
+        # distintos periodos/handicaps, que de momento se clasifican
+        # igual), el borrado de abajo NUNCA encontraba la fila anterior:
+        # Query.delete() borra contra la BD de verdad, pero las filas
+        # anadidas con db.add() en ESTA MISMA pasada siguen sin volcarse
+        # hasta el commit final -- asi que cada entrada repetida se
+        # insertaba sin borrar a las anteriores, acumulando duplicados con
+        # precios distintos. Se deduplica ANTES de tocar la BD (se
+        # conserva la ULTIMA vista para esa clave) y se avisa con WARNING,
+        # nunca se mezclan/promedian en silencio.
+        deduped_odds: dict[tuple[str, str, float | None, str], RawOddsRecord] = {}
+        duplicate_keys: set[tuple[str, str, float | None, str]] = set()
         for odds in snapshot.odds:
+            key = (odds.bookmaker, odds.market, odds.line, odds.selection)
+            if key in deduped_odds:
+                duplicate_keys.add(key)
+            deduped_odds[key] = odds
+        if duplicate_keys:
+            logger.warning(
+                "%s.duplicate_odds_in_single_fetch: match_id=%d keys=%s",
+                log_prefix,
+                match.id,
+                sorted(duplicate_keys),
+            )
+
+        for odds in deduped_odds.values():
             db.query(MatchOdds).filter_by(
                 match_id=match.id, bookmaker=odds.bookmaker, market=odds.market, line=odds.line, selection=odds.selection
             ).delete()

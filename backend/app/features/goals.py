@@ -26,7 +26,7 @@ PRIMARY_WINDOW = 5
 HOME_AWAY_WINDOW = 10
 
 DIFFERENCE_STATS = ["goals_for_avg_last5", "goals_against_avg_last5",
-                     "shots_for_avg_last5", "xg_for_avg_last5"]
+                     "shots_for_avg_last5"]
 
 
 def build_match_feature_table(matches: pd.DataFrame) -> pd.DataFrame:

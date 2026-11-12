@@ -18,7 +18,6 @@ import numpy as np
 import pandas as pd
 
 FEATURE_DISPLAY_NAMES = {
-    "xg_for_avg_last5_difference": "xG combinado (forma reciente)",
     "goals_for_avg_last5_difference": "Diferencia de goles anotados (forma reciente)",
     "goals_against_avg_last5_difference": "Diferencia de goles concedidos (forma reciente)",
     "shots_for_avg_last5_difference": "Diferencia de volumen de tiros",
