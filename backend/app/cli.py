@@ -127,6 +127,14 @@ def update(
                     typer.echo(f"[update] {comp} {s}: {n} partidos")
                 except Exception as exc:  # noqa: BLE001
                     typer.echo(f"[update] {comp} {s}: ERROR {exc}")
+                    # Bug real reportado por el usuario: sin este rollback, un
+                    # fallo real de conexion a mitad de esta iteracion (p.ej.
+                    # Postgres cerrando la conexion) deja la sesion en estado
+                    # invalido -- TODAS las iteraciones siguientes (de esta
+                    # competicion Y de las demas) fallaban en cascada con
+                    # "PendingRollbackError", ocultando el error real detras
+                    # de decenas de lineas identicas e inutiles.
+                    db.rollback()
 
 
 @app.command()
@@ -168,6 +176,7 @@ def update_fixtures(competition: str = typer.Option(None)) -> None:
                 )
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-fixtures] {comp} {season_label}: ERROR {exc}")
+                db.rollback()  # ver comentario equivalente en `update()`
 
 
 @app.command()
@@ -232,6 +241,7 @@ def update_odds(competition: str = typer.Option(None)) -> None:
                 result = attach_odds_to_scheduled_matches(db, provider, comp)
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-odds] {comp}: ERROR {exc}")
+                db.rollback()  # ver comentario equivalente en `update()`
                 continue
 
             typer.echo(
@@ -349,6 +359,7 @@ def update_secondary_odds(competition: str = typer.Option(None)) -> None:
                 )
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-secondary-odds] {comp}: ERROR {exc}")
+                db.rollback()  # ver comentario equivalente en `update()`
                 continue
 
             typer.echo(
