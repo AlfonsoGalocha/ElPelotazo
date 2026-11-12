@@ -40,6 +40,7 @@ from backend.app.monitoring.drift import feature_drift_report
 from backend.app.services.data_service import (
     attach_odds_to_scheduled_matches,
     attach_secondary_odds_to_scheduled_matches,
+    competition_season_has_matches,
     ingest_matches,
 )
 from backend.app.services.evaluation_service import (
@@ -82,12 +83,26 @@ def update(
             "(--no-refresh-cache) solo para pruebas repetidas el mismo dia sin gastar red."
         ),
     ),
+    force_closed_seasons: bool = typer.Option(
+        False,
+        "--force-closed-seasons",
+        help=(
+            "Reingiere tambien temporadas YA CERRADAS que ya tengan partidos en la BD (lento: "
+            "~9 temporadas x 5 ligas). Por defecto NO -- una temporada cerrada no cambia nunca, "
+            "asi que reprocesarla en cada `refresh` es trabajo repetido sin sentido (bug real "
+            "reportado por el usuario: 'refresh' tardaba 10 min TODAS las veces). Sin esta opcion, "
+            "solo se reingiere la temporada EN CURSO (la unica que puede traer partidos nuevos) y, "
+            "para una (competicion, temporada) nunca vista, su primera ingesta -- igual de completa "
+            "que antes, solo que una vez, no en cada ejecucion."
+        ),
+    ),
 ) -> None:
     """Descarga e ingesta datos historicos reales (resultados + cuotas)."""
     init_db()
     competitions = [competition] if competition else ALL_COMPETITIONS
     seasons = [season] if season else _seasons_since()
     provider = ClubFootballMatchDataProvider() if source == "history_dataset" else FootballDataCoUkProvider()
+    current_season_label = season_label_from_date(dt.date.today())
 
     # Una unica invalidacion de cache ANTES del bucle (no dentro, por
     # competicion/temporada): el CSV cubre TODAS las ligas/temporadas en
@@ -100,6 +115,13 @@ def update(
     with session_scope() as db:
         for comp in competitions:
             for s in seasons:
+                if (
+                    not force_closed_seasons
+                    and s != current_season_label
+                    and competition_season_has_matches(db, comp, s)
+                ):
+                    typer.echo(f"[update] {comp} {s}: omitido (temporada cerrada ya en BD)")
+                    continue
                 try:
                     n = ingest_matches(db, provider, comp, s)
                     typer.echo(f"[update] {comp} {s}: {n} partidos")

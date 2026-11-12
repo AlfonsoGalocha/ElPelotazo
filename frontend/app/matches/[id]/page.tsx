@@ -1,9 +1,11 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { getMatch, getMatchPredictions } from "@/lib/api";
+import { getMatch, getMatchForm, getMatchPredictions } from "@/lib/api";
 import type { Prediction } from "@/types";
 import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES, MATCH_RESULT_MARKETS } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
+import MatchTopPicks from "@/components/MatchTopPicks";
+import MatchFormSection from "@/components/MatchFormSection";
 
 const SECTIONS: { label: string; markets: string[] }[] = [
   { label: "🏆 Resultado (1X2)", markets: MATCH_RESULT_MARKETS },
@@ -92,14 +94,15 @@ export default async function MatchDetailPage({ params }: { params: { id: string
   const matchId = Number(params.id);
   if (Number.isNaN(matchId)) notFound();
 
-  const [match, predictions] = await Promise.all([
+  const [match, predictions, form] = await Promise.all([
     getMatch(matchId).catch(() => null),
     getMatchPredictions(matchId).catch(() => []),
+    getMatchForm(matchId).catch(() => null),
   ]);
 
   if (!match) notFound();
 
-  const mainPrediction = predictions.find((p) => p.market === "over_2_5") ?? predictions[0];
+  const mainPrediction = predictions.find((p) => p.is_best_prediction) ?? predictions[0];
 
   return (
     <div className="flex flex-col gap-6">
@@ -118,29 +121,36 @@ export default async function MatchDetailPage({ params }: { params: { id: string
         </div>
       </div>
 
-      {predictions.length === 0 && (
-        <div className="rounded-lg border border-surface-border bg-surface-raised p-6 text-sm text-slate-500">
-          Sin predicciones para este partido todavía.
-        </div>
-      )}
+      <MatchTopPicks predictions={predictions} />
 
-      {SECTIONS.map((section) => {
-        const sectionPredictions = predictions.filter((p) => section.markets.includes(p.market));
-        if (sectionPredictions.length === 0) return null;
-        return (
-          <section key={section.label}>
-            <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
-              {section.label}
-            </h2>
-            <PredictionTable predictions={sectionPredictions} />
-          </section>
-        );
-      })}
+      {form && <MatchFormSection form={form} />}
 
-      {mainPrediction && (
-        <section>
-          <ExplanationCard prediction={mainPrediction} />
-        </section>
+      {predictions.length > 0 && (
+        <details className="rounded-lg border border-surface-border">
+          <summary className="cursor-pointer px-4 py-3 text-sm text-slate-400 hover:text-slate-200">
+            Ver todos los mercados y la explicación completa
+          </summary>
+          <div className="flex flex-col gap-6 border-t border-surface-border p-4">
+            {SECTIONS.map((section) => {
+              const sectionPredictions = predictions.filter((p) => section.markets.includes(p.market));
+              if (sectionPredictions.length === 0) return null;
+              return (
+                <section key={section.label}>
+                  <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
+                    {section.label}
+                  </h2>
+                  <PredictionTable predictions={sectionPredictions} />
+                </section>
+              );
+            })}
+
+            {mainPrediction && (
+              <section>
+                <ExplanationCard prediction={mainPrediction} />
+              </section>
+            )}
+          </div>
+        </details>
       )}
     </div>
   );

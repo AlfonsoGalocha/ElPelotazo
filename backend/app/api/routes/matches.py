@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, aliased
 
 from backend.app.api.routes.predictions import serialize_prediction
@@ -12,7 +12,7 @@ from backend.app.db.models.core import Competition, Team
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
 from backend.app.prediction.anomaly import best_prediction_per_match, compute_anomaly_flags
-from backend.app.schemas.match import MatchOut
+from backend.app.schemas.match import MatchFormOut, MatchOut
 from backend.app.schemas.prediction import PredictionOut
 
 router = APIRouter(prefix="/matches", tags=["matches"])
@@ -107,3 +107,97 @@ def get_match_predictions(match_id: int, db: Session = Depends(get_db)) -> list[
         )
         for p in predictions
     ]
+
+
+def _recent_finished_matches(
+    db: Session,
+    team_id: int,
+    before: dt.datetime,
+    exclude_match_id: int,
+    limit: int,
+    venue: str | None = None,
+) -> list[Match]:
+    query = db.query(Match).filter(
+        or_(Match.home_team_id == team_id, Match.away_team_id == team_id),
+        Match.status == "finished",
+        Match.id != exclude_match_id,
+        Match.kickoff_utc < before,
+    )
+    if venue == "home":
+        query = query.filter(Match.home_team_id == team_id)
+    elif venue == "away":
+        query = query.filter(Match.away_team_id == team_id)
+    return query.order_by(Match.kickoff_utc.desc()).limit(limit).all()
+
+
+def _serialize_form_match(match: Match, team_id: int) -> dict:
+    is_home = match.home_team_id == team_id
+    goals_for = match.home_goals if is_home else match.away_goals
+    goals_against = match.away_goals if is_home else match.home_goals
+    result = "D" if goals_for == goals_against else ("W" if goals_for > goals_against else "L")
+    opponent = match.away_team if is_home else match.home_team
+    return {
+        "match_id": match.id,
+        "kickoff_utc": match.kickoff_utc,
+        "opponent": opponent.canonical_name,
+        "venue": "home" if is_home else "away",
+        "goals_for": goals_for,
+        "goals_against": goals_against,
+        "result": result,
+    }
+
+
+@router.get("/{match_id}/form", response_model=MatchFormOut)
+def get_match_form(
+    match_id: int,
+    limit: int = Query(5, ge=1, le=10, description="Partidos recientes a devolver por bloque"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Pedido real del usuario: 'quiero un apartado tipo H2H de como viene
+    ese equipo, que suele hacer dentro/fuera de casa' -- forma reciente de
+    cada equipo (en general y especificamente en ese rol local/visitante)
+    mas el cara a cara historico entre ambos, SOLO con partidos realmente
+    'finished' anteriores a este (nunca resultados inventados ni partidos
+    todavia sin jugar)."""
+    match = db.get(Match, match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Partido no encontrado")
+
+    home_id, away_id = match.home_team_id, match.away_team_id
+    kickoff = match.kickoff_utc
+    home_recent = _recent_finished_matches(db, home_id, kickoff, match_id, limit)
+    away_recent = _recent_finished_matches(db, away_id, kickoff, match_id, limit)
+    home_recent_at_venue = _recent_finished_matches(
+        db, home_id, kickoff, match_id, limit, venue="home"
+    )
+    away_recent_at_venue = _recent_finished_matches(
+        db, away_id, kickoff, match_id, limit, venue="away"
+    )
+    h2h = (
+        db.query(Match)
+        .filter(
+            or_(
+                and_(Match.home_team_id == home_id, Match.away_team_id == away_id),
+                and_(Match.home_team_id == away_id, Match.away_team_id == home_id),
+            ),
+            Match.status == "finished",
+            Match.id != match_id,
+        )
+        .order_by(Match.kickoff_utc.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "home_team": {
+            "team": match.home_team,
+            "recent": [_serialize_form_match(m, home_id) for m in home_recent],
+            "recent_at_venue": [_serialize_form_match(m, home_id) for m in home_recent_at_venue],
+        },
+        "away_team": {
+            "team": match.away_team,
+            "recent": [_serialize_form_match(m, away_id) for m in away_recent],
+            "recent_at_venue": [_serialize_form_match(m, away_id) for m in away_recent_at_venue],
+        },
+        "head_to_head": [_serialize_form_match(m, home_id) for m in h2h],
+    }

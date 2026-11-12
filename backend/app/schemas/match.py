@@ -42,6 +42,32 @@ class MatchOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class FormMatchOut(BaseModel):
+    """Un partido pasado desde el punto de vista de UN equipo concreto
+    (ver api/routes/matches.py::get_match_form) -- usado tanto para forma
+    reciente como para el cara a cara (H2H)."""
+
+    match_id: int
+    kickoff_utc: dt.datetime
+    opponent: str
+    venue: str  # "home" | "away"
+    goals_for: int
+    goals_against: int
+    result: str  # "W" | "D" | "L"
+
+
+class TeamFormOut(BaseModel):
+    team: TeamOut
+    recent: list[FormMatchOut]
+    recent_at_venue: list[FormMatchOut]
+
+
+class MatchFormOut(BaseModel):
+    home_team: TeamFormOut
+    away_team: TeamFormOut
+    head_to_head: list[FormMatchOut]
+
+
 class RoundOut(BaseModel):
     """Jornada actual de una competicion (ver services/round_service.py)."""
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from backend.app.db.models.core import Competition
+from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory, MatchStatistics
 from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
 from backend.app.ingestion.base import DataProvider, FixtureOddsSnapshot, RawMatchRecord
@@ -18,6 +18,25 @@ from backend.app.normalization.teams import resolve_team_id
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def competition_season_has_matches(db: Session, competition_code: str, season_label: str) -> bool:
+    """True si ya hay AL MENOS UN `Match` para (competicion, temporada).
+
+    Usado por `cli.py update` para no reingerir temporadas YA CERRADAS en
+    cada `refresh` (bug real reportado por el usuario: 9 temporadas x 5
+    ligas reprocesadas enteras cada vez, ~10 min, aunque una temporada
+    cerrada no cambie nunca)."""
+    competition = db.query(Competition).filter_by(code=competition_code).one_or_none()
+    if competition is None:
+        return False
+    return (
+        db.query(Match.id)
+        .join(Season, Season.id == Match.season_id)
+        .filter(Match.competition_id == competition.id, Season.label == season_label)
+        .first()
+        is not None
+    )
 
 
 def ingest_matches(
