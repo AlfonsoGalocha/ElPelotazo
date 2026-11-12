@@ -22,7 +22,7 @@ from backend.app.backtesting.engine import run_walk_forward_backtest, summarize_
 from backend.app.backtesting.reports import write_backtest_report
 from backend.app.config.settings import REPO_ROOT, get_settings
 from backend.app.db.database import init_db, session_scope
-from backend.app.db.models.core import Competition, Season
+from backend.app.db.models.core import Competition, Season, Team, TeamNameMapping
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
 from backend.app.features.goals import build_match_feature_table, feature_columns
@@ -37,6 +37,7 @@ from backend.app.ingestion.football_data.provider import (
 from backend.app.ingestion.odds.provider import OddsApiProvider
 from backend.app.models.goals.dixon_coles import DixonColesModel
 from backend.app.monitoring.drift import feature_drift_report
+from backend.app.normalization.teams import canonical_name_for
 from backend.app.services.data_service import (
     attach_odds_to_scheduled_matches,
     attach_secondary_odds_to_scheduled_matches,
@@ -487,6 +488,98 @@ def reset_scheduled(competition: str = typer.Option(None)) -> None:
         f"{total_predictions} predicciones asociadas."
     )
     typer.echo("[reset-scheduled] Ejecuta ahora 'football-edge refresh --skip-historical' para regenerar todo.")
+
+
+def _merge_team(db, duplicate: Team, canonical: Team) -> tuple[int, int]:
+    """Funde `duplicate` en `canonical`: repunta sus TeamNameMapping y sus
+    Match (home/away), fusionando cualquier Match que quede duplicado tras
+    el repunte (mismo local/visitante/competicion/temporada, antes
+    repartidos entre los dos ids de equipo) -- conservando el que tenga
+    `status == 'finished'` cuando hay conflicto, que es siempre el dato
+    mas completo/autoritativo. Devuelve (matches_repuntados, matches_fundidos)."""
+    db.query(TeamNameMapping).filter_by(team_id=duplicate.id).update({"team_id": canonical.id})
+
+    repointed = 0
+    merged = 0
+    for field in ("home_team_id", "away_team_id"):
+        matches = db.query(Match).filter_by(**{field: duplicate.id}).all()
+        for match in matches:
+            setattr(match, field, canonical.id)
+            db.flush()
+            sibling = (
+                db.query(Match)
+                .filter(
+                    Match.id != match.id,
+                    Match.competition_id == match.competition_id,
+                    Match.season_id == match.season_id,
+                    Match.home_team_id == match.home_team_id,
+                    Match.away_team_id == match.away_team_id,
+                )
+                .one_or_none()
+            )
+            repointed += 1
+            if sibling is None:
+                continue
+            # Dos filas para el mismo partido real: nos quedamos con la
+            # "finished" (dato autoritativo, ya jugado) y borramos la otra
+            # -- igual patron de borrado seguro que `reset_scheduled` (las
+            # predicciones no las borra el cascade de Match, hay que
+            # borrarlas explicitamente antes).
+            keep, drop = (match, sibling) if match.status == "finished" else (sibling, match)
+            if keep.status != "finished" and drop.status == "finished":
+                keep, drop = drop, keep
+            db.query(Prediction).filter(Prediction.match_id == drop.id).delete()
+            db.delete(drop)
+            db.flush()
+            merged += 1
+
+    db.delete(duplicate)
+    return repointed, merged
+
+
+@app.command()
+def merge_duplicate_teams() -> None:
+    """Limpieza puntual (seccion "jornada actual" rota solo en algunas
+    ligas, bug real reportado por el usuario): antes de anhadir el alias
+    que faltaba en normalization/teams.py, una fuente nueva que mandara un
+    nombre de equipo con un prefijo distinto al ya conocido (p.ej.
+    `api_football` mandando "SV Elversberg" cuando ya existia "Elversberg"
+    via openfootball) creaba un Team FANTASMA con su propio id -- el
+    resultado real de esos partidos se escribia contra el fantasma, nunca
+    contra el original, que se quedaba 'scheduled' para siempre.
+
+    Este comando NO depende de conocer de antemano que equipos se vieron
+    afectados: recorre TODOS los Team ya guardados y, para cualquiera cuyo
+    nombre canonico ya resuelva (via alias) al nombre de OTRO Team
+    existente, funde ambos -- asi repara tambien casos que no se hayan
+    detectado todavia. Idempotente: en una base de datos ya limpia no
+    encuentra nada que fundir.
+    """
+    init_db()
+    with session_scope() as db:
+        duplicates_found = 0
+        matches_repointed = 0
+        matches_merged = 0
+        for team in db.query(Team).all():
+            resolved_name = canonical_name_for(team.canonical_name)
+            if resolved_name == team.canonical_name:
+                continue
+            canonical = db.query(Team).filter_by(canonical_name=resolved_name).one_or_none()
+            if canonical is None or canonical.id == team.id:
+                continue
+            typer.echo(
+                f"[merge-duplicate-teams] Fundiendo '{team.canonical_name}' (id={team.id}) "
+                f"-> '{canonical.canonical_name}' (id={canonical.id})"
+            )
+            repointed, merged = _merge_team(db, duplicate=team, canonical=canonical)
+            duplicates_found += 1
+            matches_repointed += repointed
+            matches_merged += merged
+        db.commit()
+    typer.echo(
+        f"[merge-duplicate-teams] {duplicates_found} equipo(s) fantasma fundido(s), "
+        f"{matches_repointed} partido(s) repuntados, {matches_merged} duplicado(s) resuelto(s)."
+    )
 
 
 @app.command()

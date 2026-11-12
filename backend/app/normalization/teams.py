@@ -117,6 +117,19 @@ KNOWN_ALIASES: dict[str, str] = {
     "sc freiburg": "Freiburg",
     "sc paderborn 07": "Paderborn",
     "sv 07 elversberg": "Elversberg",
+    # Bug real reportado por el usuario: `api_football` manda estos nombres
+    # SIN el prefijo numerico/completo que usan openfootball/el dataset
+    # historico ("SV Elversberg" en vez de "SV 07 Elversberg", "FSV Mainz
+    # 05" en vez de "1. FSV Mainz 05"). El alias de arriba/abajo con el
+    # nombre completo no casaba, y el fuzzy-match de resolve_team_id
+    # tampoco (solo quita tildes/puntuacion, no prefijos de club) -- se
+    # creaba un Team FANTASMA nuevo para cada uno. Resultado observado:
+    # cada jornada, el partido de ese equipo quedaba "scheduled" para
+    # siempre (el resultado real se escribia contra el Team fantasma, no
+    # contra el original), lo que ademas rompia la deteccion de "jornada
+    # actual" en round_service.py para TODA la liga.
+    "sv elversberg": "Elversberg",
+    "fsv mainz 05": "Mainz",
     "sv werder bremen": "Werder Bremen",
     "tsg 1899 hoffenheim": "Hoffenheim",
     "vfb stuttgart": "Stuttgart",
