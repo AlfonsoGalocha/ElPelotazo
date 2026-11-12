@@ -2,6 +2,7 @@ import type {
   BestOfDay,
   Competition,
   Match,
+  MatchForm,
   MatchHistory,
   ModelPerformanceReport,
   Prediction,
@@ -137,6 +138,10 @@ export function getMatch(matchId: number): Promise<Match> {
 
 export function getMatchPredictions(matchId: number): Promise<Prediction[]> {
   return apiFetch<Prediction[]>(`/matches/${matchId}/predictions`);
+}
+
+export function getMatchForm(matchId: number, limit = 5): Promise<MatchForm> {
+  return apiFetch<MatchForm>(`/matches/${matchId}/form?limit=${limit}`);
 }
 
 export function searchMatches(query: string): Promise<Match[]> {

@@ -22,6 +22,28 @@ export interface Match {
   matchday: number | null;
 }
 
+export interface FormMatch {
+  match_id: number;
+  kickoff_utc: string;
+  opponent: string;
+  venue: "home" | "away";
+  goals_for: number;
+  goals_against: number;
+  result: "W" | "D" | "L";
+}
+
+export interface TeamForm {
+  team: Team;
+  recent: FormMatch[];
+  recent_at_venue: FormMatch[];
+}
+
+export interface MatchForm {
+  home_team: TeamForm;
+  away_team: TeamForm;
+  head_to_head: FormMatch[];
+}
+
 export interface RoundInfo {
   competition_code: string;
   round: number | null;

@@ -147,6 +147,60 @@ def test_match_predictions_endpoint(seeded_competition_code):
     assert len(response.json()) == TOTAL_MVP_MARKETS
 
 
+def test_match_form_endpoint_returns_recent_form_and_h2h(seeded_competition_code):
+    """Pedido real del usuario: poder ver, al pinchar un partido, como
+    viene cada equipo (forma reciente, especificamente en casa/fuera) y el
+    cara a cara historico -- solo con partidos REALMENTE 'finished'
+    anteriores a este, nunca inventados ni posteriores (fuga temporal)."""
+    client = TestClient(app)
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        # Cualquier partido finalizado con partidos previos de ambos
+        # equipos (la temporada sintetica tiene 3 temporadas de 8 equipos,
+        # asi que hay de sobra) sirve como caso representativo.
+        candidate = (
+            db.query(Match)
+            .filter(Match.competition_id == comp.id, Match.status == "finished")
+            .order_by(Match.kickoff_utc.desc())
+            .first()
+        )
+        match_id = candidate.id
+        home_team_id = candidate.home_team_id
+        away_team_id = candidate.away_team_id
+        kickoff = candidate.kickoff_utc
+
+    response = client.get(f"/matches/{match_id}/form", params={"limit": 5})
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["home_team"]["team"]["id"] == home_team_id
+    assert body["away_team"]["team"]["id"] == away_team_id
+    assert len(body["home_team"]["recent"]) <= 5
+    assert len(body["away_team"]["recent"]) <= 5
+
+    for entry in (
+        body["home_team"]["recent"]
+        + body["home_team"]["recent_at_venue"]
+        + body["away_team"]["recent"]
+        + body["away_team"]["recent_at_venue"]
+        + body["head_to_head"]
+    ):
+        assert entry["match_id"] != match_id
+        assert entry["kickoff_utc"] < kickoff.isoformat()
+        assert entry["result"] in ("W", "D", "L")
+
+    for entry in body["home_team"]["recent_at_venue"]:
+        assert entry["venue"] == "home"
+    for entry in body["away_team"]["recent_at_venue"]:
+        assert entry["venue"] == "away"
+
+
+def test_match_form_endpoint_404_for_unknown_match():
+    client = TestClient(app)
+    response = client.get("/matches/999999999/form")
+    assert response.status_code == 404
+
+
 def test_models_endpoint_lists_trained_model(seeded_competition_code):
     client = TestClient(app)
     response = client.get("/models")
