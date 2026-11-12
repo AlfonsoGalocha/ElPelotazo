@@ -114,7 +114,8 @@ def test_attaching_odds_twice_appends_to_history_without_losing_the_earlier_snap
     with session_scope() as db:
         history = (
             db.query(MatchOddsHistory)
-            .filter_by(match_id=match_id, bookmaker="bet365", selection="over")
+            # Nombre canonico (normalization/bookmakers.py), no el raw "bet365".
+            .filter_by(match_id=match_id, bookmaker="Bet365", selection="over")
             .order_by(MatchOddsHistory.recorded_at.asc())
             .all()
         )
