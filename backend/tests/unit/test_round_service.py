@@ -140,6 +140,39 @@ def test_falls_back_to_date_window_when_no_matchday_data(db_session):
     assert len(round_info.match_ids) == 1
 
 
+def test_postponed_match_with_old_matchday_number_never_hijacks_current_round(db_session):
+    """Bug real reportado por un usuario ('pero si hay liga hoy 9'): un
+    partido aplazado conserva su numero de jornada ORIGINAL (6) aunque se
+    juegue mucho mas tarde (21 oct), mientras las jornadas 7 (ya jugada
+    entera) y 8 (jugandose ahora) demuestran que el calendario real ya
+    avanzo. La jornada 6 NUNCA debe convertirse en "la actual" solo por
+    tener el numero mas bajo -- debe ganar la 8."""
+    competition, season = _make_competition_with_season(db_session, "test_league_postponed")
+    teams = [_make_team(db_session, f"W{i}") for i in range(10)]
+    now = dt.datetime.utcnow()
+
+    # Jornada 6: ya jugada entera salvo UN partido aplazado muy lejos.
+    _make_match(db_session, competition, season, teams[0], teams[1], now - dt.timedelta(days=30), "finished", 6, "w1")
+    postponed = _make_match(
+        db_session, competition, season, teams[2], teams[3], now + dt.timedelta(days=12), "scheduled", 6, "w2"
+    )
+    # Jornada 7: jugada entera (demuestra que el calendario ya avanzo).
+    _make_match(db_session, competition, season, teams[4], teams[5], now - dt.timedelta(days=16), "finished", 7, "w3")
+    # Jornada 8: jugandose ahora mismo (lo que de verdad es "la actual").
+    current_match = _make_match(
+        db_session, competition, season, teams[6], teams[7], now + dt.timedelta(hours=3), "scheduled", 8, "w4"
+    )
+    # Jornada 9: todavia no empezada.
+    _make_match(db_session, competition, season, teams[8], teams[9], now + dt.timedelta(days=9), "scheduled", 9, "w5")
+
+    round_info = get_current_round(db_session, "test_league_postponed")
+    assert round_info is not None
+    assert round_info.round == 8
+    assert round_info.match_ids == [current_match.id]
+    assert postponed.id not in round_info.match_ids
+    assert round_info.next_round == 9
+
+
 def test_unknown_competition_returns_none(db_session):
     assert get_current_round(db_session, "does_not_exist") is None
 

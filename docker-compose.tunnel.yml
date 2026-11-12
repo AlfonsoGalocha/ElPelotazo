@@ -1,0 +1,39 @@
+# Overlay para la opcion GRATIS de acceso movil (docs/mobile_access.md):
+# Cloudflare Tunnel. Se usa JUNTO al docker-compose.yml normal, nunca solo:
+#   docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d --build
+#
+# Ventaja sobre la opcion de servidor (docker-compose.prod.yml): CERO coste
+# y CERO configuracion de red -- `cloudflared` hace una conexion SALIENTE
+# hacia Cloudflare (como cualquier cliente HTTPS normal), nunca escucha en
+# ningun puerto, asi que no hace falta abrir nada en el router ni en el
+# firewall. Contrapartida real: tu ordenador tiene que estar encendido, y
+# la URL publica (algo como https://palabras-al-azar.trycloudflare.com) es
+# EFEMERA -- cambia cada vez que se reinicia `cloudflared` (ver
+# docs/mobile_access.md para como consultarla).
+services:
+  backend:
+    ports: !reset []
+
+  frontend:
+    ports: !reset []
+
+  # Mismo Caddy que la opcion de servidor, pero sin TLS propio (Cloudflare
+  # ya cifra en su borde) -- combina frontend y backend bajo UN solo
+  # origen para que `NEXT_PUBLIC_API_URL=/backend-api` (relativo, ver
+  # .env.example) funcione sea cual sea la URL efimera del tunel, sin
+  # tener que reconstruir el frontend cada vez que cambia.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile.tunnel:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - backend
+      - frontend
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://caddy:80
+    depends_on:
+      - caddy

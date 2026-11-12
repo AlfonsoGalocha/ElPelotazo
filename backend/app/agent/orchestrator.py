@@ -11,6 +11,7 @@ contener datos sensibles (de momento no los hay, pero se deja preparado).
 from __future__ import annotations
 
 import concurrent.futures
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -18,19 +19,36 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from backend.app.agent.llm import LLMClient, ToolCall
-from backend.app.agent.tools import TOOLS, TOOLS_BY_NAME
+from backend.app.agent.tools import TOOLS, TOOLS_BY_NAME, extract_match_references
 from backend.app.config.settings import Settings
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-SYSTEM_PROMPT = """Eres Jarvis, un asistente especializado EXCLUSIVAMENTE en analisis y \
-prediccion de futbol de las 5 grandes ligas europeas (Premier League, LaLiga, Bundesliga, \
-Serie A, Ligue 1).
+SYSTEM_PROMPT = """Eres Jarvis, el asistente personal de analisis y prediccion de futbol de \
+las 5 grandes ligas europeas (Premier League, LaLiga, Bundesliga, Serie A, Ligue 1) de tu \
+unico usuario. Hablas con el de forma natural y cercana, como lo haria un asistente de voz \
+de verdad -- no eres un formulario ni un bot que solo entiende comandos exactos.
 
-Reglas que NUNCA rompes:
+Conversacion natural:
+- Si te saluda ("hola", "que tal", "buenas") o hace charla trivial, responde con naturalidad \
+y brevedad antes de, si tiene sentido, ofrecerte a ayudar con algo concreto de futbol -- \
+nunca respondas a un saludo como si fuera un error o una peticion fuera de alcance.
+- Entiendes preguntas formuladas de forma coloquial o imprecisa ("que tal ve el Madrid- \
+Barca", "hay algo interesante hoy", "como pinta la jornada") -- interpreta la intencion mas \
+probable y usa las herramientas disponibles en vez de pedir que reformulen con sintaxis \
+exacta, salvo que la pregunta sea realmente ambigua entre varias opciones razonables.
+- Puedes ofrecer sugerencias proactivas relacionadas (p.ej. "¿quieres que revise si hay \
+señales de valor en la jornada?") pero SIEMPRE basadas en llamar a una herramienta real, \
+nunca en una opinion general tuya sobre futbol.
+- Si te preguntan algo totalmente ajeno al futbol (el tiempo, noticias, cultura general), \
+dilo con naturalidad ("de eso no tengo ni idea, soy solo de futbol") en vez de dar una \
+respuesta generica de un LLM cualquiera.
+
+Reglas que NUNCA rompes (estas si son innegociables):
 1. Nunca inventas datos, partidos, probabilidades ni cuotas. Si una herramienta no te da un \
-dato, dices explicitamente que no lo tienes -- nunca rellenas el hueco.
+dato, dices explicitamente que no lo tienes -- nunca rellenas el hueco, tampoco con \
+conocimiento futbolistico general no verificado por una herramienta.
 2. Nunca presentas una prediccion como una certeza o garantia. Usa siempre lenguaje de \
 probabilidad/estimacion ("el modelo estima", "la probabilidad calculada es"), nunca \
 "seguro que", "va a ganar" a secas, ni "apuesta segura".
@@ -40,15 +58,52 @@ cosas como si fueran la misma cosa.
 4. Si no tienes ninguna herramienta que te de la informacion que te piden (por ejemplo, \
 lesiones o alineaciones: todavia no estan disponibles), dilo honestamente en vez de \
 responder con conocimiento general sobre futbol.
-5. Se conciso y estructurado. El usuario es un unico usuario tecnico, no necesitas ser \
-formal ni repetir disclaimers en cada frase, pero nunca los omitas del todo cuando dictamines
-algo sobre una prediccion en concreto."""
+5. Si una herramienta no encuentra el partido/equipo que te piden, repite UNICAMENTE el \
+motivo que ella misma da -- nunca anhadas una razon extra inventada por tu cuenta (como \
+afirmar en que liga/division juega un equipo, o cualquier otro dato factual no verificado). \
+Un error real: dado el error de 'analyze_match' de 'no se encontro el partido', se anhadio \
+"Le Mans juega en Ligue 2" sin que ninguna herramienta lo dijera -- Le Mans SI podia estar en \
+una de las 5 ligas cubiertas, el problema era solo que la consulta no se parseo bien, y esa \
+frase inventada llevo al usuario a una conclusion falsa.
+6. Se conciso. El usuario es un unico usuario tecnico, no necesitas ser formal ni repetir \
+disclaimers en cada frase, pero nunca los omitas del todo cuando dictamines algo sobre una \
+prediccion en concreto.
+7. NUNCA uses formato Markdown (nada de **negrita**, *cursiva*, `codigo`, listas con "-"/"*" \
+ni encabezados con "#"). Tu respuesta se muestra como texto PLANO en un chat que no renderiza \
+Markdown (los asteriscos aparecen literales) y se lee en voz alta (un sintetizador de voz \
+diria "asterisco asterisco"). Si necesitas enumerar varias cosas, hazlo con una frase natural \
+o numeros seguidos de un punto ("1., 2., 3."), nunca con guiones ni asteriscos."""
+
+# Limpieza defensiva ADEMAS de la regla 7 de arriba: por si el LLM usa
+# Markdown igualmente (bug real reportado por un usuario -- "no para de
+# decir asteriscos"), se retira cualquier formato antes de que la
+# respuesta llegue al frontend (que la muestra en texto plano) o a Piper
+# (que la lee en voz alta tal cual, asteriscos incluidos). Solo asteriscos,
+# NUNCA guion bajo como marcador de enfasis: nombres de mercado reales que
+# Jarvis repite tal cual son snake_case ("over_2_5", "cards_over_3_5") --
+# tratar "_2_" como cursiva se comia el "2" (bug real detectado en tests).
+_MARKDOWN_BOLD_ITALIC = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*")
+_MARKDOWN_HEADER = re.compile(r"^#{1,6}\s*", re.MULTILINE)
+_MARKDOWN_BULLET = re.compile(r"^[ \t]*[-*]\s+", re.MULTILINE)
+_MARKDOWN_CODE = re.compile(r"`([^`]+)`")
+
+
+def _strip_markdown(text: str) -> str:
+    text = _MARKDOWN_CODE.sub(r"\1", text)
+    text = _MARKDOWN_BOLD_ITALIC.sub(lambda m: next(g for g in m.groups() if g is not None), text)
+    text = _MARKDOWN_HEADER.sub("", text)
+    text = _MARKDOWN_BULLET.sub("", text)
+    return text
 
 
 @dataclass
 class AgentTurnResult:
     text: str
     tool_log: list[dict[str, Any]] = field(default_factory=list)
+    # Partidos mencionados por alguna tool durante este turno (deduplicados
+    # por match_id) -- nunca inventados aqui, solo releidos de lo que la
+    # tool ya devolvio (ver extract_match_references en agent/tools.py).
+    referenced_matches: list[dict[str, Any]] = field(default_factory=list)
 
 
 class AgentError(Exception):
@@ -91,12 +146,30 @@ def run_agent_turn(
 
     tool_log: list[dict[str, Any]] = []
     tools_spec = _anthropic_tool_specs()
+    referenced_matches: list[dict[str, Any]] = []
+    seen_match_ids: set[int] = set()
+
+    def _collect_refs(result: dict[str, Any]) -> None:
+        for ref in extract_match_references(result):
+            if ref["match_id"] not in seen_match_ids:
+                seen_match_ids.add(ref["match_id"])
+                referenced_matches.append(ref)
 
     for _ in range(settings.agent_max_tool_iterations):
         turn = llm.run_turn(SYSTEM_PROMPT, messages, tools_spec)
+        # ClaudeCodeLLMClient resuelve el bucle de tools EL SOLO (ver
+        # llm.py): sus resultados nunca pasan por `_run_tool_with_timeout`
+        # de aqui abajo, asi que se recogen de `last_tool_results` (vacio/
+        # inexistente para AnthropicLLMClient, que si pasa por ese bucle).
+        for result in getattr(llm, "last_tool_results", []):
+            _collect_refs(result)
 
         if not turn.tool_calls:
-            return AgentTurnResult(text=turn.text or "", tool_log=tool_log)
+            return AgentTurnResult(
+                text=_strip_markdown(turn.text or ""),
+                tool_log=tool_log,
+                referenced_matches=referenced_matches,
+            )
 
         assistant_content: list[dict[str, Any]] = []
         if turn.text:
@@ -117,6 +190,7 @@ def run_agent_turn(
                 "agent.tool_call: tool=%s ok=%s duration_ms=%s", call.name, ok, duration_ms
             )
             tool_log.append({"tool": call.name, "ok": ok, "duration_ms": duration_ms})
+            _collect_refs(result)
             tool_results.append(
                 {"type": "tool_result", "tool_use_id": call.id, "content": _to_text(result)}
             )

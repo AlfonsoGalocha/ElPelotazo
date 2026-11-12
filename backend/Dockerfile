@@ -13,8 +13,12 @@ WORKDIR /srv
 # el LLM con tu suscripcion Claude Pro/Max en vez de una API key de pago).
 # El nodejs de los repos de Debian basta (no hace falta NodeSource): el
 # CLI no necesita una version de Node muy reciente.
+# ffmpeg: decodifica el audio webm/opus que graba MediaRecorder en el
+# navegador antes de pasarselo a faster-whisper (backend/app/agent/transcription.py,
+# Fase 7 de voz -- transcripcion propia porque el reconocimiento nativo del
+# navegador falla en Brave, ver comentario en pyproject.toml).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev curl nodejs npm \
+    build-essential libpq-dev curl nodejs npm ffmpeg \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code
 

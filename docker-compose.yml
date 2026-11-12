@@ -174,6 +174,18 @@ services:
             football-edge update || echo "[scheduler] fallo update (resultados reales), se reintenta en 6h";
             football-edge update-odds || echo "[scheduler] fallo update-odds, se reintenta en 6h";
             football-edge update-secondary-odds || echo "[scheduler] fallo update-secondary-odds, se reintenta en 6h";
+            # Cierra el ciclo "el modelo aprende de sus propios fallos"
+            # (pedido real de usuario): 'train' reentrena desde cero
+            # leyendo TODOS los resultados reales ya en la BD, incluidos
+            # los que 'update' acaba de traer -- sin esto en el scheduler,
+            # el ciclo se quedaba a medias: Historico/evaluate SI reflejaban
+            # los aciertos/fallos, pero ningun modelo nuevo volvia a
+            # entrenarse con ellos salvo que alguien ejecutase 'train' a
+            # mano (docs/modeling.md, seccion "Cerrar el ciclo"). Cada 6h
+            # (no cada hora) porque reentrenar las 5 ligas no es gratis en
+            # CPU y los resultados no cambian tan rapido como para
+            # necesitarlo mas a menudo.
+            football-edge train || echo "[scheduler] fallo train (reentrenamiento), se reintenta en 6h";
           fi
           football-edge evaluate || echo "[scheduler] fallo evaluate/settle, se reintenta en 1h";
           football-edge predict-upcoming || echo "[scheduler] fallo predict-upcoming, se reintenta en 1h";

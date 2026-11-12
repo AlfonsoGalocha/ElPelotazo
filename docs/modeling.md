@@ -277,6 +277,19 @@ red).
 Comando aislado: `football-edge evaluate --competition laliga` (o sin
 `--competition` para todas). Ver `services/evaluation_service.py`.
 
+**Bug real corregido (2026-09-30)**: el `scheduler` de `docker-compose.yml`
+llamaba a `update`/`evaluate`/`predict-upcoming` pero NUNCA a `train` --
+pedido real de usuario: "que el modelo aprenda de sus propios fallos". El
+ciclo se quedaba a medias: Histórico/`evaluate` SI reflejaban los
+aciertos/fallos reales, pero ningun modelo nuevo volvia a entrenarse con
+ellos salvo que alguien ejecutase `football-edge train` a mano. Corregido
+anhadiendo `train` al bloque de cada 6h del scheduler (mismo bloque que
+`update`, justo despues de traer los resultados reales) -- no cada hora,
+porque reentrenar las 5 ligas no es gratis en CPU y los resultados no
+cambian tan rapido como para necesitarlo mas a menudo. `predict-upcoming`
+(hourly, sin condicion) ya recoge el modelo recien entrenado en la
+siguiente vuelta.
+
 ## Versionado (seccion 34)
 
 Cada `train_competition_models(...)` crea una fila nueva en `model_versions`
@@ -465,6 +478,16 @@ sobre logica YA EXISTENTE, nunca inventa datos):
   (ya usado por `GET /models/performance`) -- cero logica nueva, solo
   expone el mismo informe real (accuracy/Brier/calibracion/ROI sobre
   predicciones YA liquidadas) al agente.
+- **`list_team_matches(team, scope?, limit?)`** (anhadida despues, mismo
+  pedido real de "acceso a todo": "que partidos le quedan al Barca",
+  "como le fue al Sevilla el mes pasado"): busca el equipo por nombre
+  (`_find_team`, substring, prioriza el nombre canonico mas CORTO si hay
+  varios candidatos -- ej. "Madrid" casa con "Real Madrid" y "Atletico
+  Madrid", se queda con el mas corto por ser menos ambiguo) y lista sus
+  partidos pasados y/o futuros (`scope`: "upcoming"/"past"/"all") con
+  calendario y resultado real si ya termino. Deliberadamente SIN
+  predicciones -- para eso esta `analyze_match` sobre un partido concreto,
+  esta tool es solo calendario/historial.
 
 ### Fase 6 -- alertas proactivas (`backend/app/agent/alerts.py`)
 
@@ -498,3 +521,120 @@ usuario -- inventar uno seria fabricar infraestructura sin que nos la
 hayan pedido. La tool `get_active_alerts` es, de momento, la unica forma
 de "recibir" estas alertas: preguntandole a Jarvis ("¿hay alguna
 alerta?").
+
+### Fase 7 -- voz (`backend/app/agent/transcription.py`, `POST /agent/transcribe`)
+
+Primer intento: la Web Speech API nativa del navegador
+(`webkitSpeechRecognition`) -- gratis, cero dependencias nuevas. Se
+descarto tras un fallo real reportado por un usuario: esa API NO
+transcribe localmente pese a las apariencias, manda el audio a un
+servidor de reconocimiento de Google usando una clave API que Chrome trae
+integrada de fabrica. **Brave (y cualquier Chromium centrado en
+privacidad) elimina esa clave a proposito**, asi que el reconocimiento
+falla siempre con `event.error === "network"` aunque el microfono en si
+funcione perfectamente y haya conexion a internet normal -- reproducido
+incluso con los Shields de Brave desactivados.
+
+Solucion adoptada, la MISMA arquitectura que usa claude.ai para voz: el
+navegador solo GRABA el audio (`MediaRecorder`, API distinta de
+`SpeechRecognition` -- funciona en cualquier navegador, incluidos
+Brave/Firefox) y lo manda a nuestro propio backend, donde
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2,
+mas rapido que `openai-whisper` en CPU con precision equivalente) lo
+transcribe localmente. Sin API key de pago ni depender de ningun servicio
+externo de Google -- coherente con el mismo principio que llevo a elegir
+`AGENT_LLM_PROVIDER=claude_code` (pagar con lo que ya tienes, no con una
+API de terceros).
+
+Flujo: `JarvisChat.tsx` graba con `MediaRecorder` -> sube el blob
+(webm/opus normalmente) a `POST /api/agent/transcribe` (proxy Next.js,
+mismo patron que `/api/agent/chat` -- reenvia el `FormData` tal cual,
+nunca `request.text()`, para no corromper los bytes binarios del audio) ->
+`POST /agent/transcribe` en el backend (mismo guardian de autenticacion
+`X-Agent-Key`/`AGENT_SHARED_SECRET` que `/agent/chat`) -> `transcribe_audio()`
+carga el modelo Whisper (perezoso, cacheado con `lru_cache`, tamanho
+configurable via `WHISPER_MODEL_SIZE`) y devuelve el texto -> el frontend
+rellena el input y lo envia como un mensaje de texto normal, sin ningun
+camino especial en el orquestador ni en el LLM.
+
+Modelo cacheado en `data/cache/whisper` (bajo el volumen `./data` ya
+montado en `docker-compose.yml`) para no re-descargarlo en cada
+`docker compose up`. `WHISPER_COMPUTE_TYPE=int8` acelera la inferencia en
+CPU con perdida de precision minima para clips cortos.
+
+**Precision con nombres propios** (bug real, 2026-09-29): con
+`WHISPER_MODEL_SIZE=base`, "Bayern de Múnich" se transcribia como "Bayern
+de Monoch". Dos cambios: (1) subir el modelo por defecto a `small`
+(mejora sensible en nombres extranjeros manteniendo un tiempo de
+inferencia razonable en CPU); (2) pasar un `initial_prompt` fijo a
+faster-whisper con una lista CURADA de clubes extranjeros con
+transliteracion ambigua al hablarlos en espanhol (`_TEAM_NAME_PROMPT` en
+`transcription.py`) -- curada a mano y corta a proposito: Whisper trunca el
+prompt a ~224 tokens, asi que volcar los ~140 nombres de
+`normalization/teams.py::KNOWN_ALIASES` enteros se cortaria a mitad de
+lista de forma impredecible; los nombres 100% espanholes ("Real Madrid",
+"Barcelona") ya se reconocen bien sin pista y no hacia falta incluirlos.
+
+### Voz de salida -- sintesis (`backend/app/agent/tts.py`, `POST /agent/speak`)
+
+Mismo patron que la transcripcion, mismo motivo real: `speechSynthesis`
+nativa del navegador devuelve **0 voces** en Linux
+(`speechSynthesis.getVoices().length === 0`, confirmado por un usuario) --
+las voces de calidad de Chrome son remotas y dependen del mismo servicio
+de Google que Brave/Chromium en Linux no tiene disponible. Solucion:
+[Piper](https://github.com/rhasspy/piper) (proyecto Rhasspy) sintetiza
+localmente en CPU con voces neuronales de buena calidad.
+
+Flujo: tras recibir la respuesta de `/agent/chat`, si "Leer las respuestas
+en voz alta" esta marcado, `JarvisChat.tsx` manda el texto a
+`POST /api/agent/speak` (proxy Next.js, reenvia la respuesta binaria con
+`arrayBuffer()`, nunca `.text()`) -> `POST /agent/speak` en el backend
+(mismo guardian `X-Agent-Key` que el resto de `/agent/*`) ->
+`synthesize_speech()` carga la voz Piper (perezosa, cacheada con
+`lru_cache`; se descarga sola la primera vez con
+`piper.download_voices.download_voice`, cacheada en `data/cache/piper`
+bajo el mismo volumen `./data`) y devuelve un WAV -> el frontend lo
+reproduce con un elemento `<audio>` (no depende de ninguna voz del
+sistema, a diferencia de `speechSynthesis`). `PIPER_VOICE` es
+configurable (formato `<idioma>-<nombre>-<calidad>`, catalogo completo en
+[VOICES.md](https://github.com/rhasspy/piper/blob/master/VOICES.md)).
+
+### Enlaces directos a partidos desde el chat (`extract_match_references`)
+
+Pedido real de usuario: "muestrame el partido del Real Madrid contra
+Malaga". Jarvis no controla la navegacion del frontend (ni deberia
+inventarsela), pero SI puede decir que partidos ha consultado de verdad --
+`agent/tools.py::extract_match_references()` relee (nunca inventa) los
+`match_id` que `analyze_match`/`get_matches_today` ya devolvieron, y
+`AgentChatResponse.referenced_matches` los expone al frontend, que renderiza
+un enlace "Ver partido: X vs Y →" bajo la respuesta.
+
+Complicacion real: `ClaudeCodeLLMClient` (proveedor `claude_code`) resuelve
+el bucle de tool-calling ENTERO dentro del SDK -- el orquestador
+(`orchestrator.py::run_agent_turn`) nunca ve esos tool_use/tool_result uno
+a uno para ese proveedor, a diferencia de `AnthropicLLMClient` (bucle
+hecho a mano en el propio orquestador). Por eso `ClaudeCodeLLMClient`
+expone un atributo `last_tool_results` (poblado dentro de
+`_wrap_as_sdk_tool`, el mismo punto donde ya se loguea cada `agent.tool_call`)
+que el orquestador lee con `getattr(llm, "last_tool_results", [])` despues
+de cada `run_turn()` -- funciona para ambos proveedores sin acoplar el
+orquestador a los detalles internos de ninguno.
+
+### Conversacion continua manos libres (`JarvisChat.tsx::monitorSilence`)
+
+Pedido real de usuario: "no tener que darle al boton de hablar todo el
+rato". Un toggle "🔁 Conversación continua" arranca un bucle que graba,
+transcribe, envia y vuelve a escuchar solo, sin ninguna otra interaccion.
+Parar de grabar SIN que el usuario pulse nada requiere saber cuando ha
+dejado de hablar: `monitorSilence()` analiza el volumen (RMS) del stream
+del microfono via Web Audio API (`AnalyserNode`) y para la grabacion tras
+~1.2s de silencio siguiendo a voz detectada (o un tope de 15s). Cada turno
+espera a que `speak()` termine de sonar (o se resuelve de inmediato si el
+navegador bloqueo el autoplay) antes de volver a escuchar, para minimizar
+la posibilidad de que el microfono capte la propia voz de Jarvis saliendo
+por los altavoces -- limitacion honesta: sin auriculares, ese eco SI puede
+colarse en la siguiente transcripcion. Limitacion adicional del navegador:
+la politica de autoplay solo concede audio automatico ligado al gesto que
+activo el modo continuo (el primer turno); a partir de ahi, cada respuesta
+hablada puede necesitar el boton "▶️ Reproducir respuesta" ya existente --
+no hay forma de evitarlo desde JavaScript, es una decision del navegador.

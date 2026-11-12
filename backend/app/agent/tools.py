@@ -164,9 +164,15 @@ def _find_match(db: Session, query_text: str) -> Match | None:
     sin similitud difusa) que `GET /matches?search=` -- nunca fuzzy
     matching ambiguo (principio del proyecto, ver normalization/teams.py).
     Si la consulta trae "vs"/" - "/"contra", intenta casar un equipo a cada
-    lado; si no, busca ese texto en cualquiera de los dos equipos. De entre
-    los candidatos, el mas cercano a AHORA (pasado o futuro)."""
+    lado. Si no (bug real: "Paris Saint-Germain Le Mans" sin separador,
+    dictado por voz, buscaba ese texto LITERAL como nombre de un unico
+    equipo y nunca encontraba nada), intenta reconocer que DOS equipos
+    conocidos de la base de datos aparecen como substring de la consulta;
+    si solo reconoce uno, cae al comportamiento previo (buscar ese texto en
+    cualquiera de los dos equipos). De entre los candidatos, el mas cercano
+    a AHORA (pasado o futuro)."""
     query_text = query_text.strip()
+    query_lower = query_text.lower()
     HomeTeam, AwayTeam = aliased(Team), aliased(Team)
     base = db.query(Match).join(HomeTeam, Match.home_team_id == HomeTeam.id).join(
         AwayTeam, Match.away_team_id == AwayTeam.id
@@ -174,8 +180,8 @@ def _find_match(db: Session, query_text: str) -> Match | None:
 
     split = None
     for sep in (" vs ", " vs. ", " - ", " contra "):
-        if sep in query_text.lower():
-            idx = query_text.lower().index(sep)
+        if sep in query_lower:
+            idx = query_lower.index(sep)
             split = (query_text[: idx].strip(), query_text[idx + len(sep) :].strip())
             break
 
@@ -188,16 +194,108 @@ def _find_match(db: Session, query_text: str) -> Match | None:
             )
         ).all()
     else:
-        pattern = f"%{query_text}%"
-        candidates = base.filter(
-            or_(HomeTeam.canonical_name.ilike(pattern), AwayTeam.canonical_name.ilike(pattern))
-        ).all()
+        known_teams = db.query(Team).all()
+        matched_teams = [t for t in known_teams if t.canonical_name.lower() in query_lower]
+        if len(matched_teams) >= 2:
+            matched_teams.sort(key=lambda t: query_lower.index(t.canonical_name.lower()))
+            team_a, team_b = matched_teams[0], matched_teams[1]
+            candidates = base.filter(
+                or_(
+                    (Match.home_team_id == team_a.id) & (Match.away_team_id == team_b.id),
+                    (Match.home_team_id == team_b.id) & (Match.away_team_id == team_a.id),
+                )
+            ).all()
+        else:
+            pattern = f"%{query_text}%"
+            candidates = base.filter(
+                or_(HomeTeam.canonical_name.ilike(pattern), AwayTeam.canonical_name.ilike(pattern))
+            ).all()
 
     if not candidates:
         return None
     now = dt.datetime.utcnow()
     candidates.sort(key=lambda m: abs((m.kickoff_utc - now).total_seconds()))
     return candidates[0]
+
+
+def _find_team(db: Session, query_text: str) -> Team | None:
+    """Busca un equipo por nombre (substring, sin fuzzy), mismo principio
+    que `_find_match`. Si hay varios candidatos (ej. 'Madrid' casa con
+    'Real Madrid' y 'Atletico Madrid'), prioriza el nombre mas CORTO -- el
+    substring completo de un nombre mas largo, no al reves, asi que el
+    nombre corto es la coincidencia menos ambigua."""
+    query_text = query_text.strip()
+    if not query_text:
+        return None
+    candidates = db.query(Team).filter(Team.canonical_name.ilike(f"%{query_text}%")).all()
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: len(t.canonical_name))
+    return candidates[0]
+
+
+def _serialize_match_summary(match: Match) -> dict[str, Any]:
+    return {
+        "match_id": match.id,
+        "competition": match.competition.name,
+        "home_team": match.home_team.canonical_name,
+        "away_team": match.away_team.canonical_name,
+        "kickoff_utc": match.kickoff_utc.isoformat(),
+        "status": match.status,
+        "final_score": (
+            f"{match.home_goals}-{match.away_goals}"
+            if match.status == "finished" and match.home_goals is not None
+            else None
+        ),
+    }
+
+
+def list_team_matches(db: Session, params: dict[str, Any]) -> dict[str, Any]:
+    """Lista partidos (pasados y/o futuros) de un equipo concreto. Pedido
+    real de usuario: 'que partidos le quedan al Barca', 'como le fue al
+    Sevilla el mes pasado'. Solo calendario y resultado (no predicciones --
+    para eso esta `analyze_match` sobre un partido concreto). Nunca inventa
+    un equipo: si no lo encuentra, lo dice explicitamente."""
+    query_text = str(params.get("team", "")).strip()
+    if not query_text:
+        return {"error": "Falta el parametro 'team' (ej. 'Barcelona')."}
+
+    scope = params.get("scope") or "all"
+    if scope not in ("upcoming", "past", "all"):
+        scope = "all"
+    try:
+        limit = int(params.get("limit") or 10)
+    except (TypeError, ValueError):
+        limit = 10
+    limit = max(1, min(limit, 30))
+
+    team = _find_team(db, query_text)
+    if team is None:
+        return {
+            "error": (
+                f"No se encontro ningun equipo para {query_text!r}. Puede que este mal "
+                "escrito o no juegue en las 5 ligas cubiertas."
+            )
+        }
+
+    now = dt.datetime.utcnow()
+    base = db.query(Match).filter(or_(Match.home_team_id == team.id, Match.away_team_id == team.id))
+
+    matches: list[Match] = []
+    if scope in ("upcoming", "all"):
+        upcoming_q = base.filter(Match.kickoff_utc >= now).order_by(Match.kickoff_utc.asc())
+        matches.extend(upcoming_q.limit(limit).all())
+    if scope in ("past", "all"):
+        past_q = base.filter(Match.kickoff_utc < now).order_by(Match.kickoff_utc.desc())
+        matches.extend(past_q.limit(limit).all())
+    matches.sort(key=lambda m: m.kickoff_utc)
+
+    return {
+        "team": team.canonical_name,
+        "scope": scope,
+        "total_matches": len(matches),
+        "matches": [_serialize_match_summary(m) for m in matches],
+    }
 
 
 def analyze_match(db: Session, params: dict[str, Any]) -> dict[str, Any]:
@@ -281,6 +379,37 @@ def get_active_alerts(db: Session, _params: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def extract_match_references(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Recorre un resultado de tool YA devuelto (nunca inventa nada) para
+    sacar los `match_id` que menciona, de forma que el frontend pueda
+    ofrecer un enlace directo a esos partidos (pedido real de usuario:
+    "muestrame el partido X" -- Jarvis no controla la navegacion, pero
+    puede decir que partidos ha consultado para que la UI enlace a ellos).
+    Cubre la forma de `analyze_match` (un unico partido en el nivel
+    superior) y la de `get_matches_today` (una lista `matches`)."""
+    refs: list[dict[str, Any]] = []
+    if not isinstance(result, dict):
+        return refs
+    if "match_id" in result and "home_team" in result and "away_team" in result:
+        refs.append(
+            {
+                "match_id": result["match_id"],
+                "home_team": result["home_team"],
+                "away_team": result["away_team"],
+            }
+        )
+    for m in result.get("matches", []) or []:
+        if isinstance(m, dict) and "match_id" in m:
+            refs.append(
+                {
+                    "match_id": m["match_id"],
+                    "home_team": m.get("home_team", ""),
+                    "away_team": m.get("away_team", ""),
+                }
+            )
+    return refs
+
+
 TOOLS: list[Tool] = [
     Tool(
         name="get_matches_today",
@@ -315,6 +444,41 @@ TOOLS: list[Tool] = [
             "required": ["query"],
         },
         handler=analyze_match,
+    ),
+    Tool(
+        name="list_team_matches",
+        description=(
+            "Lista partidos (pasados y/o futuros) de un equipo concreto: calendario y "
+            "resultado, sin analisis de predicciones (para eso usa 'analyze_match' sobre un "
+            "partido en concreto). Usa esta tool para preguntas como '¿que partidos le quedan "
+            "al Barca?', '¿como le fue al Sevilla el mes pasado?' o '¿cuando juega el Real "
+            "Madrid?'."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "team": {
+                    "type": "string",
+                    "description": "Nombre del equipo, ej. 'Barcelona' o 'Real Madrid'.",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["upcoming", "past", "all"],
+                    "description": (
+                        "'upcoming': solo partidos futuros. 'past': solo ya jugados. "
+                        "'all' (por defecto): ambos."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Maximo de partidos a devolver por lado (upcoming/past), por defecto 10."
+                    ),
+                },
+            },
+            "required": ["team"],
+        },
+        handler=list_team_matches,
     ),
     Tool(
         name="get_model_performance",

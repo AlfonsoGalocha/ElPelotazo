@@ -184,6 +184,39 @@ class Settings(BaseSettings):
     mlflow_tracking_uri: str | None = None
     mlflow_experiment_name: str = "football-edge-detector"
 
+    # --- Transcripcion de voz de Jarvis (backend/app/agent/transcription.py, Fase 7) ---
+    # faster-whisper corre EN NUESTRO backend (nunca en un servicio externo
+    # de Google) -- ver comentario en pyproject.toml sobre por que el
+    # reconocimiento de voz nativo del navegador no sirve en Brave. Tamanho
+    # de modelo por defecto pequenho a proposito: "base" transcribe bien
+    # espanhol conversacional corto y tarda pocos segundos en CPU, sin
+    # necesitar GPU. "small" en vez de "base" tras un bug real reportado
+    # (2026-09-29): "base" confundia nombres propios como "Bayern de
+    # Múnich" -> "Bayern de Monoch"; "small" mejora sensiblemente el
+    # reconocimiento de nombres propios/extranjeros mantiendo un tiempo de
+    # inferencia razonable en CPU para clips cortos. Sube a "medium" si aun
+    # asi no basta.
+    whisper_model_size: str = "small"
+    # "int8" es mucho mas rapido en CPU que "float32"/"float16" con perdida
+    # de precision minima para audio corto -- CTranslate2 (motor de
+    # faster-whisper) esta pensado para esto, no es un atajo improvisado.
+    whisper_compute_type: str = "int8"
+    # Directorio bajo el volumen `./data` (ya montado en docker-compose.yml)
+    # para que el modelo descargado sobreviva a un `docker compose down` en
+    # vez de re-descargarse en cada arranque del contenedor.
+    whisper_model_cache_dir: str = "data/cache/whisper"
+
+    # --- Sintesis de voz de Jarvis (backend/app/agent/tts.py, POST /agent/speak) ---
+    # Misma logica que Whisper para STT: `speechSynthesis` nativa del
+    # navegador da 0 voces en Linux (Brave/Chromium dependen de un
+    # servicio de voces de Google no disponible ahi) -- Piper sintetiza
+    # localmente en CPU. "davefx" es una voz neuronal de calidad media en
+    # espanhol de Espanha; cambia a otra voz de
+    # https://github.com/rhasspy/piper/blob/master/VOICES.md si prefieres
+    # otro acento/timbre (formato "<idioma>-<nombre>-<calidad>").
+    piper_voice: str = "es_ES-davefx-medium"
+    piper_voice_cache_dir: str = "data/cache/piper"
+
     @property
     def model_artifacts_path(self) -> Path:
         path = REPO_ROOT / self.model_artifacts_dir

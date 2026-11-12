@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from backend.app.agent import orchestrator as orchestrator_module
 from backend.app.agent.llm import LLMClient, LLMTurn, ToolCall
 from backend.app.config.settings import Settings, get_settings
+from backend.app.db.database import get_db
 from backend.app.main import app
 
 
@@ -90,6 +91,65 @@ def test_agent_chat_runs_real_tool_and_returns_llm_text(monkeypatch, db_session)
         body = response.json()
         assert body["reply"] == "No hay partidos programados en la jornada actual de ninguna liga."
         assert body["tool_log"] == [{"tool": "get_matches_today", "ok": True, "duration_ms": body["tool_log"][0]["duration_ms"]}]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_agent_chat_surfaces_referenced_matches_from_tool_result(monkeypatch, db_session):
+    """Pedido real de usuario: 'muestrame el partido X' -- Jarvis no
+    controla la navegacion, pero el chat debe devolver el match_id que la
+    tool ya encontro para que el frontend pueda enlazar directamente al
+    partido, sin que el LLM tenga que inventarse nada."""
+    import datetime as dt
+
+    from backend.app.db.models.core import Competition, Season, Team
+    from backend.app.db.models.matches import Match
+
+    competition = Competition(code="test_league", name="Test League", country="Testland")
+    db_session.add(competition)
+    db_session.flush()
+    season = Season(competition_id=competition.id, label="2025/26")
+    db_session.add(season)
+    db_session.flush()
+    home = Team(canonical_name="Real Madrid")
+    away = Team(canonical_name="Malaga")
+    db_session.add_all([home, away])
+    db_session.flush()
+    match = Match(
+        provider="test", provider_id="ref1", competition_id=competition.id, season_id=season.id,
+        kickoff_utc=dt.datetime.utcnow() + dt.timedelta(days=1), home_team_id=home.id,
+        away_team_id=away.id, status="scheduled", matchday=1,
+    )
+    db_session.add(match)
+    db_session.flush()
+
+    scripted = _ScriptedLLMClient(
+        [
+            LLMTurn(
+                text=None,
+                tool_calls=[
+                    ToolCall(id="call_1", name="analyze_match", arguments={"query": "Real Madrid Malaga"})
+                ],
+                stop_reason="tool_use",
+            ),
+            LLMTurn(text="Aqui tienes el analisis.", tool_calls=[], stop_reason="end_turn"),
+        ]
+    )
+    monkeypatch.setattr("backend.app.api.routes.agent.client_for", lambda settings, db: scripted)
+    app.dependency_overrides[get_settings] = _settings_with_agent_enabled
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/agent/chat",
+            json={"message": "muestrame el partido del Real Madrid contra Malaga"},
+            headers={"X-Agent-Key": "test-secret"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["referenced_matches"] == [
+            {"match_id": match.id, "home_team": "Real Madrid", "away_team": "Malaga"}
+        ]
     finally:
         app.dependency_overrides.clear()
 

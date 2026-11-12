@@ -1,0 +1,15 @@
+## Variante del Caddyfile para Cloudflare Tunnel (docs/mobile_access.md,
+# opcion gratis). Diferencia clave con el `Caddyfile` de la opcion de
+# servidor: aqui Caddy NO pide certificado HTTPS el solo -- Cloudflare ya
+# lo hace en su borde (edge) antes de que el trafico llegue a
+# `cloudflared`, asi que Caddy solo necesita escuchar en HTTP plano dentro
+# de la red interna de Docker (nunca expuesto a internet directamente,
+# solo `cloudflared` le habla).
+:80 {
+	handle_path /backend-api/* {
+		reverse_proxy backend:8000
+	}
+	handle {
+		reverse_proxy frontend:3000
+	}
+}
