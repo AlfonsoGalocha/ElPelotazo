@@ -163,6 +163,14 @@ export interface BestOfDay {
   explanation: string[];
 }
 
+export interface Summary {
+  date: string;
+  matches_pending: number;
+  competitions_count: number;
+  opportunities_count: number;
+  high_quality_count: number;
+}
+
 // Fase 5 (seccion 10/11): un segmento de /models/performance.
 export interface PerformanceBucket {
   range?: string;

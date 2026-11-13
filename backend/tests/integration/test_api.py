@@ -136,6 +136,27 @@ def test_competitions_endpoint_lists_seeded_competition(seeded_competition_code)
     assert seeded_competition_code in codes
 
 
+def test_predictions_summary_endpoint_returns_real_counts(seeded_competition_code):
+    """Resumen de jornada del dashboard: nunca debe fallar aunque no haya
+    predicciones con mercado real (opportunities_count=0 es una respuesta
+    valida, no un error) -- y nunca debe contar una señal que no pase el
+    mismo filtro de calidad que el resto de la app."""
+    client = TestClient(app)
+    response = client.get("/predictions/summary")
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {
+        "date",
+        "matches_pending",
+        "competitions_count",
+        "opportunities_count",
+        "high_quality_count",
+    }
+    assert body["competitions_count"] >= 1  # al menos la liga sembrada por el fixture
+    assert body["opportunities_count"] >= 0
+    assert body["high_quality_count"] <= body["opportunities_count"]
+
+
 def test_predictions_today_returns_all_five_markets(seeded_competition_code):
     client = TestClient(app)
     response = client.get("/predictions/today")
