@@ -4,6 +4,7 @@ import BestOfDayWidget from "@/components/BestOfDayWidget";
 import BestPredictionsWidget from "@/components/BestPredictionsWidget";
 import HeadToHeadWidget from "@/components/HeadToHeadWidget";
 import HomeLeagueBoard from "@/components/HomeLeagueBoard";
+import SummaryBar from "@/components/SummaryBar";
 
 // Pedido explicito del usuario ("quiero mas orden... que me ponga las
 // mejores predicciones"): dentro de la jornada, los partidos con una
@@ -87,6 +88,7 @@ export default async function TodayPage() {
         </p>
       </div>
 
+      <SummaryBar />
       <BestOfDayWidget />
       <HeadToHeadWidget />
       <BestPredictionsWidget />

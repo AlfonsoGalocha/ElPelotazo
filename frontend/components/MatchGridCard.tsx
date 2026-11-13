@@ -59,11 +59,16 @@ export default function MatchGridCard({
             <span className="text-slate-500"> — {probabilityPhrase(best.model_probability)}</span>
           </div>
           <div className="flex items-center justify-between gap-2">
-            {best.market_odds != null ? (
-              <span className="text-xs text-slate-400">cuota {best.market_odds.toFixed(2)}</span>
-            ) : (
-              <span />
-            )}
+            <span className="flex items-center gap-1.5">
+              {best.market_odds != null && (
+                <span className="text-xs text-slate-400">cuota {best.market_odds.toFixed(2)}</span>
+              )}
+              {best.edge != null && (
+                <span className="text-xs font-semibold text-edge-positive">
+                  +{(best.edge * 100).toFixed(1)}pp
+                </span>
+              )}
+            </span>
             <SignalBadge tier={best.signal_tier} />
           </div>
         </div>

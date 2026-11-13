@@ -123,3 +123,13 @@ class MatchHistoryOut(BaseModel):
     match: MatchOut
     predictions: list[HistoryPredictionOut]
     best_prediction_id: int | None
+
+
+class SummaryOut(BaseModel):
+    """"Resumen de jornada" del dashboard (seccion de rediseño)."""
+
+    date: dt.date
+    matches_pending: int
+    competitions_count: int
+    opportunities_count: int
+    high_quality_count: int

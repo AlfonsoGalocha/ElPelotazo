@@ -8,6 +8,7 @@ import type {
   Prediction,
   RoundInfo,
   SignalDetail,
+  Summary,
   Team,
   TeamHeadToHead,
 } from "@/types";
@@ -44,6 +45,11 @@ async function apiFetch<T>(path: string): Promise<T> {
 
 export function getCompetitions(): Promise<Competition[]> {
   return apiFetch<Competition[]>("/competitions");
+}
+
+// "Resumen de jornada" del dashboard (seccion de rediseño).
+export function getSummary(): Promise<Summary> {
+  return apiFetch<Summary>("/predictions/summary");
 }
 
 export function getTeams(): Promise<Team[]> {

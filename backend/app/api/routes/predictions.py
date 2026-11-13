@@ -22,6 +22,7 @@ from backend.app.schemas.prediction import (
     CurrentRoundPredictionsOut,
     PredictionOut,
     SignalDetailOut,
+    SummaryOut,
 )
 from backend.app.services.evaluation_service import market_track_records
 from backend.app.services.round_service import get_current_round, get_next_round
@@ -120,6 +121,59 @@ def predictions_today(
 
     predictions = query.order_by(Match.kickoff_utc).all()
     return [serialize_prediction(p) for p in predictions]
+
+
+@router.get("/summary", response_model=SummaryOut)
+def predictions_summary(db: Session = Depends(get_db)) -> dict:
+    """Pedido de rediseño (seccion "resumen de jornada" del dashboard):
+    fecha, partidos pendientes, competiciones disponibles, numero de
+    oportunidades detectadas y numero de esas con datos de alta calidad.
+
+    "Oportunidades detectadas" = predicciones de la JORNADA ACTUAL de
+    cada competicion (mismo scope que /top-signals por defecto) que pasan
+    el filtro de calidad Y no tienen contradiccion -- el mismo criterio
+    real usado en toda la app para "esto es una señal", nunca un conteo
+    aparte con su propio criterio inventado."""
+    from backend.app.db.models.core import Competition
+
+    settings = get_settings()
+    competitions = db.query(Competition).all()
+    match_ids = _resolve_scope_match_ids(db, "current_round", None)
+    matches_pending = (
+        db.query(Match)
+        .filter(
+            Match.id.in_(match_ids),
+            Match.status == "scheduled",
+            Match.kickoff_utc >= dt.datetime.utcnow(),
+        )
+        .count()
+        if match_ids
+        else 0
+    )
+
+    candidates = _base_signal_query(db, None, True, scope="current_round").all()
+    by_match = _group_by_match(candidates)
+    included, _ = rank_signals(candidates, settings)
+    opportunities = [
+        s
+        for s in included
+        if is_strong_signal(
+            compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings)
+        )
+    ]
+    high_quality = sum(
+        1
+        for s in opportunities
+        if signal_tier(s.prediction.confidence, s.prediction.data_quality) == "HIGH_DATA_SUPPORT"
+    )
+
+    return {
+        "date": dt.date.today(),
+        "matches_pending": matches_pending,
+        "competitions_count": len(competitions),
+        "opportunities_count": len(opportunities),
+        "high_quality_count": high_quality,
+    }
 
 
 @router.get("/current-round", response_model=CurrentRoundPredictionsOut)
