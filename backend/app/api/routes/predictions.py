@@ -47,6 +47,7 @@ def serialize_prediction(
         "line": prediction.line,
         "selection": prediction.selection,
         "model_probability": prediction.model_probability,
+        "calibrated_probability": prediction.calibrated_probability,
         "market_probability": prediction.market_probability,
         "market_odds": prediction.market_odds,
         "fair_odds": prediction.fair_odds,

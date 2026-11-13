@@ -101,6 +101,7 @@ export interface Prediction {
   line: number | null;
   selection: string;
   model_probability: number;
+  calibrated_probability: number | null;
   market_probability: number | null;
   market_odds: number | null;
   fair_odds: number;

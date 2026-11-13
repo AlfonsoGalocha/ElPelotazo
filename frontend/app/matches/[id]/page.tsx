@@ -6,6 +6,8 @@ import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES, MA
 import SignalBadge from "@/components/SignalBadge";
 import MatchTopPicks from "@/components/MatchTopPicks";
 import MatchFormSection from "@/components/MatchFormSection";
+import ModelVsMarketChart from "@/components/ModelVsMarketChart";
+import RisksSection from "@/components/RisksSection";
 
 const SECTIONS: { label: string; markets: string[] }[] = [
   { label: "🏆 Resultado (1X2)", markets: MATCH_RESULT_MARKETS },
@@ -122,6 +124,17 @@ export default async function MatchDetailPage({ params }: { params: { id: string
       </div>
 
       <MatchTopPicks predictions={predictions} />
+
+      {mainPrediction && (
+        <section className="rounded-lg border border-surface-border bg-surface-raised p-4">
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
+            Modelo vs mercado — {MARKET_DISPLAY_NAMES[mainPrediction.market] ?? mainPrediction.market}
+          </h2>
+          <ModelVsMarketChart prediction={mainPrediction} />
+        </section>
+      )}
+
+      {predictions.length > 0 && <RisksSection predictions={predictions} />}
 
       {form && <MatchFormSection form={form} />}
 
