@@ -22,6 +22,13 @@ class PredictionOut(BaseModel):
     line: float | None
     selection: str
     model_probability: float
+    # Probabilidad post-calibracion (IsotonicRegression sobre el holdout de
+    # entrenamiento, ver services/model_service.py) -- distinta de
+    # `model_probability` a proposito (seccion 9 del brief): se exponen
+    # AMBAS para poder mostrar cuanto corrigio la calibracion. `None`
+    # cuando no hubo holdout suficiente para calibrar ese mercado, nunca
+    # inventada.
+    calibrated_probability: float | None = None
     market_probability: float | None
     market_odds: float | None
     fair_odds: float

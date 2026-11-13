@@ -172,6 +172,13 @@ def test_predictions_today_returns_all_five_markets(seeded_competition_code):
         assert 0.0 <= prediction["data_quality"] <= 1.0
         assert prediction["fair_odds"] > 1.0
         assert prediction["signal_tier"] in {"HIGH_DATA_SUPPORT", "MEDIUM_DATA_SUPPORT", "LOW_DATA_SUPPORT"}
+        # Pedido de rediseño (comparativa modelo-vs-mercado en el detalle de
+        # partido): calibrated_probability debe venir expuesto en la
+        # respuesta (antes solo se usaba internamente para el filtro de
+        # calidad), siempre como numero en [0,1] o None, nunca inventado.
+        assert "calibrated_probability" in prediction
+        if prediction["calibrated_probability"] is not None:
+            assert 0.0 <= prediction["calibrated_probability"] <= 1.0
 
 
 def test_match_predictions_endpoint(seeded_competition_code):
