@@ -44,6 +44,35 @@ export interface MatchForm {
   head_to_head: FormMatch[];
 }
 
+export interface TeamRecentForm {
+  team: Team;
+  recent: FormMatch[];
+}
+
+export interface H2HBestPrediction {
+  id: number;
+  market: string;
+  line: number | null;
+  selection: string;
+  model_probability: number;
+  market_odds: number | null;
+  edge: number | null;
+}
+
+export interface ScheduledH2HMatch {
+  match_id: number;
+  kickoff_utc: string;
+  competition: Competition;
+  best_prediction: H2HBestPrediction | null;
+}
+
+export interface TeamHeadToHead {
+  team_a: TeamRecentForm;
+  team_b: TeamRecentForm;
+  head_to_head: FormMatch[];
+  scheduled_match: ScheduledH2HMatch | null;
+}
+
 export interface RoundInfo {
   competition_code: string;
   round: number | null;

@@ -12,7 +12,7 @@ from backend.app.db.models.core import Competition, Team
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
 from backend.app.prediction.anomaly import best_prediction_per_match, compute_anomaly_flags
-from backend.app.schemas.match import MatchFormOut, MatchOut
+from backend.app.schemas.match import MatchFormOut, MatchOut, TeamHeadToHeadOut
 from backend.app.schemas.prediction import PredictionOut
 
 router = APIRouter(prefix="/matches", tags=["matches"])
@@ -81,6 +81,93 @@ def finished_fixtures(
     return query.order_by(Match.kickoff_utc.desc()).limit(limit).all()
 
 
+@router.get("/h2h", response_model=TeamHeadToHeadOut)
+def get_head_to_head(
+    team_a_id: int = Query(...),
+    team_b_id: int = Query(...),
+    limit: int = Query(10, ge=1, le=20, description="Partidos recientes/H2H a devolver"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Pedido real del usuario (pagina principal): elegir dos equipos
+    cualquiera y ver su cara a cara, sin depender de que haya ya un
+    partido concreto en mente (a diferencia de `/matches/{id}/form`, que
+    SI parte de un partido real). "Lo mas probable que pase entre ellos"
+    solo puede ser una prediccion REAL si existe un partido YA PROGRAMADO
+    entre ambos con predicciones ya generadas -- si no, `scheduled_match`
+    es `null` (honesto: no hay partido real sobre el que predecir, nunca
+    se inventa un enfrentamiento hipotetico)."""
+    team_a = db.get(Team, team_a_id)
+    team_b = db.get(Team, team_b_id)
+    if team_a is None or team_b is None:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+
+    now = dt.datetime.utcnow()
+    team_a_recent = _recent_finished_matches(db, team_a_id, now, None, limit)
+    team_b_recent = _recent_finished_matches(db, team_b_id, now, None, limit)
+    h2h = (
+        db.query(Match)
+        .filter(
+            or_(
+                and_(Match.home_team_id == team_a_id, Match.away_team_id == team_b_id),
+                and_(Match.home_team_id == team_b_id, Match.away_team_id == team_a_id),
+            ),
+            Match.status == "finished",
+        )
+        .order_by(Match.kickoff_utc.desc())
+        .limit(limit)
+        .all()
+    )
+
+    scheduled_match = (
+        db.query(Match)
+        .filter(
+            or_(
+                and_(Match.home_team_id == team_a_id, Match.away_team_id == team_b_id),
+                and_(Match.home_team_id == team_b_id, Match.away_team_id == team_a_id),
+            ),
+            Match.status == "scheduled",
+            Match.kickoff_utc >= now,
+        )
+        .order_by(Match.kickoff_utc.asc())
+        .first()
+    )
+    scheduled_out = None
+    if scheduled_match is not None:
+        predictions = db.query(Prediction).filter(Prediction.match_id == scheduled_match.id).all()
+        best = best_prediction_per_match({scheduled_match.id: predictions}).get(scheduled_match.id)
+        scheduled_out = {
+            "match_id": scheduled_match.id,
+            "kickoff_utc": scheduled_match.kickoff_utc,
+            "competition": scheduled_match.competition,
+            "best_prediction": (
+                None
+                if best is None
+                else {
+                    "id": best.id,
+                    "market": best.market,
+                    "line": best.line,
+                    "selection": best.selection,
+                    "model_probability": best.model_probability,
+                    "market_odds": best.market_odds,
+                    "edge": best.edge,
+                }
+            ),
+        }
+
+    return {
+        "team_a": {
+            "team": team_a,
+            "recent": [_serialize_form_match(m, team_a_id) for m in team_a_recent],
+        },
+        "team_b": {
+            "team": team_b,
+            "recent": [_serialize_form_match(m, team_b_id) for m in team_b_recent],
+        },
+        "head_to_head": [_serialize_form_match(m, team_a_id) for m in h2h],
+        "scheduled_match": scheduled_out,
+    }
+
+
 @router.get("/{match_id}", response_model=MatchOut)
 def get_match(match_id: int, db: Session = Depends(get_db)) -> Match:
     match = db.get(Match, match_id)
@@ -113,16 +200,17 @@ def _recent_finished_matches(
     db: Session,
     team_id: int,
     before: dt.datetime,
-    exclude_match_id: int,
+    exclude_match_id: int | None,
     limit: int,
     venue: str | None = None,
 ) -> list[Match]:
     query = db.query(Match).filter(
         or_(Match.home_team_id == team_id, Match.away_team_id == team_id),
         Match.status == "finished",
-        Match.id != exclude_match_id,
         Match.kickoff_utc < before,
     )
+    if exclude_match_id is not None:
+        query = query.filter(Match.id != exclude_match_id)
     if venue == "home":
         query = query.filter(Match.home_team_id == team_id)
     elif venue == "away":
