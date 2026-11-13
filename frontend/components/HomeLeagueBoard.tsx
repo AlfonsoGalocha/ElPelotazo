@@ -21,32 +21,23 @@ interface CompetitionBlock {
   matches: Prediction[][];
 }
 
-const PAGE_SIZE = 5;
+const TOP_OF_DAY_LIMIT = 5; // solo para "Mejores predicciones del dia" (resumen entre TODAS las ligas), no para una liga ya elegida
 
 function bestEdge(predictions: Prediction[]): number {
   const best = predictions.find((p) => p.is_best_prediction);
   return best?.edge ?? -Infinity;
 }
 
-// Pedido real del usuario: bloques de 5 en 5 en vez de una lista infinita.
-function PaginatedMatches({ matches }: { matches: Prediction[][] }) {
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const visible = matches.slice(0, visibleCount);
+// Pedido real del usuario: al elegir una liga, la jornada ENTERA (9-10
+// partidos tipico) en el grid de una vez -- el cuadradito compacto ya usa
+// mucho menos espacio que la tarjeta vertical anterior, no hace falta
+// paginar "de 5 en 5".
+function MatchesGrid({ matches }: { matches: Prediction[][] }) {
   return (
-    <div className="flex flex-col gap-3">
-      <div className={GRID_CLASS}>
-        {visible.map((group) => (
-          <MatchGridCard key={group[0].match.id} predictions={group} />
-        ))}
-      </div>
-      {visibleCount < matches.length && (
-        <button
-          onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
-          className="self-start rounded border border-surface-border px-3 py-1.5 text-xs text-slate-400 hover:bg-surface-raised"
-        >
-          Ver {Math.min(PAGE_SIZE, matches.length - visibleCount)} más ({matches.length - visibleCount} restantes)
-        </button>
-      )}
+    <div className={GRID_CLASS}>
+      {matches.map((group) => (
+        <MatchGridCard key={group[0].match.id} predictions={group} />
+      ))}
     </div>
   );
 }
@@ -83,7 +74,7 @@ export default function HomeLeagueBoard({
       ? competitionBlocks
           .flatMap((b) => b.matches)
           .sort((a, b) => bestEdge(b) - bestEdge(a))
-          .slice(0, PAGE_SIZE)
+          .slice(0, TOP_OF_DAY_LIMIT)
       : [];
 
   return (
@@ -129,11 +120,7 @@ export default function HomeLeagueBoard({
               Elige una o varias ligas arriba, o vuelve cuando haya predicciones con señal.
             </div>
           ) : (
-            <div className={GRID_CLASS}>
-              {topAcrossAllLeagues.map((group) => (
-                <MatchGridCard key={group[0].match.id} predictions={group} />
-              ))}
-            </div>
+            <MatchesGrid matches={topAcrossAllLeagues} />
           )}
         </div>
       )}
@@ -167,7 +154,7 @@ export default function HomeLeagueBoard({
               La jornada actual ya no tiene partidos por jugar: se muestra la jornada siguiente.
             </p>
           )}
-          <PaginatedMatches matches={block.matches} />
+          <MatchesGrid matches={block.matches} />
         </div>
       ))}
 

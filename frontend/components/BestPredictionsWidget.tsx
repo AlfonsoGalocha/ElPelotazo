@@ -23,7 +23,7 @@ export default async function BestPredictionsWidget() {
       </p>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
         {predictions.map((p) => (
-          <MatchGridCard key={p.id} predictions={[p]} />
+          <MatchGridCard key={p.id} predictions={[p]} forcedBest={p} />
         ))}
         {predictions.length === 0 && (
           <div className="col-span-full text-sm text-slate-500">
