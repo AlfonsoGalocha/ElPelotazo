@@ -112,6 +112,22 @@ def test_health_endpoint():
     assert response.json() == {"status": "ok"}
 
 
+def test_data_sources_status_never_leaks_a_real_key():
+    """Pagina "Configuracion" del frontend: solo booleanos de que fuentes
+    estan activas, nunca el valor de una API key real."""
+    client = TestClient(app)
+    response = client.get("/config/data-sources")
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {
+        "football_data_co_uk_enabled",
+        "api_football_enabled",
+        "odds_api_enabled",
+        "odds_api_fetch_additional_markets",
+    }
+    assert all(isinstance(v, bool) for v in body.values())
+
+
 def test_competitions_endpoint_lists_seeded_competition(seeded_competition_code):
     client = TestClient(app)
     response = client.get("/competitions")

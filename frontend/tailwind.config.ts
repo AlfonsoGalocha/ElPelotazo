@@ -16,6 +16,16 @@ const config: Config = {
           negative: "#ef4444",
           neutral: "#64748b",
         },
+        // Amarillo para oportunidades destacadas (pedido de rediseño):
+        // reservado para la "mejor senhal del dia" y badges de alta
+        // prioridad, nunca para texto normal.
+        opportunity: {
+          DEFAULT: "#f59e0b",
+          muted: "#78350f",
+        },
+      },
+      fontFamily: {
+        sans: ["var(--font-inter)", "ui-sans-serif", "system-ui", "sans-serif"],
       },
     },
   },

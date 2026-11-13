@@ -148,6 +148,29 @@ export function searchMatches(query: string): Promise<Match[]> {
   return apiFetch<Match[]>(`/matches?search=${encodeURIComponent(query)}&status=scheduled`);
 }
 
+export interface MatchesListFilters {
+  competitionCode?: string;
+  dateFrom?: string; // YYYY-MM-DD
+  dateTo?: string;
+  search?: string;
+  status?: "scheduled" | "finished";
+  limit?: number;
+}
+
+// Listado general de partidos (pagina "Partidos" del menu): reutiliza
+// GET /matches tal cual (ya soportaba estos filtros, solo faltaba una
+// pagina de frontend que los expusiera todos juntos).
+export function getMatchesList(filters: MatchesListFilters = {}): Promise<Match[]> {
+  const qs = new URLSearchParams();
+  if (filters.competitionCode) qs.set("competition_code", filters.competitionCode);
+  if (filters.dateFrom) qs.set("date_from", filters.dateFrom);
+  if (filters.dateTo) qs.set("date_to", filters.dateTo);
+  if (filters.search) qs.set("search", filters.search);
+  if (filters.status) qs.set("status", filters.status);
+  qs.set("limit", String(filters.limit ?? 200));
+  return apiFetch<Match[]>(`/matches?${qs.toString()}`);
+}
+
 export interface CurrentRoundPredictions {
   round: RoundInfo | null;
   predictions: Prediction[];
@@ -198,4 +221,17 @@ export function getModelPerformance(competitionCode?: string, market?: string): 
   if (market) qs.set("market", market);
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
   return apiFetch<ModelPerformanceReport>(`/models/performance${suffix}`);
+}
+
+export interface DataSourcesStatus {
+  football_data_co_uk_enabled: boolean;
+  api_football_enabled: boolean;
+  odds_api_enabled: boolean;
+  odds_api_fetch_additional_markets: boolean;
+}
+
+// Pagina "Configuracion": solo booleanos de que fuentes estan activas,
+// nunca una key real (ver backend/app/api/routes/health.py).
+export function getDataSourcesStatus(): Promise<DataSourcesStatus> {
+  return apiFetch<DataSourcesStatus>("/config/data-sources");
 }
