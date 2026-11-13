@@ -3,8 +3,13 @@
 import { useState } from "react";
 import Link from "next/link";
 import type { Prediction } from "@/types";
-import MatchCard from "@/components/MatchCard";
+import MatchGridCard from "@/components/MatchGridCard";
 import ModelOnlySection from "@/components/ModelOnlySection";
+
+// Pedido real del usuario: cuadraditos en fila (grid) en vez de una lista
+// vertical, para aprovechar mejor el espacio -- tanto aqui como en
+// BestPredictionsWidget.tsx (misma idea, mismo componente de tarjeta).
+const GRID_CLASS = "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5";
 
 interface CompetitionBlock {
   code: string;
@@ -28,10 +33,12 @@ function PaginatedMatches({ matches }: { matches: Prediction[][] }) {
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const visible = matches.slice(0, visibleCount);
   return (
-    <div className="flex flex-col gap-4">
-      {visible.map((group) => (
-        <MatchCard key={group[0].match.id} predictions={group} />
-      ))}
+    <div className="flex flex-col gap-3">
+      <div className={GRID_CLASS}>
+        {visible.map((group) => (
+          <MatchGridCard key={group[0].match.id} predictions={group} />
+        ))}
+      </div>
       {visibleCount < matches.length && (
         <button
           onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
@@ -122,9 +129,9 @@ export default function HomeLeagueBoard({
               Elige una o varias ligas arriba, o vuelve cuando haya predicciones con señal.
             </div>
           ) : (
-            <div className="flex flex-col gap-4">
+            <div className={GRID_CLASS}>
               {topAcrossAllLeagues.map((group) => (
-                <MatchCard key={group[0].match.id} predictions={group} />
+                <MatchGridCard key={group[0].match.id} predictions={group} />
               ))}
             </div>
           )}
