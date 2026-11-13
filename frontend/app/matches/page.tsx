@@ -17,6 +17,17 @@ function formatKickoff(iso: string): string {
   });
 }
 
+// Bug real reportado por el usuario: al ver "Jugados" salian partidos de
+// temporadas muy antiguas (el historico profundo usado para entrenar).
+// Misma convencion de temporada europea que el backend (season_label,
+// backend/app/utils/dates.py: julio es el mes de corte) -- nunca una
+// ventana arbitraria de dias.
+function currentSeasonStartDate(): string {
+  const now = new Date();
+  const startYear = now.getMonth() + 1 >= 7 ? now.getFullYear() : now.getFullYear() - 1;
+  return `${startYear}-07-01`;
+}
+
 // Pagina "Partidos" del nuevo menu: listado general con busqueda y
 // filtros, algo que antes no existia (solo "jornada actual" en el home o
 // el historico de ya jugados) -- reutiliza GET /matches tal cual, que ya
@@ -44,6 +55,7 @@ export default function MatchesPage() {
         competitionCode: competitionCode ?? undefined,
         status: status === "all" ? undefined : status,
         search: search.trim() || undefined,
+        dateFrom: currentSeasonStartDate(),
         limit: 100,
       })
         .then((rows) => {
@@ -81,21 +93,15 @@ export default function MatchesPage() {
         />
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-slate-500">Liga:</span>
-          <button
-            onClick={() => setCompetitionCode(null)}
-            className={
-              "rounded-full border px-3 py-1 " +
-              (competitionCode === null
-                ? "border-slate-400 bg-slate-700 text-slate-100"
-                : "border-surface-border text-slate-400 hover:bg-surface/60")
-            }
-          >
-            Todas
-          </button>
+          {/* Filtro de seleccion, nunca de deseleccion (regla fija del
+              proyecto): empieza SIN ninguna marcada (= todas visibles) y
+              solo una a la vez -- clic en la ya marcada la quita, clic en
+              otra la sustituye. Nunca un boton "Todas" que parezca
+              "seleccionado" por defecto. */}
           {competitions.map((c) => (
             <button
               key={c.code}
-              onClick={() => setCompetitionCode(c.code)}
+              onClick={() => setCompetitionCode((prev) => (prev === c.code ? null : c.code))}
               className={
                 "rounded-full border px-3 py-1 " +
                 (competitionCode === c.code

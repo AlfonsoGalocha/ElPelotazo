@@ -217,6 +217,70 @@ def test_match_form_endpoint_404_for_unknown_match():
     assert response.status_code == 404
 
 
+def test_h2h_endpoint_returns_recent_form_and_history_between_two_teams(seeded_competition_code):
+    """Pedido real del usuario (pagina principal): poder elegir dos
+    equipos CUALQUIERA (no un partido concreto) y ver su cara a cara +
+    forma reciente de cada uno."""
+    client = TestClient(app)
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        # La liga sintetica tiene 8 equipos en 3 temporadas round-robin:
+        # cualquier pareja de equipos con un partido finalizado real sirve.
+        any_finished = (
+            db.query(Match).filter(Match.competition_id == comp.id, Match.status == "finished").first()
+        )
+        team_a_id, team_b_id = any_finished.home_team_id, any_finished.away_team_id
+
+    response = client.get("/matches/h2h", params={"team_a_id": team_a_id, "team_b_id": team_b_id})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["team_a"]["team"]["id"] == team_a_id
+    assert body["team_b"]["team"]["id"] == team_b_id
+    assert len(body["head_to_head"]) >= 1
+    for entry in body["head_to_head"]:
+        assert entry["result"] in ("W", "D", "L")
+
+
+def test_h2h_endpoint_404_for_unknown_team():
+    client = TestClient(app)
+    response = client.get("/matches/h2h", params={"team_a_id": 999999999, "team_b_id": 1})
+    assert response.status_code == 404
+
+
+def test_h2h_endpoint_surfaces_real_prediction_for_a_genuinely_scheduled_match(seeded_competition_code):
+    """La parte critica de "nunca inventar": `scheduled_match` solo trae
+    una prediccion cuando existe un partido REAL ya programado entre esos
+    dos equipos Y ya se generaron predicciones reales para el."""
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        match = db.query(Match).filter_by(competition_id=comp.id, provider_id="future-fixture-1").one()
+        match_id = match.id
+        team_a_id, team_b_id = match.home_team_id, match.away_team_id
+        home_name, away_name = match.home_team.canonical_name, match.away_team.canonical_name
+        snapshot = FixtureOddsSnapshot(
+            home_team_raw=home_name,
+            away_team_raw=away_name,
+            commence_time=match.kickoff_utc.replace(tzinfo=dt.timezone.utc),
+            odds=[
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+            ],
+        )
+        attach_odds_to_scheduled_matches(db, _FakeOddsProvider([snapshot]), seeded_competition_code)
+
+    with session_scope() as db:
+        generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+
+    client = TestClient(app)
+    response = client.get("/matches/h2h", params={"team_a_id": team_a_id, "team_b_id": team_b_id})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["scheduled_match"] is not None
+    assert body["scheduled_match"]["match_id"] == match_id
+    assert body["scheduled_match"]["best_prediction"] is not None
+
+
 def test_models_endpoint_lists_trained_model(seeded_competition_code):
     client = TestClient(app)
     response = client.get("/models")

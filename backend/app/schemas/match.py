@@ -68,6 +68,47 @@ class MatchFormOut(BaseModel):
     head_to_head: list[FormMatchOut]
 
 
+class TeamRecentFormOut(BaseModel):
+    team: TeamOut
+    recent: list[FormMatchOut]
+
+
+class H2HBestPredictionOut(BaseModel):
+    """Resumen minimo (no el PredictionOut completo, para no crear un
+    import circular con schemas/prediction.py, que ya importa de aqui)
+    de la mejor prediccion real disponible para el partido programado
+    entre dos equipos -- ver ScheduledH2HMatchOut."""
+
+    id: int
+    market: str
+    line: float | None
+    selection: str
+    model_probability: float
+    market_odds: float | None
+    edge: float | None
+
+
+class ScheduledH2HMatchOut(BaseModel):
+    """Si hay un partido REAL ya programado entre ambos equipos (nunca
+    inventado): su id (para enlazar al detalle completo) y, solo si ya
+    existen predicciones generadas para el, la mejor segun
+    `best_prediction_per_match` -- "null" es la respuesta honesta cuando
+    no hay partido programado o cuando lo hay pero aun no se generaron
+    predicciones para el."""
+
+    match_id: int
+    kickoff_utc: dt.datetime
+    competition: CompetitionOut
+    best_prediction: H2HBestPredictionOut | None = None
+
+
+class TeamHeadToHeadOut(BaseModel):
+    team_a: TeamRecentFormOut
+    team_b: TeamRecentFormOut
+    head_to_head: list[FormMatchOut]
+    scheduled_match: ScheduledH2HMatchOut | None = None
+
+
 class RoundOut(BaseModel):
     """Jornada actual de una competicion (ver services/round_service.py)."""
 

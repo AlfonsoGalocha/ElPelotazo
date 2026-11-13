@@ -8,6 +8,8 @@ import type {
   Prediction,
   RoundInfo,
   SignalDetail,
+  Team,
+  TeamHeadToHead,
 } from "@/types";
 
 // Dos URLs distintas a proposito, no una: en Docker Compose el frontend y
@@ -42,6 +44,17 @@ async function apiFetch<T>(path: string): Promise<T> {
 
 export function getCompetitions(): Promise<Competition[]> {
   return apiFetch<Competition[]>("/competitions");
+}
+
+export function getTeams(): Promise<Team[]> {
+  return apiFetch<Team[]>("/teams");
+}
+
+// Pedido real del usuario (pagina principal): elegir dos equipos
+// cualquiera y ver su cara a cara + que es mas probable que pase entre
+// ellos (solo si hay un partido REAL ya programado, ver backend).
+export function getHeadToHead(teamAId: number, teamBId: number): Promise<TeamHeadToHead> {
+  return apiFetch<TeamHeadToHead>(`/matches/h2h?team_a_id=${teamAId}&team_b_id=${teamBId}`);
 }
 
 export function getUpcomingPredictions(days = 7): Promise<Prediction[]> {

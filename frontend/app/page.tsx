@@ -2,6 +2,7 @@ import { getCompetitions, getCurrentRoundPredictions, getModelOnlyPredictions } 
 import type { Prediction } from "@/types";
 import BestOfDayWidget from "@/components/BestOfDayWidget";
 import BestPredictionsWidget from "@/components/BestPredictionsWidget";
+import HeadToHeadWidget from "@/components/HeadToHeadWidget";
 import HomeLeagueBoard from "@/components/HomeLeagueBoard";
 
 // Pedido explicito del usuario ("quiero mas orden... que me ponga las
@@ -87,6 +88,7 @@ export default async function TodayPage() {
       </div>
 
       <BestOfDayWidget />
+      <HeadToHeadWidget />
       <BestPredictionsWidget />
 
       {error && (
