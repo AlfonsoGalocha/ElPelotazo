@@ -158,7 +158,36 @@ async function speak(
   }
 }
 
-export default function JarvisChat() {
+// Fase 5 del rediseño (seccion 5 del brief): botones de "pregunta rapida"
+// para no tener que escribir siempre lo mismo. Las de `MATCH_QUICK_QUESTIONS`
+// solo tienen sentido con un partido concreto en contexto (se anteponen los
+// nombres reales de los equipos al enviarlas, ver `matchContext` abajo);
+// sin contexto se muestran las generales, que usan tools que no necesitan
+// un partido (get_matches_today/get_active_alerts/get_model_performance).
+const MATCH_QUICK_QUESTIONS = [
+  "¿Por qué recomienda este mercado?",
+  "¿Cuáles son los principales riesgos?",
+  "¿Qué mercado tiene mayor valor?",
+  "¿Qué factores pueden cambiar esta predicción?",
+  "¿Cómo se compara con el mercado?",
+];
+
+const GENERAL_QUICK_QUESTIONS = [
+  "¿Qué partidos hay hoy?",
+  "¿Hay alguna señal de valor ahora mismo?",
+  "¿Cómo está rindiendo el modelo este mes?",
+];
+
+interface JarvisChatProps {
+  // Pedido real de usuario: poder preguntar sobre un partido concreto
+  // desde /matches/[id]. Nunca se manda un `match_id` en crudo al agente
+  // (no tiene ninguna tool que acepte eso) -- se antepone el nombre REAL de
+  // los dos equipos al mensaje, que `analyze_match`/`_find_match` ya saben
+  // resolver (misma logica que "Real Madrid vs Sevilla" escrito a mano).
+  matchContext?: { matchId: number; homeTeam: string; awayTeam: string };
+}
+
+export default function JarvisChat({ matchContext }: JarvisChatProps = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -188,6 +217,13 @@ export default function JarvisChat() {
   useEffect(() => {
     voiceReplyEnabledRef.current = voiceReplyEnabled;
   }, [voiceReplyEnabled]);
+
+  function sendQuickQuestion(question: string) {
+    const text = matchContext
+      ? `Sobre el partido ${matchContext.homeTeam} vs ${matchContext.awayTeam}: ${question}`
+      : question;
+    send(text);
+  }
 
   async function send(overrideText?: string) {
     const text = (overrideText ?? input).trim();
@@ -408,6 +444,28 @@ export default function JarvisChat() {
           bloquea la reproducción de una respuesta, aparecerá el botón de play para esa vez.
         </p>
       )}
+
+      {matchContext && (
+        <p className="text-xs text-slate-500">
+          Preguntando sobre:{" "}
+          <span className="font-semibold text-slate-300">
+            {matchContext.homeTeam} vs {matchContext.awayTeam}
+          </span>
+        </p>
+      )}
+
+      <div className="flex flex-wrap gap-2">
+        {(matchContext ? MATCH_QUICK_QUESTIONS : GENERAL_QUICK_QUESTIONS).map((question) => (
+          <button
+            key={question}
+            onClick={() => sendQuickQuestion(question)}
+            disabled={jarvisIsBusy}
+            className="rounded-full border border-surface-border px-3 py-1 text-xs text-slate-300 hover:bg-surface-raised disabled:opacity-50"
+          >
+            {question}
+          </button>
+        ))}
+      </div>
 
       <div className="flex min-h-[300px] flex-col gap-3 rounded-lg border border-surface-border bg-surface-raised p-4">
         {messages.length === 0 && (

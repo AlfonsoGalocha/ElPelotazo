@@ -8,6 +8,7 @@ import MatchTopPicks from "@/components/MatchTopPicks";
 import MatchFormSection from "@/components/MatchFormSection";
 import ModelVsMarketChart from "@/components/ModelVsMarketChart";
 import RisksSection from "@/components/RisksSection";
+import JarvisChat from "@/components/JarvisChat";
 
 const SECTIONS: { label: string; markets: string[] }[] = [
   { label: "🏆 Resultado (1X2)", markets: MATCH_RESULT_MARKETS },
@@ -137,6 +138,21 @@ export default async function MatchDetailPage({ params }: { params: { id: string
       {predictions.length > 0 && <RisksSection predictions={predictions} />}
 
       {form && <MatchFormSection form={form} />}
+
+      <details className="rounded-lg border border-surface-border">
+        <summary className="cursor-pointer px-4 py-3 text-sm text-slate-400 hover:text-slate-200">
+          🤖 Pregúntale a la IA sobre este partido
+        </summary>
+        <div className="border-t border-surface-border p-4">
+          <JarvisChat
+            matchContext={{
+              matchId: match.id,
+              homeTeam: match.home_team.canonical_name,
+              awayTeam: match.away_team.canonical_name,
+            }}
+          />
+        </div>
+      </details>
 
       {predictions.length > 0 && (
         <details className="rounded-lg border border-surface-border">
