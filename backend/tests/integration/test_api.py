@@ -857,6 +857,52 @@ def test_predictions_current_round_endpoint_serializes_correctly(seeded_competit
         assert "home_team" in prediction["match"]
 
 
+def test_predictions_current_round_marks_the_best_prediction_per_match(seeded_competition_code):
+    """Bug real reportado por el usuario (la portada mostraba "Sin señal
+    clara todavía" en TODOS los partidos, incluso con cuota real): esta
+    ruta nunca marcaba `is_best_prediction` (quedaba `False` por defecto
+    para todas, via el default del schema) aunque el partido tuviera una
+    señal fuerte de verdad con mercado real -- a diferencia de
+    `/matches/{id}/predictions`, que si usa `best_prediction_per_match`
+    (prediction/anomaly.py) para marcarla."""
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        # provider_id exacto (no solo "scheduled"): el fixture comparte
+        # modulo con otros tests que pueden anadir sus propios partidos
+        # "scheduled" a esta misma competicion -- un filtro generico seria
+        # ambiguo (MultipleResultsFound) segun el orden de ejecucion.
+        match = db.query(Match).filter_by(competition_id=comp.id, provider_id="future-fixture-1").one()
+        # Lee los nombres REALES del partido en vez de asumir
+        # "IntegrationTeam1"/"IntegrationTeam2" por posicion: los ids de
+        # equipo son globales (no por competicion), asi que si otro test
+        # ya reclamo los ids 1/2 para OTRA competicion antes de que corra
+        # este fixture, el partido de seeded_competition_code puede acabar
+        # apuntando a equipos con otro nombre -- un nombre hardcodeado que
+        # no case no engancharia la cuota a este partido en absoluto.
+        home_name = match.home_team.canonical_name
+        away_name = match.away_team.canonical_name
+        snapshot = FixtureOddsSnapshot(
+            home_team_raw=home_name,
+            away_team_raw=away_name,
+            commence_time=match.kickoff_utc.replace(tzinfo=dt.timezone.utc),
+            odds=[
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+            ],
+        )
+        attach_odds_to_scheduled_matches(db, _FakeOddsProvider([snapshot]), seeded_competition_code)
+
+    with session_scope() as db:
+        generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+
+    client = TestClient(app)
+    response = client.get(f"/predictions/current-round?competition_code={seeded_competition_code}")
+    assert response.status_code == 200
+    predictions = response.json()["predictions"]
+    assert any(p["is_best_prediction"] for p in predictions)
+
+
 def test_predictions_current_round_falls_back_to_next_round_when_current_round_is_empty(
     seeded_competition_code,
 ):

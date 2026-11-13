@@ -5,11 +5,15 @@ import datetime as dt
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from backend.app.config.settings import get_settings
 from backend.app.db.database import get_db
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
-from backend.app.config.settings import get_settings
-from backend.app.prediction.anomaly import compute_anomaly_flags, is_strong_signal
+from backend.app.prediction.anomaly import (
+    best_prediction_per_match,
+    compute_anomaly_flags,
+    is_strong_signal,
+)
 from backend.app.prediction.confidence import signal_tier
 from backend.app.prediction.market_quality import market_quality_tier
 from backend.app.prediction.ranking import odds_age_minutes, rank_signals
@@ -145,6 +149,15 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
         if round_info.match_ids
         else []
     )
+    # Bug real reportado por el usuario: esta ruta nunca marcaba
+    # `is_best_prediction` (quedaba `False` por defecto para TODAS las
+    # predicciones devueltas, aunque el partido si tuviera una señal
+    # fuerte de verdad) -- el frontend (resumen "lo mas probable" de cada
+    # partido en la portada) depende de esa bandera para saber cual
+    # mostrar, igual que ya hace /matches/{id}/predictions. Mismo calculo,
+    # reutilizado aqui.
+    by_match = _group_by_match(predictions)
+    best_by_match = best_prediction_per_match(by_match)
     return {
         "round": {
             "competition_code": competition_code,
@@ -156,7 +169,15 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
             "is_next_round": is_next_round,
             "match_ids": round_info.match_ids,
         },
-        "predictions": [serialize_prediction(p) for p in predictions],
+        "predictions": [
+            serialize_prediction(
+                p,
+                is_best_prediction=(
+                    (best := best_by_match.get(p.match_id)) is not None and p.id == best.id
+                ),
+            )
+            for p in predictions
+        ],
     }
 
 
