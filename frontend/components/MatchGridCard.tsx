@@ -15,10 +15,25 @@ function probabilityPhrase(probability: number): string {
   return `posible (${pct}%)`;
 }
 
-export default function MatchGridCard({ predictions }: { predictions: Prediction[] }) {
+export default function MatchGridCard({
+  predictions,
+  forcedBest,
+}: {
+  predictions: Prediction[];
+  // BestPredictionsWidget ya trae UNA prediccion por partido, pre-filtrada
+  // por el backend (/predictions/best: mismo filtro de calidad que decide
+  // `is_best_prediction`) -- pasarla aqui evita depender de que esa
+  // bandera especifica venga marcada en ESTE item concreto (responde a
+  // "es la mejor DE SU PARTIDO entre varias", una pregunta distinta de
+  // "es una señal valida", que es lo unico que importa en ese widget).
+  // Sin este prop (HomeLeagueBoard, que si pasa varias predicciones por
+  // partido), se sigue exigiendo la bandera -- nunca se fuerza una señal
+  // que el backend no valido.
+  forcedBest?: Prediction;
+}) {
   if (predictions.length === 0) return null;
   const match = predictions[0].match;
-  const best = predictions.find((p) => p.is_best_prediction);
+  const best = forcedBest ?? predictions.find((p) => p.is_best_prediction);
   const kickoff = new Date(match.kickoff_utc);
 
   return (
