@@ -73,6 +73,12 @@ KNOWN_ALIASES: dict[str, str] = {
     "real betis balompie": "Real Betis",
     "real madrid cf": "Real Madrid",
     "real racing club de santander": "Santander",
+    # Mismo bug que "Hull City" (ver mas arriba): API-Football llama a
+    # este equipo "Racing Santander", una clave de alias DISTINTA de
+    # "real racing club de santander" -- creaba un Team/Match fantasma,
+    # dejando un duplicado 'scheduled' huerfano que atascaba la "jornada
+    # actual" de LaLiga entera (ver round_service.py).
+    "racing santander": "Santander",
     "real sociedad de futbol": "Real Sociedad",
     "sevilla fc": "Sevilla",
     "valencia cf": "Valencia",
