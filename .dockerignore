@@ -1,0 +1,33 @@
+# Sin esto, "docker compose build" (contexto = la raiz del repo, ver
+# docker-compose.yml) empaquetaba y enviaba TODO el directorio al daemon
+# de Docker en cada build -- .venv (gigabytes), frontend/node_modules,
+# frontend/.next, models/ (ya montado como volumen, no hace falta en la
+# imagen) y .git completo. Eso, sumado al problema de cacheo de capas del
+# Dockerfile del backend (ver su comentario), era la causa real de que
+# "arrancar" tardara muchisimo para un cambio pequenho: la mayor parte del
+# tiempo se iba en transferir contexto que ni siquiera se usa en el build.
+.git
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Montados como volumen en docker-compose.yml (./models, ./data) --
+# incluirlos en la imagen solo duplica gigabytes sin necesidad.
+models
+data
+
+# Frontend: su propio Dockerfile tiene su propio contexto y su propio
+# .dockerignore (frontend/.dockerignore) -- esto es solo por si alguna vez
+# se construye algo desde la raiz.
+frontend/node_modules
+frontend/.next
+
+# Secretos: nunca deben entrar en la imagen (env_file ya los inyecta en
+# tiempo de ejecucion, ver docker-compose.yml).
+.env
+.env.*
+!.env.example
