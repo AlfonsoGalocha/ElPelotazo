@@ -58,6 +58,16 @@ def list_matches(
             candidates = query.all()
             candidates.sort(key=lambda m: abs((m.kickoff_utc - now).total_seconds()))
             return candidates[:limit]
+    # Bug real reportado por el usuario: con mas partidos 'finished' desde
+    # el inicio de temporada que `limit`, ordenar SIEMPRE ascendente antes
+    # de recortar se quedaba con los partidos MAS ANTIGUOS de la
+    # temporada (p.ej. agosto/septiembre), nunca con los mas recientes --
+    # el filtro "Jugados" de /matches parecia "atascado" meses atras por
+    # mucho que pasaran las jornadas. Para partidos YA JUGADOS lo util es
+    # lo mas reciente primero; para programados (o sin filtro de estado),
+    # lo mas proximo primero sigue siendo correcto.
+    if status == "finished":
+        return query.order_by(Match.kickoff_utc.desc()).limit(limit).all()
     return query.order_by(Match.kickoff_utc).limit(limit).all()
 
 

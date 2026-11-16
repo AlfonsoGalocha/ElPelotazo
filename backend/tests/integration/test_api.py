@@ -239,6 +239,66 @@ def test_match_form_endpoint_returns_recent_form_and_h2h(seeded_competition_code
         assert entry["venue"] == "away"
 
 
+def test_list_matches_finished_filter_returns_most_recent_when_truncated_by_limit():
+    """Bug real reportado por el usuario (pagina "Partidos", filtro
+    "Jugados"): con mas partidos 'finished' desde el inicio de temporada
+    que `limit`, ordenar SIEMPRE ascendente antes de recortar devolvia
+    los partidos MAS ANTIGUOS (agosto/septiembre) en vez de los mas
+    recientes -- "Jugados" parecia atascado meses atras aunque ya se
+    hubieran jugado muchas mas jornadas. Para 'scheduled' (o sin filtro
+    de estado) el orden sigue siendo ascendente (lo mas proximo primero),
+    que es lo correcto ahi."""
+    client = TestClient(app)
+    competition_code = "list_matches_order_test"
+    with session_scope() as db:
+        comp = Competition(code=competition_code, name="Order Test League", country="Testland")
+        db.add(comp)
+        db.flush()
+        season = Season(competition_id=comp.id, label="2026/27")
+        db.add(season)
+        db.flush()
+        from backend.app.db.models.core import Team
+
+        home = Team(canonical_name="Order Test Home")
+        away = Team(canonical_name="Order Test Away")
+        db.add_all([home, away])
+        db.flush()
+
+        now = dt.datetime.utcnow()
+        oldest_id = None
+        newest_id = None
+        for days_ago in (90, 45, 1):
+            match = Match(
+                provider="order_test_provider",
+                provider_id=f"order-test-{days_ago}",
+                competition_id=comp.id,
+                season_id=season.id,
+                kickoff_utc=now - dt.timedelta(days=days_ago),
+                home_team_id=home.id,
+                away_team_id=away.id,
+                status="finished",
+                home_goals=1,
+                away_goals=0,
+            )
+            db.add(match)
+            db.flush()
+            if days_ago == 90:
+                oldest_id = match.id
+            if days_ago == 1:
+                newest_id = match.id
+
+    response = client.get(
+        "/matches",
+        params={"competition_code": competition_code, "status": "finished", "limit": 2},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    returned_ids = [m["id"] for m in body]
+    assert len(returned_ids) == 2
+    assert newest_id in returned_ids
+    assert oldest_id not in returned_ids
+
+
 def test_match_form_endpoint_404_for_unknown_match():
     client = TestClient(app)
     response = client.get("/matches/999999999/form")
