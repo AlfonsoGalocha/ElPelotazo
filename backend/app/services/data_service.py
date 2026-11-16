@@ -353,10 +353,26 @@ def _attach_odds_snapshots(
                 sorted(duplicate_keys),
             )
 
+        # Bug real reportado por el usuario (cuotas de corners seguian
+        # saliendo corruptas incluso DESPUES de arreglar el filtrado de
+        # mercados en odds_provider.py y reconstruir/reingerir): borrar por
+        # CLAVE EXACTA (bookmaker, market, line, selection) solo limpia las
+        # claves que el fetch de ESTA vez vuelve a producir. Una fila vieja
+        # que vino de un mercado hoy excluido (p.ej. "Away Corners
+        # Over/Under", que antes del arreglo generaba la clave
+        # (CasaX, corners_total, 8.5, over)) deja de regenerarse para
+        # siempre -- pero como esa clave exacta ya no aparece en
+        # `deduped_odds`, el borrado de abajo nunca la alcanzaba y
+        # sobrevivia indefinidamente en la BD, mezclada con el consenso.
+        # Se borran TODOS los mercados que trae este snapshot para este
+        # partido ANTES de insertar nada, no clave a clave.
+        markets_in_snapshot = {odds.market for odds in deduped_odds.values()}
+        if markets_in_snapshot:
+            db.query(MatchOdds).filter(
+                MatchOdds.match_id == match.id, MatchOdds.market.in_(markets_in_snapshot)
+            ).delete(synchronize_session=False)
+
         for odds in deduped_odds.values():
-            db.query(MatchOdds).filter_by(
-                match_id=match.id, bookmaker=odds.bookmaker, market=odds.market, line=odds.line, selection=odds.selection
-            ).delete()
             db.add(
                 MatchOdds(
                     match_id=match.id,
