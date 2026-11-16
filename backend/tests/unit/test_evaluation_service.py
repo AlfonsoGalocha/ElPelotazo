@@ -13,6 +13,7 @@ from backend.app.services.evaluation_service import (
     MIN_SETTLED_FOR_TRACK_RECORD,
     evaluate_settled_predictions,
     market_track_records,
+    settle_finished_predictions,
 )
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import generate_predictions_for_competition
@@ -45,6 +46,8 @@ class _FakeProvider(DataProvider):
                     away_goals=int(r.away_goals),
                     home_shots=int(r.home_shots),
                     away_shots=int(r.away_shots),
+                    home_corners=int(r.home_corners),
+                    away_corners=int(r.away_corners),
                     odds=[
                         RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.9),
                         RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
@@ -149,6 +152,134 @@ def test_evaluate_settled_predictions_grades_a_now_finished_match():
     with session_scope() as db:
         remaining = db.query(Match).filter_by(id=match_id).one()
         assert remaining.status == "finished"
+
+
+class _FakeProviderForMissingCornersTest(DataProvider):
+    """Nombre de proveedor y de equipos PROPIOS (no reutiliza `_FakeProvider`
+    de arriba): con el mismo `n_teams`, `generate_synthetic_matches` genera
+    SIEMPRE las mismas fechas de calendario (solo cambian goles/stats segun
+    el seed) -- reutilizar el mismo `provider.name`/mismos nombres de equipo
+    ("EvalTeam1", etc.) haria que `resolve_team_id` devolviera los mismos
+    `Team` ya creados por OTRO test de este fichero, y el partido se
+    absorberia como "duplicado" de uno de OTRA competicion en vez de crear
+    partidos nuevos para esta."""
+
+    name = "missing_corners_test_provider"
+
+    def __init__(self, synthetic):
+        self._synthetic = synthetic
+
+    def is_available(self) -> bool:
+        return True
+
+    def fetch_matches(self, competition_code: str, season_label: str) -> list[RawMatchRecord]:
+        rows = self._synthetic[self._synthetic["season_label"] == season_label]
+        records = []
+        for _, r in rows.iterrows():
+            records.append(
+                RawMatchRecord(
+                    provider=self.name,
+                    provider_id=f"missing-corners-test-{r.match_id}",
+                    competition_code=competition_code,
+                    season_label=season_label,
+                    date=r.date.date().isoformat(),
+                    home_team_raw=f"MissingCornersTeam{int(r.home_team_id)}",
+                    away_team_raw=f"MissingCornersTeam{int(r.away_team_id)}",
+                    home_goals=int(r.home_goals),
+                    away_goals=int(r.away_goals),
+                    home_shots=int(r.home_shots),
+                    away_shots=int(r.away_shots),
+                    home_corners=int(r.home_corners),
+                    away_corners=int(r.away_corners),
+                )
+            )
+        return records
+
+
+def test_settle_never_fabricates_a_corners_outcome_for_a_match_without_real_corners_data():
+    """Bug real reportado por el usuario (casi todos los partidos salian
+    con 85%+ en "menos de 9.5 corners", sin sentido): el partido en si
+    puede tener resultado real (goles) pero carecer de corners reales
+    (fuente que no los trae para el) -- liquidar su prediccion de corners
+    como "se cumplio menos de 9.5" seria inventar un resultado que nunca
+    se supo. Debe quedar SIN liquidar (pendiente), mientras que la
+    prediccion de goles del MISMO partido si se liquida con normalidad."""
+    competition_code = "settle_missing_corners_test_league"
+    COMPETITIONS.setdefault(competition_code, ("Settle Missing Corners Test League", "Testland"))
+    synthetic = generate_synthetic_matches(n_teams=8, n_seasons=3, seed=321)
+    provider = _FakeProviderForMissingCornersTest(synthetic)
+
+    with session_scope() as db:
+        for season in synthetic["season_label"].unique():
+            ingest_matches(db, provider, competition_code, season)
+
+    with session_scope() as db:
+        result = train_competition_models(db, competition_code)
+        assert result["status"] == "trained"
+
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=competition_code).one()
+        season = (
+            db.query(Season).filter_by(competition_id=comp.id).order_by(Season.id.desc()).first()
+        )
+        # IDs de equipo REALES de esta competicion (nunca hardcoded 1/2:
+        # los equipos son globales en la BD, y para cuando corre este test
+        # ya existen muchos de OTROS tests -- se reusa el par de un
+        # partido YA ingerido de esta misma competicion).
+        existing_match = db.query(Match).filter_by(competition_id=comp.id).first()
+        home_team_id, away_team_id = existing_match.home_team_id, existing_match.away_team_id
+        # Partido FUTURO (todavia sin jugar): nunca tiene MatchStatistics
+        # todavia, igual que cualquier partido programado de verdad.
+        match = Match(
+            provider="settle_missing_corners_test_manual",
+            provider_id="settle-missing-corners-future-1",
+            competition_id=comp.id,
+            season_id=season.id,
+            kickoff_utc=dt.datetime.utcnow() + dt.timedelta(days=1),
+            home_team_id=home_team_id,
+            away_team_id=away_team_id,
+            status="scheduled",
+        )
+        db.add(match)
+        db.flush()
+        match_id = match.id
+
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
+    with session_scope() as db:
+        predictions = generate_predictions_for_competition(db, competition_code, fixture_date)
+        corners_prediction_ids = [p.id for p in predictions if p.market.startswith("corners_")]
+        non_corners_prediction_ids = [p.id for p in predictions if not p.market.startswith("corners_")]
+        assert corners_prediction_ids  # el modelo de corners SI entreno (datos reales en el fake provider)
+        assert non_corners_prediction_ids
+
+    # El partido se juega de verdad -- CON goles reales, pero SIN corners
+    # (ninguna MatchStatistics se crea: misma situacion que una fuente que
+    # trae el resultado pero no las estadisticas del partido).
+    with session_scope() as db:
+        db.query(Match).filter_by(id=match_id).update(
+            {"home_goals": 2, "away_goals": 1, "status": "finished"}, synchronize_session=False
+        )
+
+    with session_scope() as db:
+        created = settle_finished_predictions(db, competition_code=competition_code)
+        # Los 4 mercados de corners quedan SIN liquidar (pendientes); el
+        # resto (goles/1X2/BTTS) se liquida con normalidad.
+        assert created == len(non_corners_prediction_ids)
+
+    with session_scope() as db:
+        corners_results = (
+            db.query(PredictionResult)
+            .filter(PredictionResult.prediction_id.in_(corners_prediction_ids))
+            .all()
+        )
+        assert corners_results == []  # nunca un resultado inventado
+
+        non_corners_results = (
+            db.query(PredictionResult)
+            .filter(PredictionResult.prediction_id.in_(non_corners_prediction_ids))
+            .all()
+        )
+        assert len(non_corners_results) == len(non_corners_prediction_ids)
 
 
 def _seed_settled_predictions(

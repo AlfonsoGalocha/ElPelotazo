@@ -63,19 +63,51 @@ STAT_FAMILY_TOTAL_COLUMNS = {
 def compute_total_column(table: pd.DataFrame, stat_family: str) -> pd.Series:
     """Total real de corners de un partido, a partir de las columnas
     crudas (solo para ETIQUETAR el entrenamiento; nunca se usa como
-    feature)."""
+    feature). NO se rellenan nulos con 0: un partido sin corners
+    registrados (fuente que no trae esa estadistica para ese partido en
+    concreto) debe dar NaN, no "0 corners reales" -- ver bug real
+    reportado por el usuario en `has_real_count_data`."""
     if stat_family == "corners":
         cols = STAT_FAMILY_TOTAL_COLUMNS["corners"]
-        return table[cols[0]].fillna(0) + table[cols[1]].fillna(0)
+        return table[cols[0]] + table[cols[1]]
     raise ValueError(f"Familia de estadistica desconocida: {stat_family}")
 
 
+MIN_MATCHES_FOR_SECONDARY_MARKET = 20  # minimo de partidos con dato REAL para entrenar con sentido
+
+
+class InsufficientSecondaryMarketDataError(ValueError):
+    """La fuente de datos no trae esta estadistica para suficientes
+    partidos todavia (una competicion nueva, o sin fuente con corners
+    para ella) -- nunca se entrena con una muestra vacia o demasiado
+    pequenha para significar algo; ver `has_real_count_data`."""
+
+
+def has_real_count_data(table: pd.DataFrame, stat_family: str) -> pd.Series:
+    """Bug real reportado por el usuario (casi todos los partidos salian
+    con 85%+ en "menos de 9.5 corners", sin sentido): `compute_total_column`
+    hacia antes `.fillna(0)` sobre home_corners/away_corners -- un partido
+    de una fuente que NUNCA trajo corners (openfootball, por ejemplo, solo
+    trae resultado/calendario) se contaba como "0 corners reales" en el
+    entrenamiento del Poisson, sesgando la media global hacia abajo para
+    TODOS los partidos (no solo los que faltaban), y lo mismo liquidaba
+    predicciones como "se cumplio menos de 9.5" para partidos cuyo
+    resultado real de corners nunca se supo. Se usa este filtro ANTES de
+    entrenar, evaluar o liquidar: un partido sin datos reales de corners
+    se excluye del todo, nunca se trata como si tuviera 0."""
+    cols = STAT_FAMILY_TOTAL_COLUMNS[stat_family]
+    return table[cols[0]].notna() & table[cols[1]].notna()
+
+
 def label_for_secondary_market(table: pd.DataFrame, market_key: str) -> pd.Series:
+    """Devuelve NaN (no False) en las filas sin datos reales -- ver
+    `has_real_count_data`. El llamante debe filtrar esas filas antes de
+    usar el resultado como una etiqueta booleana limpia (nunca liquidar o
+    evaluar con una etiqueta inventada)."""
     spec = SECONDARY_MARKET_DEFINITIONS[market_key]
     total = compute_total_column(table, spec.stat_family)
-    if spec.kind == "over":
-        return total > spec.line
-    return total < spec.line
+    label = total > spec.line if spec.kind == "over" else total < spec.line
+    return label.where(total.notna())
 
 
 class TotalCountPoissonModel:
@@ -91,6 +123,16 @@ class TotalCountPoissonModel:
 
     def fit(self, table: pd.DataFrame) -> TotalCountPoissonModel:
         finished = table.dropna(subset=["home_goals", "away_goals"])
+        # Ver docstring de `has_real_count_data`: un partido sin esta
+        # estadistica registrada se excluye del entrenamiento, nunca se
+        # trata como si tuviera 0.
+        finished = finished[has_real_count_data(finished, self.stat_family)]
+        if len(finished) < MIN_MATCHES_FOR_SECONDARY_MARKET:
+            raise InsufficientSecondaryMarketDataError(
+                f"Solo {len(finished)} partidos con dato real de '{self.stat_family}' "
+                f"(minimo {MIN_MATCHES_FOR_SECONDARY_MARKET}): no se entrena este mercado "
+                "para no ajustar un Poisson sobre una muestra sin sentido estadistico."
+            )
         self.feature_cols_ = feature_columns(finished)
         target = compute_total_column(finished, self.stat_family)
 
