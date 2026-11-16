@@ -62,11 +62,13 @@ MARKET_TO_ODDS_LOOKUP = {
     "away_team_over_1_5": ("away_team_total_goals", 1.5, "over"),
 }
 
-# Tarjetas/corners: The Odds API no las ofrece (ver docs/data_sources.md),
-# pero API-Football si puede traerlas (ver ingestion/api_football/odds_provider.py)
-# guardadas bajo "cards_total"/"corners_total" en MatchOdds. Se combina con
-# el lookup de goles para que el mismo bucle de mas abajo construya el
-# consenso de mercado de TODOS los mercados sin duplicar logica.
+# Corners: The Odds API no las ofrece (ver docs/data_sources.md), pero
+# API-Football si puede traerlas (ver ingestion/api_football/odds_provider.py)
+# guardadas bajo "corners_total" en MatchOdds. Se combina con el lookup de
+# goles para que el mismo bucle de mas abajo construya el consenso de
+# mercado de TODOS los mercados sin duplicar logica. (Tarjetas se quito
+# del todo -- pedido real del usuario, ver secondary_markets.py: ninguna
+# casa agregada por API-Football ofrece ese mercado para estas ligas.)
 SECONDARY_MARKET_TO_ODDS_LOOKUP = {
     key: (f"{spec.stat_family}_total", spec.line, spec.kind) for key, spec in SECONDARY_MARKET_DEFINITIONS.items()
 }
@@ -192,9 +194,9 @@ def generate_predictions_for_competition(
         market_quotes=market_quotes,
         calibrators=artifact.get("calibrators"),
     )
-    if "cards_model" in artifact and "corners_model" in artifact:
+    if "corners_model" in artifact:
         outputs += predict_secondary_markets_for_table(
-            target_matches, artifact["cards_model"], artifact["corners_model"], market_quotes=market_quotes
+            target_matches, artifact["corners_model"], market_quotes=market_quotes
         )
 
     # Sin esto, cada `predict`/`predict-upcoming`/`refresh` que se ejecuta

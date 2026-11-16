@@ -3,7 +3,7 @@ import Link from "next/link";
 import { getMatch, getMatchForm, getMatchPredictions } from "@/lib/api";
 import { formatMatchDateTime } from "@/lib/dates";
 import type { Prediction } from "@/types";
-import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES, MATCH_RESULT_MARKETS } from "@/types";
+import { CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES, MATCH_RESULT_MARKETS } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
 import MatchTopPicks from "@/components/MatchTopPicks";
 import MatchFormSection from "@/components/MatchFormSection";
@@ -14,7 +14,6 @@ import JarvisChat from "@/components/JarvisChat";
 const SECTIONS: { label: string; markets: string[] }[] = [
   { label: "🏆 Resultado (1X2)", markets: MATCH_RESULT_MARKETS },
   { label: "⚽ Goles", markets: GOALS_MARKETS },
-  { label: "🟨 Tarjetas", markets: CARDS_MARKETS },
   { label: "🚩 Córners", markets: CORNERS_MARKETS },
 ];
 

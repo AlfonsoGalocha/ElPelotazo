@@ -12,10 +12,10 @@ FastAPI, documentacion interactiva automatica en `/docs` (Swagger) y
 | GET | `/teams` | Lista equipos normalizados |
 | GET | `/matches` | Lista partidos (filtros: `competition_code`, `date_from`, `date_to`, `search`, `status`) |
 | GET | `/matches/{id}` | Detalle de un partido |
-| GET | `/matches/{id}/predictions` | Las 13 predicciones (5 goles + 4 tarjetas + 4 corners) de un partido |
+| GET | `/matches/{id}/predictions` | Las 9 predicciones (5 goles + 4 corners) de un partido |
 | GET | `/predictions/today` | Predicciones de partidos programados en los proximos `days` dias (por defecto 7) |
 | GET | `/predictions/top-signals` | Ranking por edge de mercado (ver formula abajo) — solo mercados con cuota disponible |
-| GET | `/predictions/best` | Mejores predicciones SIN depender de cuota de mercado (mezcla goles/tarjetas/corners, ver formula abajo) |
+| GET | `/predictions/best` | Mejores predicciones SIN depender de cuota de mercado (mezcla goles/corners, ver formula abajo) |
 | GET | `/predictions/{id}` | Una prediccion concreta |
 | GET | `/backtests` | Historico de backtests ejecutados |
 | POST | `/backtests/run` | Ejecuta un backtest walk-forward `{"competition_code", "market"}` |
@@ -35,8 +35,11 @@ por debajo de un edge del 8% con confidence 0.85. La formula esta en
 `backend/app/api/routes/predictions.py::top_signals`, no oculta en ningun
 sitio.
 
-Solo considera mercados con `market_probability` disponible (goles con
-cuotas de Bet365), asi que tarjetas/corners nunca aparecen aqui.
+Solo considera mercados con `market_probability` disponible. Goles la
+tiene siempre que haya cuotas de Bet365/API-Football; corners la tiene
+SOLO para partidos futuros con cuota real de API-Football activada (ver
+docs/data_sources.md) — en el dataset historico sin esa fuente, corners
+queda siempre fuera de este ranking.
 
 ## Formula de `/predictions/best`
 
@@ -46,8 +49,9 @@ score = conviction * confidence * data_quality
 ```
 
 Pensado para un widget tipo "Top 5" agnostico de si existe cuota de
-mercado, ya que tarjetas y corners no la tienen en las fuentes usadas.
-Acepta `market_family` (`goals` | `cards` | `corners`) para filtrar.
+mercado, ya que corners no la tiene en el dataset historico (solo para
+partidos futuros con API-Football activado — ver nota de arriba).
+Acepta `market_family` (`goals` | `corners`) para filtrar.
 
 ## Forma de una `Prediction` (respuesta)
 

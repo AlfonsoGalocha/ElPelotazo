@@ -269,13 +269,17 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
             "reason": f"menos de {MIN_CALIBRATION_MATCHES} partidos en el holdout",
         }
 
-    # Tarjetas y corners (seccion 18/19 del roadmap): un unico Poisson sobre
-    # el TOTAL del partido por familia de estadistica. Se entrenan y evaluan
-    # igual que los mercados de goles, y se empaquetan en el MISMO artefacto
-    # (una unica ejecucion de entrenamiento por competicion cubre las 3
-    # familias) para no multiplicar side idle ModelVersions casi identicos.
+    # Corners (seccion 18/19 del roadmap): un unico Poisson sobre el TOTAL
+    # del partido. Se entrena y evalua igual que los mercados de goles, y
+    # se empaqueta en el MISMO artefacto (una unica ejecucion de
+    # entrenamiento por competicion) para no multiplicar ModelVersions
+    # casi identicas. Tarjetas se quito del todo (pedido real del
+    # usuario): ninguna casa agregada por API-Football ofrece ese mercado
+    # para estas ligas, asi que entrenar/predecir tarjetas solo producia
+    # predicciones "sin mercado" permanentes, sin cuota real con la que
+    # compararse -- ver docstring de secondary_markets.py.
     secondary_models: dict[str, TotalCountPoissonModel] = {}
-    for stat_family in ("cards", "corners"):
+    for stat_family in ("corners",):
         model = TotalCountPoissonModel(stat_family).fit(train_table)
         secondary_models[stat_family] = model
 
@@ -301,7 +305,6 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
             "ml_classifier": selected_ml,
             "ensemble_weights": ensemble_weights,
             "calibrators": calibrators,
-            "cards_model": secondary_models["cards"],
             "corners_model": secondary_models["corners"],
         },
         artifact_path,

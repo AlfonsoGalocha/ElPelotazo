@@ -7,7 +7,6 @@ import MarketQualityBadge from "./MarketQualityBadge";
 
 const FAMILY_LABELS: Record<string, string> = {
   goals: "⚽ Goles",
-  cards: "🟨 Tarjetas",
   corners: "🚩 Córners",
 };
 

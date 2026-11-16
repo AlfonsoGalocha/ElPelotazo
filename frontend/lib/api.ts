@@ -144,9 +144,10 @@ export function getBestPredictions(limit = 5, marketFamily?: string): Promise<Pr
   return apiFetch<Prediction[]>(`/predictions/best?${qs.toString()}`);
 }
 
-// Predicciones del modelo SIN mercado (tarjetas/corners siempre; goles sin
-// cuota todavia). Existen y son validas, pero nunca compiten en el
-// ranking de "mejores señales" — se muestran aparte, etiquetadas.
+// Predicciones del modelo SIN mercado (corners siempre en el dataset
+// historico; goles sin cuota todavia). Existen y son validas, pero nunca
+// compiten en el ranking de "mejores señales" — se muestran aparte,
+// etiquetadas.
 export function getModelOnlyPredictions(limit = 20): Promise<Prediction[]> {
   return apiFetch<Prediction[]>(`/predictions/model-only?limit=${limit}`);
 }

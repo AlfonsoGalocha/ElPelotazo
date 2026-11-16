@@ -215,20 +215,23 @@ def predict_markets_for_table(
 
 def predict_secondary_markets_for_table(
     table: pd.DataFrame,
-    cards_model: TotalCountPoissonModel,
     corners_model: TotalCountPoissonModel,
     market_quotes: dict[tuple[int, str], dict] | None = None,
 ) -> list[MarketPredictionOutput]:
-    """Mercados de tarjetas/corners (seccion 18/19). `market_quotes`: igual
-    forma que en `predict_markets_for_table` — opcional, porque las fuentes
+    """Mercado de corners (seccion 18/19). `market_quotes`: igual forma
+    que en `predict_markets_for_table` — opcional, porque las fuentes
     principales de datos no traen estas cuotas (The Odds API no las
     ofrece, ver docs/data_sources.md); si se proveen (p.ej. via
     API-Football), se usan igual que en goles. Sin ellas,
     `market_probability`/`edge` quedan `None` explicitamente en vez de
     inventar un valor.
+
+    Tarjetas se quito del todo (pedido real del usuario): ninguna casa
+    agregada por API-Football ofrece ese mercado para estas ligas -- ver
+    docstring de secondary_markets.py.
     """
     outputs: list[MarketPredictionOutput] = []
-    for model in (cards_model, corners_model):
+    for model in (corners_model,):
         probs_by_market = model.predict_market_probabilities(table)
         for market_key, probs in probs_by_market.items():
             spec = SECONDARY_MARKET_DEFINITIONS[market_key]

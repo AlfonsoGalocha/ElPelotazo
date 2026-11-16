@@ -100,7 +100,7 @@ def seeded_competition_code():
     fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
     with session_scope() as db:
         predictions = generate_predictions_for_competition(db, competition_code, fixture_date)
-        assert len(predictions) == TOTAL_MVP_MARKETS  # goles + tarjetas + corners
+        assert len(predictions) == TOTAL_MVP_MARKETS  # goles + corners
 
     return competition_code
 
@@ -932,11 +932,15 @@ class _FakeApiFootballProvider:
         return self._snapshots
 
 
-def test_attach_secondary_odds_gives_cards_and_corners_a_real_market(seeded_competition_code):
-    """Tarjetas/corners no tienen mercado en The Odds API (ver
-    docs/data_sources.md), pero SI pueden tenerlo via API-Football. Tras
-    casar cuotas reales para 'cards_total'/'corners_total', las
-    predicciones de esos mercados deben dejar de ser "sin mercado"."""
+def test_attach_secondary_odds_gives_corners_a_real_market(seeded_competition_code):
+    """Corners no tiene mercado en The Odds API (ver docs/data_sources.md),
+    pero SI puede tenerlo via API-Football. Tras casar cuotas reales para
+    'corners_total', las predicciones de ese mercado deben dejar de ser
+    "sin mercado". Tarjetas se quito del todo (pedido real del usuario,
+    ver secondary_markets.py): aunque llegara una cuota de 'cards_total'
+    (p.ej. de una fuente vieja), no existe ningun mercado 'cards_over_*'
+    al que asociarla -- se guarda en MatchOdds pero nunca genera una
+    Prediction."""
     fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
     with session_scope() as db:
         comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
@@ -965,10 +969,7 @@ def test_attach_secondary_odds_gives_cards_and_corners_a_real_market(seeded_comp
     with session_scope() as db:
         predictions = generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
         by_market = {p.market: p for p in predictions}
-        cards_over = by_market["cards_over_3_5"]
-        assert cards_over.market_odds is not None
-        assert cards_over.market_probability is not None
-        assert cards_over.edge is not None
+        assert not any(m.startswith("cards_") for m in by_market)
 
         corners_over = by_market["corners_over_8_5"]
         assert corners_over.market_odds is not None
@@ -976,9 +977,10 @@ def test_attach_secondary_odds_gives_cards_and_corners_a_real_market(seeded_comp
 
 
 def test_model_only_endpoint_returns_predictions_without_market(seeded_competition_code):
-    """Las predicciones de tarjetas/corners (sin mercado en las fuentes de
-    datos usadas) deben poder consultarse por separado, etiquetadas como
-    sin mercado, en vez de simplemente desaparecer."""
+    """Las predicciones de corners (sin mercado en las fuentes de datos
+    usadas para el resto de partidos) deben poder consultarse por
+    separado, etiquetadas como sin mercado, en vez de simplemente
+    desaparecer. Tarjetas se quito del todo, nunca aparece aqui."""
     client = TestClient(app)
     response = client.get("/predictions/model-only", params={"limit": 100})
     assert response.status_code == 200
@@ -988,7 +990,8 @@ def test_model_only_endpoint_returns_predictions_without_market(seeded_competiti
         assert prediction["has_market"] is False
         assert prediction["market_odds"] is None
     markets = {p["market"] for p in body}
-    assert any(m.startswith("cards_") or m.startswith("corners_") for m in markets)
+    assert any(m.startswith("corners_") for m in markets)
+    assert not any(m.startswith("cards_") for m in markets)
 
 
 def test_best_predictions_debug_explains_exclusions(seeded_competition_code):
