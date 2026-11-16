@@ -14,9 +14,24 @@ import datetime as dt
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, Season, Team
 from backend.app.db.models.matches import Match, MatchOdds
-from backend.app.ingestion.base import FixtureOddsSnapshot, RawOddsRecord
+from backend.app.ingestion.base import (
+    DataProvider,
+    FixtureOddsSnapshot,
+    RawMatchRecord,
+    RawOddsRecord,
+)
+from backend.app.normalization.bookmakers import is_excluded_bookmaker
 from backend.app.normalization.competitions import COMPETITIONS
-from backend.app.services.data_service import attach_odds_to_scheduled_matches
+from backend.app.services.data_service import attach_odds_to_scheduled_matches, ingest_matches
+
+
+def test_is_excluded_bookmaker_matches_betano_regardless_of_case_or_spacing():
+    assert is_excluded_bookmaker("Betano") is True
+    assert is_excluded_bookmaker("betano") is True
+    assert is_excluded_bookmaker("BETANO") is True
+    assert is_excluded_bookmaker(" Betano ") is True
+    assert is_excluded_bookmaker("Bet365") is False
+    assert is_excluded_bookmaker("1xBet") is False
 
 
 class _FakeOddsProvider:
@@ -88,6 +103,34 @@ def test_confirmed_same_bookmaker_from_different_sources_is_not_counted_twice():
         assert bookmakers == ["1xBet", "William Hill"]  # nunca 4 filas para 2 casas reales
 
 
+def test_betano_is_excluded_entirely_never_stored():
+    """Pedido real del usuario ("quiero fuera" a Betano, la unica casa que
+    metia cuotas sin sentido): sus cuotas se descartan ANTES de guardar,
+    para NINGUN mercado -- ni siquiera cuenta como "casa vista" (no debe
+    inflar bookmakers_used/bookmakers_count aunque sea la unica fuente de
+    una linea concreta)."""
+    match_id, kickoff = _make_scheduled_match("bookmaker_norm_test_3", "NormHome3", "NormAway3")
+
+    snapshot = FixtureOddsSnapshot(
+        home_team_raw="NormHome3",
+        away_team_raw="NormAway3",
+        commence_time=kickoff.replace(tzinfo=dt.timezone.utc),
+        odds=[
+            RawOddsRecord("Betano", "over_under_goals", 1.5, "over", 1.07),
+            RawOddsRecord("Betano", "corners_total", 8.5, "over", 12.00),  # cuota "loca" real reportada
+            RawOddsRecord("Bet365", "over_under_goals", 1.5, "over", 1.10),
+        ],
+    )
+
+    with session_scope() as db:
+        attach_odds_to_scheduled_matches(db, _FakeOddsProvider([snapshot]), "bookmaker_norm_test_3")
+
+    with session_scope() as db:
+        rows = db.query(MatchOdds).filter_by(match_id=match_id).all()
+        bookmakers = sorted(r.bookmaker for r in rows)
+        assert bookmakers == ["Bet365"]  # Betano nunca llega a guardarse, en ningun mercado
+
+
 def test_regional_variants_of_the_same_brand_are_never_merged():
     """Guarda de no-regresion: "unibet_fr"/"unibet_nl" son libros
     REGIONALES distintos de Unibet con cuotas propias -- fusionarlos
@@ -111,3 +154,50 @@ def test_regional_variants_of_the_same_brand_are_never_merged():
         rows = db.query(MatchOdds).filter_by(match_id=match_id).all()
         bookmakers = sorted(r.bookmaker for r in rows)
         assert bookmakers == ["unibet_fr", "unibet_nl"]  # cada uno sobrevive por separado
+
+
+class _SingleRecordProvider(DataProvider):
+    def __init__(self, name: str, record: RawMatchRecord):
+        self.name = name
+        self._record = record
+
+    def is_available(self) -> bool:
+        return True
+
+    def fetch_matches(self, competition_code: str, season_label: str) -> list[RawMatchRecord]:
+        return [self._record]
+
+
+def test_betano_is_excluded_from_the_historical_ingestion_path_too():
+    """Mismo pedido ("Betano fuera del todo"), pero para el OTRO camino de
+    ingesta de cuotas: el de `ingest_matches`/`_upsert_match` (dataset
+    historico), que no pasa por `attach_odds_to_scheduled_matches`."""
+    competition_code = "bookmaker_norm_test_historical"
+    COMPETITIONS.setdefault(competition_code, ("Bookmaker Norm Historical Test League", "Testland"))
+
+    record = RawMatchRecord(
+        provider="historical_test_provider",
+        provider_id="bookmaker-norm-historical-test-1",
+        competition_code=competition_code,
+        season_label="2025/26",
+        date="2025-09-20T20:00:00",
+        home_team_raw="NormHistHome",
+        away_team_raw="NormHistAway",
+        home_goals=2,
+        away_goals=1,
+        odds=[
+            RawOddsRecord("Betano", "over_under_goals", 1.5, "over", 1.07),
+            RawOddsRecord("Bet365", "over_under_goals", 1.5, "over", 1.10),
+        ],
+    )
+
+    with session_scope() as db:
+        ingest_matches(
+            db, _SingleRecordProvider("historical_test_provider", record), competition_code, "2025/26"
+        )
+
+    with session_scope() as db:
+        match = db.query(Match).filter_by(provider_id=record.provider_id).one()
+        rows = db.query(MatchOdds).filter_by(match_id=match.id).all()
+        bookmakers = sorted(r.bookmaker for r in rows)
+        assert bookmakers == ["Bet365"]  # Betano nunca llega a guardarse
