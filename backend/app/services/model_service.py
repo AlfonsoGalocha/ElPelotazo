@@ -29,7 +29,9 @@ from backend.app.prediction.market_labels import (
 )
 from backend.app.prediction.probability import market_probabilities
 from backend.app.prediction.secondary_markets import (
+    InsufficientSecondaryMarketDataError,
     TotalCountPoissonModel,
+    has_real_count_data,
     label_for_secondary_market,
 )
 from backend.app.services.match_service import load_matches_dataframe
@@ -280,13 +282,33 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     # compararse -- ver docstring de secondary_markets.py.
     secondary_models: dict[str, TotalCountPoissonModel] = {}
     for stat_family in ("corners",):
-        model = TotalCountPoissonModel(stat_family).fit(train_table)
+        try:
+            model = TotalCountPoissonModel(stat_family).fit(train_table)
+        except InsufficientSecondaryMarketDataError as exc:
+            # Competicion nueva (o sin fuente con corners todavia): se
+            # salta este mercado para ESTA ejecucion en vez de tumbar el
+            # entrenamiento entero de goles/1X2/BTTS por su culpa. Sin
+            # "corners_model" en el artefacto, las predicciones de corners
+            # simplemente no se generan (nunca "sin mercado" con una
+            # probabilidad inventada).
+            logger.warning(
+                "model_service.secondary_market_skipped: family=%s competition=%s reason=%s",
+                stat_family,
+                competition_code,
+                exc,
+            )
+            continue
         secondary_models[stat_family] = model
 
-        if len(eval_finished) > 0:
-            probs = model.predict_market_probabilities(eval_finished)
+        # Ver docstring de `has_real_count_data`: un partido sin esta
+        # estadistica registrada se excluye de la metrica de validacion,
+        # nunca se trata como si tuviera 0 (eso corrompia brier/log_loss
+        # con etiquetas inventadas para partidos sin dato real).
+        eval_rows = eval_finished[has_real_count_data(eval_finished, stat_family)]
+        if len(eval_rows) > 0:
+            probs = model.predict_market_probabilities(eval_rows)
             for market_key, p in probs.items():
-                y_true = label_for_secondary_market(eval_finished, market_key).to_numpy()
+                y_true = label_for_secondary_market(eval_rows, market_key).to_numpy()
                 metrics["markets"][market_key] = {
                     "poisson_total": {
                         "brier_score": brier_score(y_true, p),
@@ -298,17 +320,16 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     artifact_dir = settings.model_artifacts_path / competition_code
     artifact_dir.mkdir(parents=True, exist_ok=True)
     artifact_path = artifact_dir / f"{version.replace(':', '-')}.joblib"
-    joblib.dump(
-        {
-            "baseline": baseline,
-            "dixon_coles": dixon_coles,
-            "ml_classifier": selected_ml,
-            "ensemble_weights": ensemble_weights,
-            "calibrators": calibrators,
-            "corners_model": secondary_models["corners"],
-        },
-        artifact_path,
-    )
+    artifact_payload = {
+        "baseline": baseline,
+        "dixon_coles": dixon_coles,
+        "ml_classifier": selected_ml,
+        "ensemble_weights": ensemble_weights,
+        "calibrators": calibrators,
+    }
+    if "corners" in secondary_models:
+        artifact_payload["corners_model"] = secondary_models["corners"]
+    joblib.dump(artifact_payload, artifact_path)
 
     model_version = ModelVersion(
         name="dixon_coles_plus_logistic_ensemble",

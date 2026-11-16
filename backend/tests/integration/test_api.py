@@ -52,6 +52,8 @@ class _FakeProvider(DataProvider):
                     away_goals=int(r.away_goals),
                     home_shots=int(r.home_shots),
                     away_shots=int(r.away_shots),
+                    home_corners=int(r.home_corners),
+                    away_corners=int(r.away_corners),
                     odds=[
                         RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.9),
                         RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),

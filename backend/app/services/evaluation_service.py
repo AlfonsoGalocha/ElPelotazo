@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections import defaultdict
 
 import numpy as np
+import pandas as pd
 from sqlalchemy.orm import Session
 
 import datetime as dt
@@ -150,7 +151,16 @@ def settle_finished_predictions(db: Session, competition_code: str | None = None
                 continue  # mercado desconocido: nunca se inventa un resultado
             y_true_by_match = dict(zip(rows.index, y_true_series))
             for prediction in preds:
-                outcome = bool(y_true_by_match[prediction.match_id])
+                label = y_true_by_match[prediction.match_id]
+                if pd.isna(label):
+                    # Bug real reportado por el usuario (ver
+                    # secondary_markets.py::has_real_count_data): este
+                    # partido no tiene corners reales registrados (fuente
+                    # sin esa estadistica para el) -- NUNCA se liquida
+                    # como si "se hubiera cumplido menos de X", se deja
+                    # pendiente hasta que (si algun dia) haya dato real.
+                    continue
+                outcome = bool(label)
                 match_row = table_by_match_id.loc[prediction.match_id]
                 home_goals = match_row["home_goals"]
                 away_goals = match_row["away_goals"]
@@ -214,7 +224,14 @@ def evaluate_settled_predictions(db: Session, competition_code: str | None = Non
             y_true_series = _label_for_any_market(rows, market)
             if y_true_series is None:
                 continue  # mercado desconocido (no deberia pasar, pero nunca se inventa una etiqueta)
-            y_true = y_true_series.to_numpy().astype(bool)
+            # Ver secondary_markets.py::has_real_count_data: un partido sin
+            # corners reales da NaN aqui, no False -- se excluye del
+            # informe en vez de contarlo como "no se cumplio".
+            valid_mask = y_true_series.notna().to_numpy()
+            if not valid_mask.any():
+                continue
+            preds = [p for p, valid in zip(preds, valid_mask, strict=True) if valid]
+            y_true = y_true_series.to_numpy()[valid_mask].astype(bool)
             y_prob = np.array([p.model_probability for p in preds])
 
             quality = model_quality_metrics(y_true, y_prob)
