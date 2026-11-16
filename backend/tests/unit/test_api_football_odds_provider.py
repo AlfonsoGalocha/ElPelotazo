@@ -232,6 +232,91 @@ def test_btts_is_not_overwritten_by_half_time_or_both_halves_markets():
     assert by_selection == {"yes": 1.44, "no": 2.62}
 
 
+def test_corners_total_is_not_corrupted_by_per_team_or_unrelated_corner_markets():
+    """Bug real reportado por el usuario (screenshot: "Mas de 8.5 corners"
+    a cuota 6.74 con solo 2 casas, mientras "Mas de 9.5 corners" sale a
+    1.90 con 3 casas -- imposible, cuanto mas baja la linea mas cara
+    tendria que ser la cuota de "mas de"). Confirmado contra la respuesta
+    real de API-Football (`debug_match_odds.py`): el mercado del
+    PARTIDO COMPLETO se llama literalmente "Corners Over Under" (1xBet y
+    Betano de acuerdo, ~1.48-1.52 a "Over 8.5", un consenso sano), pero
+    "corner" como subcadena tambien atrapaba "Home/Away Corners
+    Over/Under" (corners de UN SOLO equipo, con precios mucho mas altos
+    para la misma linea nominal -- la causa confirmada del disparate),
+    "Multicorners" (linea 20.5, mercado distinto) y "Corners. total
+    between 0 and 10m" (solo primeros 10 minutos). Solo debe sobrevivir
+    el valor real del partido completo."""
+    response = [
+        {
+            "bookmakers": [
+                {
+                    "name": "1xBet",
+                    "bets": [
+                        {
+                            "name": "Corners Over Under",
+                            "values": [
+                                {"value": "Over 8.5", "odd": "1.48"},
+                                {"value": "Under 8.5", "odd": "2.55"},
+                            ],
+                        },
+                        {
+                            "name": "Home Corners Over/Under",
+                            "values": [{"value": "Over 8.5", "odd": "5.50"}],
+                        },
+                        {
+                            "name": "Away Corners Over/Under",
+                            "values": [{"value": "Over 8.5", "odd": "7.80"}],
+                        },
+                        {
+                            "name": "Multicorners",
+                            "values": [{"value": "Over 20.5", "odd": "3.10"}],
+                        },
+                        {
+                            "name": "Corners. total between 0 and 10m",
+                            "values": [{"value": "Over 0.5", "odd": "1.65"}],
+                        },
+                    ],
+                },
+                {
+                    "name": "Betano",
+                    "bets": [
+                        {
+                            "name": "Corners Over Under",
+                            "values": [{"value": "Over 8.5", "odd": "1.52"}],
+                        }
+                    ],
+                },
+            ]
+        }
+    ]
+    records, _ = ApiFootballOddsProvider._parse_odds_response(response)
+    corners_records = [r for r in records if r.market == "corners_total"]
+    by_bookmaker_and_line = {(r.bookmaker, r.line, r.selection): r.price for r in corners_records}
+    assert by_bookmaker_and_line == {
+        ("1xBet", 8.5, "over"): 1.48,
+        ("1xBet", 8.5, "under"): 2.55,
+        ("Betano", 8.5, "over"): 1.52,
+    }
+
+
+def test_corners_total_range_market_edge_values_are_excluded():
+    """Confirmado contra la respuesta real: "Corners. Total (Range)" es
+    una apuesta por RANGOS ("Under 6", "6 - 8", "9 - 11", "12 - 14", "Over
+    14"), no una linea over/under normal -- pero sus dos valores extremo
+    ("Under 6"/"Over 14") SI encajan con la regex generica de over/under y
+    se colaban como si fueran lineas 6/14 reales del mercado principal."""
+    response = _odds_response(
+        "Corners. Total (Range)",
+        [
+            {"value": "Under 6", "odd": "4.50"},
+            {"value": "6 - 8", "odd": "3.20"},
+            {"value": "Over 14", "odd": "12.00"},
+        ],
+    )
+    records, _ = ApiFootballOddsProvider._parse_odds_response(response)
+    assert records == []
+
+
 def test_league_ids_cover_all_five_mvp_leagues():
     from backend.app.ingestion.api_football.odds_provider import LEAGUE_IDS
 
