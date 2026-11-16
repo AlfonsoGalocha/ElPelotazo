@@ -1,0 +1,9 @@
+# Sin esto, "docker compose build frontend" enviaba node_modules (cientos
+# de MB) y .next (build anterior) como parte del contexto, Y "COPY . ."
+# del Dockerfile podia sobreescribir el node_modules recien instalado en
+# la etapa "deps" con el del HOST si lo tenias instalado ahi tambien
+# (bug real posible: un node_modules local desincronizado "ganando" sobre
+# el instalado limpio dentro del contenedor).
+node_modules
+.next
+.git

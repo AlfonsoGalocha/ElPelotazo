@@ -22,10 +22,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code
 
+# Instala las DEPENDENCIAS en su PROPIA capa, cacheada SOLO por
+# pyproject.toml. Antes, "COPY backend ./backend" iba ANTES que "pip
+# install -e .": Docker invalida la cache de una capa (y de todas las
+# siguientes) en cuanto cambia un solo archivo copiado en ella, asi que
+# CUALQUIER cambio de una linea de codigo forzaba reinstalar TODAS las
+# dependencias desde cero -- con PIP_NO_CACHE_DIR=1 (arriba, sin cache de
+# pip) eso significaba re-descargar y recompilar sklearn/lightgbm/mlflow/
+# shap/faster-whisper/etc. por un cambio minimo. Bug real reportado por el
+# usuario ("tarda muchisimo para tan poco cambio"). Un stub vacio de
+# "backend/" basta para que "pip install -e ." (editable) resuelva el
+# paquete sin tener aun el codigo real -- el COPY de abajo lo sustituye
+# por el de verdad, y esa capa es rapida (sin red, sin compilar nada).
 COPY pyproject.toml ./
-COPY backend ./backend
-RUN pip install --no-cache-dir -e .
+RUN mkdir -p backend && touch backend/__init__.py && pip install --no-cache-dir -e .
 
+COPY backend ./backend
 COPY scripts ./scripts
 
 EXPOSE 8000
