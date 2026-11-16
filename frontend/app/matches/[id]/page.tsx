@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getMatch, getMatchForm, getMatchPredictions } from "@/lib/api";
+import { formatMatchDateTime } from "@/lib/dates";
 import type { Prediction } from "@/types";
 import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES, MATCH_RESULT_MARKETS } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
@@ -119,7 +120,7 @@ export default async function MatchDetailPage({ params }: { params: { id: string
           {match.away_team.canonical_name}
         </h1>
         <div className="text-sm text-slate-500">
-          {new Date(match.kickoff_utc).toLocaleString("es-ES")} · {match.status}
+          {formatMatchDateTime(match.kickoff_utc)} · {match.status}
           {match.status === "finished" && ` · ${match.home_goals} - ${match.away_goals}`}
         </div>
       </div>

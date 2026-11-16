@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getPredictionDetail } from "@/lib/api";
+import { formatMatchDateTime } from "@/lib/dates";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
 import MarketQualityBadge from "@/components/MarketQualityBadge";
@@ -25,7 +26,7 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
           {signal.match.away_team.canonical_name}
         </h1>
         <div className="text-sm text-slate-500">
-          {new Date(signal.match.kickoff_utc).toLocaleString("es-ES")} ·{" "}
+          {formatMatchDateTime(signal.match.kickoff_utc)} ·{" "}
           {MARKET_DISPLAY_NAMES[signal.market] ?? signal.market}
         </div>
       </div>

@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import type { HistoryPrediction, MatchHistory } from "@/types";
 import { MARKET_DISPLAY_NAMES } from "@/types";
+import { formatMatchDateOnly } from "@/lib/dates";
 
 function ResultBadge({ prediction }: { prediction: HistoryPrediction | undefined }) {
   if (!prediction || prediction.is_correct === null) {
@@ -131,7 +132,7 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
                           {row.match.home_team.canonical_name} vs {row.match.away_team.canonical_name}
                         </Link>
                         <div className="text-[11px] text-slate-500">
-                          {new Date(row.match.kickoff_utc).toLocaleDateString("es-ES", {
+                          {formatMatchDateOnly(row.match.kickoff_utc, {
                             day: "2-digit",
                             month: "short",
                             year: "numeric",

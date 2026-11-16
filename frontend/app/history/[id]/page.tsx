@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { getHistoryDetail } from "@/lib/api";
+import { formatMatchDateTime } from "@/lib/dates";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import type { HistoryPrediction } from "@/types";
 import AnomalyBadges from "@/components/AnomalyBadge";
@@ -58,7 +59,7 @@ export default async function HistoryDetailPage({ params }: { params: { id: stri
           {match.away_team.canonical_name}
         </h1>
         <div className="text-sm text-slate-500">
-          {new Date(match.kickoff_utc).toLocaleString("es-ES")} · Resultado final:{" "}
+          {formatMatchDateTime(match.kickoff_utc)} · Resultado final:{" "}
           <span className="font-semibold text-slate-200">
             {match.home_goals} - {match.away_goals}
           </span>

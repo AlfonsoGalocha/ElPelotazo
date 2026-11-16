@@ -1,4 +1,5 @@
 import type { MatchForm } from "@/types";
+import { formatMatchDateOnly } from "@/lib/dates";
 import ResultDots from "./ResultDots";
 
 // Pedido real del usuario: "un apartado tipo h2h de como viene ese
@@ -43,7 +44,7 @@ export default function MatchFormSection({ form }: { form: MatchForm }) {
             {form.head_to_head.map((m) => (
               <div key={m.match_id} className="flex items-center gap-2 text-xs text-slate-400">
                 <span className="w-20 shrink-0">
-                  {new Date(m.kickoff_utc).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" })}
+                  {formatMatchDateOnly(m.kickoff_utc, { day: "2-digit", month: "short", year: "numeric" })}
                 </span>
                 <span>
                   {m.venue === "home" ? form.home_team.team.canonical_name : form.away_team.team.canonical_name}{" "}

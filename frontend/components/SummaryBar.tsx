@@ -1,4 +1,5 @@
 import { getSummary } from "@/lib/api";
+import { formatMatchDateOnly } from "@/lib/dates";
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -18,7 +19,7 @@ export default async function SummaryBar() {
   const summary = await getSummary().catch(() => null);
   if (!summary) return null;
 
-  const today = new Date(summary.date).toLocaleDateString("es-ES", {
+  const today = formatMatchDateOnly(summary.date, {
     weekday: "long",
     day: "2-digit",
     month: "long",

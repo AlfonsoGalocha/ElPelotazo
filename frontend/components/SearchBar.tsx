@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { searchMatches } from "@/lib/api";
+import { formatMatchDateOnly } from "@/lib/dates";
 import type { Match } from "@/types";
 
 export default function SearchBar() {
@@ -61,7 +62,7 @@ export default function SearchBar() {
                 {match.away_team.canonical_name}
               </span>
               <span className="text-xs text-slate-500">
-                {new Date(match.kickoff_utc).toLocaleDateString("es-ES", { day: "2-digit", month: "short" })}
+                {formatMatchDateOnly(match.kickoff_utc, { day: "2-digit", month: "short" })}
               </span>
             </Link>
           ))}

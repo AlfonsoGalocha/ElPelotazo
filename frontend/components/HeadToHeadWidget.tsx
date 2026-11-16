@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { getHeadToHead, getTeams } from "@/lib/api";
+import { formatMatchDateOnly } from "@/lib/dates";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import type { Team, TeamHeadToHead } from "@/types";
 import ResultDots from "./ResultDots";
@@ -163,7 +164,7 @@ export default function HeadToHeadWidget() {
                 {data.head_to_head.map((m) => (
                   <div key={m.match_id} className="flex items-center gap-2 text-xs text-slate-400">
                     <span className="w-24 shrink-0">
-                      {new Date(m.kickoff_utc).toLocaleDateString("es-ES", {
+                      {formatMatchDateOnly(m.kickoff_utc, {
                         day: "2-digit",
                         month: "short",
                         year: "numeric",
@@ -191,7 +192,7 @@ export default function HeadToHeadWidget() {
             {data.scheduled_match && !data.scheduled_match.best_prediction && (
               <span className="text-xs text-slate-500">
                 Tienen un partido programado el{" "}
-                {new Date(data.scheduled_match.kickoff_utc).toLocaleDateString("es-ES", {
+                {formatMatchDateOnly(data.scheduled_match.kickoff_utc, {
                   day: "2-digit",
                   month: "short",
                 })}
@@ -205,7 +206,7 @@ export default function HeadToHeadWidget() {
               >
                 <div className="text-xs text-opportunity">
                   Lo más probable en su próximo partido (
-                  {new Date(data.scheduled_match.kickoff_utc).toLocaleDateString("es-ES", {
+                  {formatMatchDateOnly(data.scheduled_match.kickoff_utc, {
                     day: "2-digit",
                     month: "short",
                   })}
