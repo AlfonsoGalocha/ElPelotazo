@@ -1,8 +1,29 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Annotated
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PlainSerializer
+
+
+def _serialize_as_utc(value: dt.datetime) -> str:
+    """Bug real reportado por el usuario: toda fecha/hora de este backend
+    es naive pero SIEMPRE UTC por convencion (ver comentarios en
+    services/data_service.py) -- Pydantic serializa un datetime naive sin
+    ningun sufijo de zona ("2026-11-20T19:30:00"), y `new Date(...)` en
+    JavaScript interpreta un ISO 8601 SIN zona como hora LOCAL del
+    navegador, no UTC. Para alguien en UTC+1 eso mostraba cada partido
+    1 hora ANTES de su hora real. Nunca se toca la convencion naive-UTC
+    del resto del backend (seria un cambio mucho mas amplio y arriesgado)
+    -- solo se anhade la zona en el LIMITE de salida hacia el frontend."""
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=dt.timezone.utc)
+    return aware.isoformat()
+
+
+# Usar en cualquier campo de schema que represente un instante real en el
+# tiempo (kickoff, inicio/fin de jornada...) -- nunca en algo que sea solo
+# una fecha de calendario sin hora real asociada.
+UtcDatetime = Annotated[dt.datetime, PlainSerializer(_serialize_as_utc, return_type=str)]
 
 
 class TeamOut(BaseModel):
@@ -33,7 +54,7 @@ class MatchOut(BaseModel):
     competition: CompetitionOut
     home_team: TeamOut
     away_team: TeamOut
-    kickoff_utc: dt.datetime
+    kickoff_utc: UtcDatetime
     status: str
     home_goals: int | None
     away_goals: int | None
@@ -48,7 +69,7 @@ class FormMatchOut(BaseModel):
     reciente como para el cara a cara (H2H)."""
 
     match_id: int
-    kickoff_utc: dt.datetime
+    kickoff_utc: UtcDatetime
     opponent: str
     venue: str  # "home" | "away"
     goals_for: int
@@ -97,7 +118,7 @@ class ScheduledH2HMatchOut(BaseModel):
     predicciones para el."""
 
     match_id: int
-    kickoff_utc: dt.datetime
+    kickoff_utc: UtcDatetime
     competition: CompetitionOut
     best_prediction: H2HBestPredictionOut | None = None
 
@@ -114,8 +135,8 @@ class RoundOut(BaseModel):
 
     competition_code: str
     round: int | None
-    round_start: dt.datetime | None
-    round_end: dt.datetime | None
+    round_start: UtcDatetime | None
+    round_end: UtcDatetime | None
     next_round: int | None
     is_fallback: bool
     is_next_round: bool = False
