@@ -2,9 +2,13 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { Search } from "lucide-react";
 import { getCompetitions, getMatchesList } from "@/lib/api";
 import { formatMatchDateTime } from "@/lib/dates";
 import type { Competition, Match } from "@/types";
+import TeamLogo from "@/components/TeamLogo";
+import CompetitionBadge from "@/components/CompetitionBadge";
+import { EmptyState, ErrorState } from "@/components/EmptyState";
 
 type StatusFilter = "all" | "scheduled" | "finished";
 
@@ -78,20 +82,23 @@ export default function MatchesPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="mb-1 text-xl font-semibold text-slate-100">Partidos</h1>
+        <h1 className="mb-1 text-2xl font-bold tracking-tight text-slate-100">Partidos</h1>
         <p className="text-sm text-slate-500">
           Busca cualquier partido de las 5 ligas, próximo o ya jugado.
         </p>
       </div>
 
-      <div className="flex flex-col gap-3 rounded-lg border border-surface-border bg-surface-raised p-3">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar por equipo..."
-          className="w-full rounded border border-surface-border bg-surface px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 focus:border-slate-500 focus:outline-none"
-        />
+      <div className="flex flex-col gap-3 rounded-xl border border-surface-border bg-card p-4">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar por equipo..."
+            className="w-full rounded-lg border border-surface-border bg-surface py-2 pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-500 focus:border-accent/50 focus:outline-none"
+          />
+        </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-slate-500">Liga:</span>
           {/* Filtro de seleccion, nunca de deseleccion (regla fija del
@@ -104,10 +111,10 @@ export default function MatchesPage() {
               key={c.code}
               onClick={() => setCompetitionCode((prev) => (prev === c.code ? null : c.code))}
               className={
-                "rounded-full border px-3 py-1 " +
+                "rounded-full border px-3 py-1 transition-colors " +
                 (competitionCode === c.code
-                  ? "border-slate-400 bg-slate-700 text-slate-100"
-                  : "border-surface-border text-slate-400 hover:bg-surface/60")
+                  ? "border-accent/50 bg-accent/15 text-slate-100"
+                  : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
               }
             >
               {c.name}
@@ -125,10 +132,10 @@ export default function MatchesPage() {
               key={value}
               onClick={() => setStatus(value)}
               className={
-                "rounded-full border px-3 py-1 " +
+                "rounded-full border px-3 py-1 transition-colors " +
                 (status === value
-                  ? "border-slate-400 bg-slate-700 text-slate-100"
-                  : "border-surface-border text-slate-400 hover:bg-surface/60")
+                  ? "border-accent/50 bg-accent/15 text-slate-100"
+                  : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
               }
             >
               {label}
@@ -137,41 +144,49 @@ export default function MatchesPage() {
         </div>
       </div>
 
-      {error && (
-        <div className="rounded border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">{error}</div>
-      )}
+      {error && <ErrorState message={error} />}
 
-      {!error && loading && <div className="text-sm text-slate-500">Buscando...</div>}
-
-      {!error && !loading && matches.length === 0 && (
-        <div className="rounded border border-surface-border bg-surface-raised p-6 text-sm text-slate-400">
-          Sin partidos para estos filtros.
+      {!error && loading && (
+        <div className="flex flex-col gap-1">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-12 animate-pulse rounded-lg border border-surface-border bg-card" />
+          ))}
         </div>
       )}
 
+      {!error && !loading && matches.length === 0 && (
+        <EmptyState title="Sin partidos para estos filtros" description="Prueba a quitar algún filtro o buscar otro equipo." />
+      )}
+
       {!error && !loading && matches.length > 0 && (
-        <div className="flex flex-col gap-1">
+        <div className="flex flex-col gap-1.5">
           {matches.map((match) => (
             <Link
               key={match.id}
               href={`/matches/${match.id}`}
-              className="flex items-center justify-between gap-3 rounded border border-surface-border bg-surface-raised px-3 py-2 text-sm hover:bg-black/20"
+              className="flex items-center justify-between gap-3 rounded-lg border border-surface-border bg-card px-3 py-2.5 text-sm transition-colors hover:border-accent/30 hover:bg-surface-alt/40"
             >
-              <div className="flex items-center gap-3">
+              <div className="flex min-w-0 items-center gap-3">
                 <span className="w-28 shrink-0 text-xs text-slate-500">{formatKickoff(match.kickoff_utc)}</span>
-                <span className="text-slate-200">
-                  {match.home_team.canonical_name}
+                <div className="flex min-w-0 items-center gap-2 text-slate-200">
+                  <TeamLogo name={match.home_team.canonical_name} size="sm" />
+                  <span className="truncate">{match.home_team.canonical_name}</span>
                   {match.status === "finished" ? (
-                    <span className="mx-1.5 font-semibold text-slate-100">
+                    <span className="mx-1 shrink-0 font-semibold text-slate-100">
                       {match.home_goals} - {match.away_goals}
                     </span>
                   ) : (
-                    <span className="mx-1.5 text-slate-500">vs</span>
+                    <span className="mx-1 shrink-0 text-slate-500">vs</span>
                   )}
-                  {match.away_team.canonical_name}
-                </span>
+                  <span className="truncate">{match.away_team.canonical_name}</span>
+                  <TeamLogo name={match.away_team.canonical_name} size="sm" />
+                </div>
               </div>
-              <span className="text-xs text-slate-500">{match.competition.name}</span>
+              <CompetitionBadge
+                name={match.competition.name}
+                country={match.competition.country}
+                className="shrink-0 text-xs text-slate-500"
+              />
             </Link>
           ))}
         </div>

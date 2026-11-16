@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
+import { Bot, Trophy, CircleDot, Flag, ChevronDown } from "lucide-react";
 import { getMatch, getMatchForm, getMatchPredictions } from "@/lib/api";
 import { formatMatchDateTime } from "@/lib/dates";
 import type { Prediction } from "@/types";
@@ -10,11 +11,13 @@ import MatchFormSection from "@/components/MatchFormSection";
 import ModelVsMarketChart from "@/components/ModelVsMarketChart";
 import RisksSection from "@/components/RisksSection";
 import JarvisChat from "@/components/JarvisChat";
+import TeamLogo from "@/components/TeamLogo";
+import CompetitionBadge from "@/components/CompetitionBadge";
 
-const SECTIONS: { label: string; markets: string[] }[] = [
-  { label: "🏆 Resultado (1X2)", markets: MATCH_RESULT_MARKETS },
-  { label: "⚽ Goles", markets: GOALS_MARKETS },
-  { label: "🚩 Córners", markets: CORNERS_MARKETS },
+const SECTIONS: { label: string; icon: typeof Trophy; markets: string[] }[] = [
+  { label: "Resultado (1X2)", icon: Trophy, markets: MATCH_RESULT_MARKETS },
+  { label: "Goles", icon: CircleDot, markets: GOALS_MARKETS },
+  { label: "Córners", icon: Flag, markets: CORNERS_MARKETS },
 ];
 
 function PredictionTable({ predictions }: { predictions: Prediction[] }) {
@@ -109,18 +112,32 @@ export default async function MatchDetailPage({ params }: { params: { id: string
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <div className="text-xs uppercase tracking-wide text-slate-500">
-          {match.competition.name}
-          {match.matchday != null && ` · Jornada ${match.matchday}`}
+      <div className="rounded-xl border border-surface-border bg-card p-5">
+        <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
+          <CompetitionBadge name={match.competition.name} country={match.competition.country} />
+          {match.matchday != null && <span>· Jornada {match.matchday}</span>}
         </div>
-        <h1 className="text-2xl font-semibold text-slate-100">
-          {match.home_team.canonical_name} <span className="text-slate-500">vs</span>{" "}
-          {match.away_team.canonical_name}
-        </h1>
-        <div className="text-sm text-slate-500">
-          {formatMatchDateTime(match.kickoff_utc)} · {match.status}
-          {match.status === "finished" && ` · ${match.home_goals} - ${match.away_goals}`}
+        <div className="flex flex-wrap items-center justify-center gap-4 sm:justify-between">
+          <div className="flex items-center gap-3">
+            <TeamLogo name={match.home_team.canonical_name} size="lg" />
+            <span className="text-lg font-bold text-slate-100">{match.home_team.canonical_name}</span>
+          </div>
+          <div className="flex flex-col items-center gap-1">
+            {match.status === "finished" ? (
+              <span className="text-2xl font-extrabold text-slate-100">
+                {match.home_goals} - {match.away_goals}
+              </span>
+            ) : (
+              <span className="text-sm font-semibold text-slate-500">VS</span>
+            )}
+            <span className="text-xs text-slate-500">
+              {formatMatchDateTime(match.kickoff_utc)} · {match.status === "finished" ? "Finalizado" : "Programado"}
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            <span className="text-lg font-bold text-slate-100">{match.away_team.canonical_name}</span>
+            <TeamLogo name={match.away_team.canonical_name} size="lg" />
+          </div>
         </div>
       </div>
 
@@ -140,8 +157,9 @@ export default async function MatchDetailPage({ params }: { params: { id: string
       {form && <MatchFormSection form={form} />}
 
       <details className="rounded-lg border border-surface-border">
-        <summary className="cursor-pointer px-4 py-3 text-sm text-slate-400 hover:text-slate-200">
-          🤖 Pregúntale a la IA sobre este partido
+        <summary className="flex cursor-pointer items-center gap-2 px-4 py-3 text-sm text-slate-400 hover:text-slate-200">
+          <Bot className="h-4 w-4" />
+          Pregúntale a la IA sobre este partido
         </summary>
         <div className="border-t border-surface-border p-4">
           <JarvisChat
@@ -156,16 +174,19 @@ export default async function MatchDetailPage({ params }: { params: { id: string
 
       {predictions.length > 0 && (
         <details className="rounded-lg border border-surface-border">
-          <summary className="cursor-pointer px-4 py-3 text-sm text-slate-400 hover:text-slate-200">
+          <summary className="flex cursor-pointer items-center gap-2 px-4 py-3 text-sm text-slate-400 hover:text-slate-200">
+            <ChevronDown className="h-4 w-4" />
             Ver todos los mercados y la explicación completa
           </summary>
           <div className="flex flex-col gap-6 border-t border-surface-border p-4">
             {SECTIONS.map((section) => {
               const sectionPredictions = predictions.filter((p) => section.markets.includes(p.market));
               if (sectionPredictions.length === 0) return null;
+              const Icon = section.icon;
               return (
                 <section key={section.label}>
-                  <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
+                  <h2 className="mb-3 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-slate-400">
+                    <Icon className="h-3.5 w-3.5" />
                     {section.label}
                   </h2>
                   <PredictionTable predictions={sectionPredictions} />

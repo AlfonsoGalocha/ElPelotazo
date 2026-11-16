@@ -2,18 +2,25 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { CheckCircle2, XCircle } from "lucide-react";
 import type { HistoryPrediction, MatchHistory } from "@/types";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import { formatMatchDateOnly } from "@/lib/dates";
+import TeamLogo from "./TeamLogo";
+import { EmptyState } from "./EmptyState";
 
 function ResultBadge({ prediction }: { prediction: HistoryPrediction | undefined }) {
   if (!prediction || prediction.is_correct === null) {
     return <span className="text-xs text-slate-500">sin resolver</span>;
   }
   return prediction.is_correct ? (
-    <span className="text-xs font-semibold text-emerald-400">ACERTADA ✓</span>
+    <span className="flex items-center gap-1 text-xs font-semibold text-edge-positive">
+      <CheckCircle2 className="h-3.5 w-3.5" /> ACERTADA
+    </span>
   ) : (
-    <span className="text-xs font-semibold text-red-400">FALLADA ✕</span>
+    <span className="flex items-center gap-1 text-xs font-semibold text-red-400">
+      <XCircle className="h-3.5 w-3.5" /> FALLADA
+    </span>
   );
 }
 
@@ -74,10 +81,10 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
           <button
             onClick={() => setSelected(allCodes)}
             className={
-              "rounded-full border px-3 py-1 " +
+              "rounded-full border px-3 py-1 transition-colors " +
               (allSelected
-                ? "border-slate-400 bg-slate-700 text-slate-100"
-                : "border-surface-border text-slate-400 hover:bg-surface-raised")
+                ? "border-accent/50 bg-accent/15 text-slate-100"
+                : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
             }
           >
             Todas
@@ -87,10 +94,10 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
               key={g.code}
               onClick={() => toggle(g.code)}
               className={
-                "rounded-full border px-3 py-1 " +
+                "rounded-full border px-3 py-1 transition-colors " +
                 (selected.includes(g.code)
-                  ? "border-slate-400 bg-slate-700 text-slate-100"
-                  : "border-surface-border text-slate-500 hover:bg-surface-raised")
+                  ? "border-accent/50 bg-accent/15 text-slate-100"
+                  : "border-surface-border text-slate-500 hover:bg-surface-alt/60")
               }
             >
               {g.name}
@@ -100,9 +107,7 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
       )}
 
       {visibleGroups.length === 0 && (
-        <div className="rounded-lg border border-surface-border bg-surface-raised p-6 text-sm text-slate-500">
-          Elige una o varias ligas arriba para ver su última jornada jugada.
-        </div>
+        <EmptyState title="Elige una o varias ligas arriba para ver su última jornada jugada." />
       )}
 
       {visibleGroups.map((group) => (
@@ -110,9 +115,9 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
             {group.matchday !== null ? `Jornada ${group.matchday}` : "Últimos jugados"} · {group.name}
           </h2>
-          <div className="overflow-hidden rounded-lg border border-surface-border">
+          <div className="overflow-hidden rounded-xl border border-surface-border bg-card">
             <table className="w-full text-sm">
-              <thead className="bg-surface-raised text-left text-[11px] uppercase text-slate-500">
+              <thead className="bg-surface-alt/60 text-left text-[11px] uppercase text-slate-500">
                 <tr>
                   <th className="px-3 py-2">Partido</th>
                   <th className="px-3 py-2">Resultado</th>
@@ -128,8 +133,13 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
                   return (
                     <tr key={row.match.id} className="border-t border-surface-border">
                       <td className="px-3 py-2">
-                        <Link href={`/history/${row.match.id}`} className="text-slate-200 hover:underline">
+                        <Link
+                          href={`/history/${row.match.id}`}
+                          className="flex items-center gap-1.5 text-slate-200 hover:underline"
+                        >
+                          <TeamLogo name={row.match.home_team.canonical_name} size="sm" />
                           {row.match.home_team.canonical_name} vs {row.match.away_team.canonical_name}
+                          <TeamLogo name={row.match.away_team.canonical_name} size="sm" />
                         </Link>
                         <div className="text-[11px] text-slate-500">
                           {formatMatchDateOnly(row.match.kickoff_utc, {

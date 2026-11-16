@@ -1,5 +1,7 @@
+import { History } from "lucide-react";
 import { getHistory } from "@/lib/api";
 import HistoryBoard from "@/components/HistoryBoard";
+import { EmptyState } from "@/components/EmptyState";
 
 export default async function HistoryPage() {
   // Limite alto (y no filtrado por liga server-side): pedido real del
@@ -11,7 +13,10 @@ export default async function HistoryPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="mb-1 text-xl font-semibold text-slate-100">Histórico</h1>
+        <h1 className="mb-1 flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-100">
+          <History className="h-5 w-5 text-accent" />
+          Histórico
+        </h1>
         <p className="text-sm text-slate-500">
           La última jornada ya jugada de cada liga, con su mejor predicción (mayor puntuación de
           señal entre las válidas) comparada contra el resultado real. Nada aquí se recalcula con
@@ -21,11 +26,10 @@ export default async function HistoryPage() {
       </div>
 
       {history.length === 0 && (
-        <div className="rounded-lg border border-surface-border bg-surface-raised p-6 text-sm text-slate-500">
-          Sin partidos finalizados todavía. Ejecuta{" "}
-          <code className="rounded bg-black/40 px-1 py-0.5">football-edge refresh</code> cuando haya
-          resultados reales nuevos.
-        </div>
+        <EmptyState
+          title="Sin partidos finalizados todavía"
+          description="Ejecuta football-edge refresh cuando haya resultados reales nuevos."
+        />
       )}
 
       {history.length > 0 && <HistoryBoard rows={history} />}

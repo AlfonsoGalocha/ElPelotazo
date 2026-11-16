@@ -1,4 +1,6 @@
+import { Settings, Database } from "lucide-react";
 import { getDataSourcesStatus } from "@/lib/api";
+import { ErrorState } from "@/components/EmptyState";
 
 function StatusDot({ on }: { on: boolean }) {
   return (
@@ -28,7 +30,10 @@ export default async function SettingsPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="mb-1 text-xl font-semibold text-slate-100">Configuración</h1>
+        <h1 className="mb-1 flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-100">
+          <Settings className="h-5 w-5 text-accent" />
+          Configuración
+        </h1>
         <p className="text-sm text-slate-500">
           Esta aplicación todavía no tiene cuentas de usuario ni preferencias que se guarden por
           persona — lo que sigue es de solo lectura: el estado real de las fuentes de datos
@@ -36,13 +41,12 @@ export default async function SettingsPage() {
         </p>
       </div>
 
-      {error && (
-        <div className="rounded border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300">{error}</div>
-      )}
+      {error && <ErrorState message={error} />}
 
       {status && (
-        <div className="rounded-lg border border-surface-border bg-surface-raised p-4">
-          <div className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">
+        <div className="rounded-xl border border-surface-border bg-card p-4">
+          <div className="mb-3 flex items-center gap-1.5 text-sm font-semibold uppercase tracking-wide text-slate-300">
+            <Database className="h-3.5 w-3.5" />
             Fuentes de datos
           </div>
           <div className="flex flex-col gap-2 text-sm">
@@ -73,7 +77,7 @@ export default async function SettingsPage() {
         </div>
       )}
 
-      <div className="rounded-lg border border-dashed border-surface-border p-4 text-sm text-slate-500">
+      <div className="rounded-xl border border-dashed border-surface-border p-4 text-sm text-slate-500">
         Pendiente de construir (requiere cuentas de usuario, que no existen hoy): preferencias
         guardadas de liga favorita, tema, notificaciones.
       </div>

@@ -15,7 +15,7 @@ import EdgeRoiChart from "@/components/EdgeRoiChart";
 function SegmentCard({ segment }: { segment: PerformanceSegment }) {
   const strategy = segment.market_strategy;
   return (
-    <div className="rounded-lg border border-surface-border bg-surface-raised p-4">
+    <div className="rounded-xl border border-surface-border bg-card p-4">
       <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
         <h3 className="text-sm font-semibold text-slate-200">
           {segment.competition_code} · {MARKET_DISPLAY_NAMES[segment.market] ?? segment.market}
@@ -92,8 +92,8 @@ export default function ModelPerformanceBoard({ segments }: { segments: Performa
             className={
               "rounded-full border px-3 py-1 " +
               (allSelected
-                ? "border-slate-400 bg-slate-700 text-slate-100"
-                : "border-surface-border text-slate-400 hover:bg-surface-raised")
+                ? "border-accent/50 bg-accent/15 text-slate-100"
+                : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
             }
           >
             Todas
@@ -105,8 +105,8 @@ export default function ModelPerformanceBoard({ segments }: { segments: Performa
               className={
                 "rounded-full border px-3 py-1 " +
                 (selected.includes(code)
-                  ? "border-slate-400 bg-slate-700 text-slate-100"
-                  : "border-surface-border text-slate-500 hover:bg-surface-raised")
+                  ? "border-accent/50 bg-accent/15 text-slate-100"
+                  : "border-surface-border text-slate-500 hover:bg-surface-alt/60")
               }
             >
               {code}
@@ -116,7 +116,7 @@ export default function ModelPerformanceBoard({ segments }: { segments: Performa
       )}
 
       {visibleSegments.length === 0 && (
-        <div className="rounded-lg border border-surface-border bg-surface-raised p-6 text-sm text-slate-500">
+        <div className="rounded-xl border border-surface-border bg-card p-6 text-sm text-slate-500">
           {segments.length === 0
             ? "Todavía no hay predicciones liquidadas."
             : "Elige una o varias ligas arriba para ver su rendimiento."}
