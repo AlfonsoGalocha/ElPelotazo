@@ -1,3 +1,4 @@
+import { Bot } from "lucide-react";
 import JarvisChat from "@/components/JarvisChat";
 
 // Reposicionamiento pedido: mismo motor (backend/app/agent/, herramientas
@@ -7,7 +8,10 @@ import JarvisChat from "@/components/JarvisChat";
 export default function AiAnalystPage() {
   return (
     <div>
-      <h1 className="mb-1 text-xl font-semibold text-slate-100">Football AI Analyst</h1>
+      <h1 className="mb-1 flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-100">
+        <Bot className="h-5 w-5 text-accent" />
+        Analista IA
+      </h1>
       <p className="mb-4 text-sm text-slate-500">
         Analista conversacional sobre las 5 grandes ligas europeas, apoyado SOLO en datos reales
         del sistema (nunca inventa partidos, probabilidades, cuotas ni lesiones) para responder —

@@ -1,10 +1,12 @@
 import Link from "next/link";
+import { AlertTriangle, TrendingUp } from "lucide-react";
 import { getCompetitions, getTopSignals } from "@/lib/api";
 import type { SignalScope } from "@/lib/api";
 import { formatMatchDateOnly } from "@/lib/dates";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
 import MarketQualityBadge from "@/components/MarketQualityBadge";
+import { EmptyState } from "@/components/EmptyState";
 
 const SCOPE_LABELS: Record<SignalScope, string> = {
   current_round: "Jornada actual",
@@ -81,7 +83,10 @@ export default async function TopSignalsPage({
 
   return (
     <div>
-      <h1 className="mb-1 text-xl font-semibold text-slate-100">Mejores señales</h1>
+      <h1 className="mb-1 flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-100">
+        <TrendingUp className="h-5 w-5 text-accent" />
+        Oportunidades
+      </h1>
       <p className="mb-4 text-sm text-slate-500">
         {date
           ? `Solo partidos del ${formatMatchDateOnly(`${date}T00:00:00`, {
@@ -135,7 +140,7 @@ export default async function TopSignalsPage({
             </option>
           ))}
         </select>
-        <button type="submit" className="rounded border border-surface-border px-3 py-1 hover:bg-surface-raised">
+        <button type="submit" className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-1 font-medium text-slate-100 transition-colors hover:bg-accent/20">
           Aplicar
         </button>
         {hasAnyFilter && (
@@ -246,7 +251,7 @@ export default async function TopSignalsPage({
             </select>
             <button
               type="submit"
-              className="rounded border border-surface-border px-3 py-1 hover:bg-surface-raised"
+              className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-1 font-medium text-slate-100 transition-colors hover:bg-accent/20"
             >
               Aplicar
             </button>
@@ -254,9 +259,9 @@ export default async function TopSignalsPage({
         </details>
       </form>
 
-      <div className="overflow-hidden rounded-lg border border-surface-border">
+      <div className="overflow-hidden rounded-xl border border-surface-border bg-card">
         <table className="w-full text-sm">
-          <thead className="bg-surface-raised text-left text-[11px] uppercase text-slate-500">
+          <thead className="bg-surface-alt/60 text-left text-[11px] uppercase text-slate-500">
             <tr>
               <th className="px-3 py-2">Partido</th>
               <th className="px-3 py-2">Fecha</th>
@@ -274,7 +279,7 @@ export default async function TopSignalsPage({
           </thead>
           <tbody>
             {predictions.map((p) => (
-              <tr key={p.id} className="border-t border-surface-border hover:bg-surface-raised/50">
+              <tr key={p.id} className="border-t border-surface-border hover:bg-surface-alt/40">
                 <td className="px-3 py-2 text-slate-200">
                   <Link href={`/signals/${p.id}`} className="hover:underline">
                     {p.match.home_team.canonical_name} vs {p.match.away_team.canonical_name}
@@ -305,18 +310,21 @@ export default async function TopSignalsPage({
                   <MarketQualityBadge quality={p.market_quality} />
                 </td>
                 <td className="px-3 py-2 text-slate-400">
-                  {p.is_stale_odds && <span className="mr-1 text-amber-400">⚠</span>}
-                  {p.odds_age_minutes !== null ? `hace ${Math.round(p.odds_age_minutes)} min` : "—"}
+                  <span className="flex items-center gap-1">
+                    {p.is_stale_odds && <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" />}
+                    {p.odds_age_minutes !== null ? `hace ${Math.round(p.odds_age_minutes)} min` : "—"}
+                  </span>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
         {predictions.length === 0 && (
-          <div className="p-6 text-sm text-slate-500">
-            No hay señales con mercado válido todavía para este filtro. Prueba con &quot;Todas las
-            próximas&quot; o ejecuta{" "}
-            <code className="rounded bg-black/40 px-1 py-0.5">football-edge update-odds</code>.
+          <div className="p-2">
+            <EmptyState
+              title="Sin señales con mercado válido para este filtro"
+              description={'Prueba con "Todas las próximas" o ejecuta football-edge update-odds.'}
+            />
           </div>
         )}
       </div>

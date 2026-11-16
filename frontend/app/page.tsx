@@ -1,27 +1,24 @@
-import FeaturedMatchesBoard from "@/components/FeaturedMatchesBoard";
+import DashboardBoard from "@/components/DashboardBoard";
 import HeadToHeadWidget from "@/components/HeadToHeadWidget";
 
-// Pedido real de usuario ("quiero una app mucho mas sencillo y mas
-// bonito"): el home se simplifica a dos cosas -- los partidos destacados
-// de la jornada (en cajas a lo ancho, FeaturedMatchesBoard) y el buscador
-// H2H. El resumen de jornada, la tarjeta de "mejor oportunidad" y el
-// tablero completo por liga (HomeLeagueBoard, que podia listar TODOS los
-// partidos de las 5 ligas de golpe) se retiran de aqui -- siguen
-// disponibles sin perder funcionalidad en /matches (buscar/filtrar) y en
-// cada /matches/[id] (desglose completo). Si se quieren de vuelta en el
-// home, es un cambio trivial (un import + una linea).
+// Rediseño completo del Dashboard (pedido explicito del usuario, nov-2026):
+// banner de destacados + filtros (liga/confianza) + ranking de mejores
+// oportunidades como tarjetas + indicadores globales al pie, todo dentro
+// de DashboardBoard (ver ese fichero). El buscador H2H se mantiene, pedido
+// real del usuario en la simplificacion anterior del home -- nada se
+// quita, solo se reviste visualmente.
 export default function TodayPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="mb-1 text-xl font-semibold text-slate-100">Partidos destacados</h1>
+        <h1 className="mb-1 text-2xl font-bold tracking-tight text-slate-100">Dashboard</h1>
         <p className="text-sm text-slate-500">
-          Las señales más claras de la jornada actual. Nunca es una certeza — entra en cualquier
-          partido para el desglose completo.
+          Las señales más claras de la jornada actual, con rigor estadístico. Nunca una certeza —
+          entra en cualquier partido para el desglose completo.
         </p>
       </div>
 
-      <FeaturedMatchesBoard />
+      <DashboardBoard />
 
       <HeadToHeadWidget />
     </div>

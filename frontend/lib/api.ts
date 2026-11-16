@@ -47,6 +47,18 @@ export function getCompetitions(): Promise<Competition[]> {
   return apiFetch<Competition[]>("/competitions");
 }
 
+// Indicador de conexion de la sidebar (rediseño): un ping real al
+// backend, nunca un estado inventado. Se usa solo para saber si
+// responde, el cuerpo no importa.
+export async function pingHealth(): Promise<boolean> {
+  try {
+    const res = await fetch(`${resolveApiUrl()}/health`, { cache: "no-store" });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 // "Resumen de jornada" del dashboard (seccion de rediseño).
 export function getSummary(): Promise<Summary> {
   return apiFetch<Summary>("/predictions/summary");
