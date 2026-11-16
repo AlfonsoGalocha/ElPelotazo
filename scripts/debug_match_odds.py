@@ -1,20 +1,26 @@
 """Diagnostico puntual: para UN partido concreto (el match_id que ves en
 la URL /matches/<id>), vuelca la respuesta REAL y cruda de API-Football
-para tarjetas y corners -- sin ningun parseo nuestro -- para poder
-arreglar con datos de verdad en vez de a ciegas (ver el aviso en la
-cabecera de odds_provider.py: "sin verificar end-to-end").
+para tarjetas -- sin ningun parseo nuestro -- para poder arreglar con
+datos de verdad en vez de a ciegas (ver el aviso en la cabecera de
+odds_provider.py: "sin verificar end-to-end").
 
-Pensado para dos preguntas concretas reportadas por el usuario:
-1. ¿Por que nunca hay cuota real de tarjetas? ¿La API no ofrece ese
-   mercado para este partido, o lo llama de otra forma que no
-   reconocemos?
-2. ¿Por que algunas lineas de corners salen con cuotas absurdas (p.ej.
-   "mas de 8.5" mas cara que "mas de 9.5", imposible en la realidad)?
-   ¿Vienen de verdad de una casa con ese precio, o es un fallo de
-   parseo que mezcla lineas/mercados distintos bajo la misma clave?
+Pensado para una pregunta concreta reportada por el usuario: ¿por que
+nunca hay cuota real de tarjetas? ¿La API no ofrece ese mercado para
+este partido, o lo llama de otra forma que no reconocemos?
+
+(El equivalente para corners ya se diagnostico y se arreglo -- ver
+CORNERS_EXCLUDE en odds_provider.py -- por eso aqui ya NO se vuelca el
+bloque raw de corners: es el que inflaba tanto el log que se cortaba en
+la terminal del usuario. Si hiciera falta volver a verlo, los nombres de
+mercado SI siguen listados abajo, con "corner" incluido.)
 
 Uso (dentro del contenedor, con la API key real):
     docker compose exec backend python scripts/debug_match_odds.py <match_id>
+
+Si el log se corta igualmente en tu terminal, redirige a un fichero y
+pega ese fichero en vez de la pantalla -- no depende del scrollback:
+    docker compose exec backend python scripts/debug_match_odds.py <match_id> > /tmp/odds_debug.txt
+    cat /tmp/odds_debug.txt
 """
 
 from __future__ import annotations
@@ -48,12 +54,12 @@ def main(match_id: int) -> None:
             f"provider={provider!r} provider_id={provider_id!r}"
         )
 
-        print("\n=== Lo que YA tenemos guardado en MatchOdds (tarjetas/corners) ===")
+        print("\n=== Lo que YA tenemos guardado en MatchOdds (tarjetas) ===")
         stored = (
             db.query(MatchOdds)
             .filter(
                 MatchOdds.match_id == match.id,
-                MatchOdds.market.in_(("cards_total", "corners_total")),
+                MatchOdds.market == "cards_total",
             )
             .order_by(MatchOdds.market, MatchOdds.line, MatchOdds.selection, MatchOdds.bookmaker)
             .all()
@@ -86,26 +92,26 @@ def main(match_id: int) -> None:
         return
 
     names_to_bookmakers: dict[str, set[str]] = {}
-    card_corner_blocks: list[dict] = []
+    card_blocks: list[dict] = []
     for entry in odds_response:
         for bookmaker in entry.get("bookmakers", []):
             bk_label = f"{bookmaker.get('id')}:{bookmaker.get('name')}"
             for bet in bookmaker.get("bets", []):
                 name = bet.get("name", "")
                 names_to_bookmakers.setdefault(name, set()).add(bk_label)
-                if "card" in name.lower() or "corner" in name.lower():
-                    card_corner_blocks.append({"bookmaker": bk_label, "bet": bet})
+                if "card" in name.lower():
+                    card_blocks.append({"bookmaker": bk_label, "bet": bet})
 
     print("\n--- Todos los mercados que devuelve la API para este partido ---")
     for name in sorted(names_to_bookmakers):
         print(f"  {name!r}: {len(names_to_bookmakers[name])} casas")
 
-    print("\n--- Bloques RAW de tarjetas/corners (name/values tal cual los manda la API) ---")
-    if not card_corner_blocks:
-        print("  NINGUNO -- la API no ofrece ningun mercado con 'card'/'corner' en el nombre para "
+    print("\n--- Bloques RAW de tarjetas (name/values tal cual los manda la API) ---")
+    if not card_blocks:
+        print("  NINGUNO -- la API no ofrece ningun mercado con 'card' en el nombre para "
               "este partido concreto (puede que sea especifico de este partido/liga, no un bug).")
     else:
-        print(json.dumps(card_corner_blocks, indent=2, ensure_ascii=False))
+        print(json.dumps(card_blocks, indent=2, ensure_ascii=False))
 
 
 if __name__ == "__main__":
