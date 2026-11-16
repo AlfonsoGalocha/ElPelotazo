@@ -19,7 +19,7 @@ import datetime as dt
 from backend.app.cli import _merge_team
 from backend.app.db.models.core import Competition, Season, Team, TeamNameMapping
 from backend.app.db.models.matches import Match
-from backend.app.db.models.modeling import ModelVersion, Prediction
+from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionResult
 
 
 def _make_competition_and_season(db) -> tuple[Competition, Season]:
@@ -162,3 +162,147 @@ def test_merge_team_repoints_without_conflict_when_no_sibling_match_exists(db_se
     assert merged == 0
     assert db.query(Match).filter_by(id=only_match.id).one().away_team_id == elversberg.id
     assert db.query(Team).filter_by(id=ghost.id).one_or_none() is None
+
+
+def test_merge_team_drops_duplicate_even_when_its_prediction_is_already_settled(db_session):
+    """Bug real reportado por el usuario (crash en produccion, "1899
+    Hoffenheim"): a diferencia del caso de arriba (la fila `scheduled`
+    nunca llega a liquidarse), un duplicado de una temporada YA JUGADA
+    puede tener AMBAS filas 'finished', cada una con su propia Prediction
+    YA LIQUIDADA (PredictionResult) antes de que existiera el alias que
+    las reconoce como el mismo partido real. Borrar la Prediction de la
+    fila descartada sin borrar antes su PredictionResult rompia con
+    ForeignKeyViolation -- y al no estar en una sesion aparte, ese fallo
+    deshacia TODA la fusion del comando (de cualquier equipo, no solo el
+    problematico), no solo la de este partido."""
+    db = db_session
+    comp, season = _make_competition_and_season(db)
+
+    schalke = Team(canonical_name="Schalke 04")
+    hoffenheim = Team(canonical_name="Hoffenheim")
+    ghost = Team(canonical_name="1899 Hoffenheim")
+    db.add_all([schalke, hoffenheim, ghost])
+    db.flush()
+
+    kept = Match(
+        provider="openfootball_fixtures",
+        provider_id="bund:2025/26:schalke-hoffenheim",
+        competition_id=comp.id,
+        season_id=season.id,
+        matchday=8,
+        kickoff_utc=dt.datetime(2025, 10, 18, 15, 30),
+        home_team_id=schalke.id,
+        away_team_id=hoffenheim.id,
+        status="finished",
+        home_goals=1,
+        away_goals=1,
+    )
+    dropped = Match(
+        provider="api_football",
+        provider_id="apif:888",
+        competition_id=comp.id,
+        season_id=season.id,
+        matchday=8,
+        kickoff_utc=dt.datetime(2025, 10, 18, 15, 30),
+        home_team_id=schalke.id,
+        away_team_id=ghost.id,
+        status="finished",
+        home_goals=1,
+        away_goals=1,
+    )
+    db.add_all([kept, dropped])
+    db.flush()
+
+    model_version = ModelVersion(
+        name="logistic_baseline",
+        version="test",
+        market_family="goals",
+        features=[],
+        hyperparameters={},
+        metrics={},
+        dataset_version="test",
+    )
+    db.add(model_version)
+    db.flush()
+
+    # Ambos lados liquidados: cuando las DOS filas ya estaban 'finished'
+    # antes de fundirse, cual de las dos "gana" el empate es un detalle de
+    # implementacion de `_merge_team` (siempre se queda una, nunca las
+    # dos) -- lo que este test comprueba es que fundir NO revienta con
+    # ForeignKeyViolation por culpa de la Prediction+PredictionResult de
+    # la que se descarte, sea cual sea. Se guardan los dos ids de
+    # antemano (en vez de contar la tabla entera, que en la suite
+    # completa comparte sesion con otros tests y ya tiene filas de ellos).
+    prediction_ids: dict[int, int] = {}
+    for match in (kept, dropped):
+        prediction = Prediction(
+            match_id=match.id,
+            market="match_result",
+            line=None,
+            selection="home",
+            model_version_id=model_version.id,
+            model_probability=0.5,
+            market_probability=0.45,
+            market_odds=2.0,
+            fair_odds=2.0,
+            edge=0.05,
+            expected_value=0.05,
+            confidence=0.8,
+            data_quality=0.8,
+            bookmakers_used=4,
+            bookmakers_count=4,
+            explanation={"factors": []},
+            features_used={"feature_names": []},
+            created_at=dt.datetime(2025, 10, 15),
+        )
+        db.add(prediction)
+        db.flush()
+        db.add(
+            PredictionResult(
+                prediction_id=prediction.id,
+                outcome=False,
+                actual_result="1-1",
+                settled_at=dt.datetime(2025, 10, 19),
+            )
+        )
+        db.flush()
+        prediction_ids[match.id] = prediction.id
+
+    repointed, merged = _merge_team(db, duplicate=ghost, canonical=hoffenheim)
+    db.flush()
+
+    assert repointed == 1
+    assert merged == 1
+
+    remaining_matches = (
+        db.query(Match)
+        .filter(Match.competition_id == comp.id, Match.home_team_id == schalke.id)
+        .all()
+    )
+    assert len(remaining_matches) == 1
+    survivor = remaining_matches[0]
+    assert survivor.status == "finished"
+    assert survivor.away_team_id == hoffenheim.id
+
+    survivor_prediction_id = prediction_ids[kept.id if survivor.id == kept.id else dropped.id]
+    other_prediction_id = next(
+        pid for mid, pid in prediction_ids.items() if pid != survivor_prediction_id
+    )
+
+    assert db.query(Prediction).filter_by(id=survivor_prediction_id).one_or_none() is not None
+    assert (
+        db.query(PredictionResult)
+        .filter_by(prediction_id=survivor_prediction_id)
+        .one_or_none()
+        is not None
+    )
+    # Comprobacion clave del bug: SQLite (usado en tests) no fuerza la FK
+    # por defecto, asi que un `Query.delete()` masivo sin borrar antes el
+    # PredictionResult "funciona" en apariencia mientras deja esa fila
+    # huerfana (prediction_id apuntando a una Prediction ya borrada) --
+    # Postgres (produccion) SI la rechaza con ForeignKeyViolation.
+    assert db.query(Prediction).filter_by(id=other_prediction_id).one_or_none() is None
+    assert (
+        db.query(PredictionResult).filter_by(prediction_id=other_prediction_id).one_or_none()
+        is None
+    )
