@@ -49,10 +49,40 @@ logger = get_logger(__name__)
 # API-Football tambien contiene la palabra "over/under"
 # ("Cards Over/Under"), asi que si se comprobara el hint generico primero
 # se clasificarian mal.
+CORNERS_EXCLUDE = (
+    "half",
+    "halves",
+    "team",
+    "result",
+    # Bug real reportado por el usuario (cuota de "mas de 8.5 corners" sin
+    # sentido -- no monotona respecto a "mas de 9.5", imposible en la
+    # realidad -- confirmada contra la respuesta real de la API):
+    # API-Football tambien manda "Home Corners Over/Under" y "Away Corners
+    # Over/Under" (corners de UN SOLO equipo, no del partido), que NO
+    # contienen la palabra "team" (a diferencia de los mercados de goles
+    # equivalentes, "Home/Away TEAM Total Goals", donde el exclude de
+    # arriba ya bastaba) -- se colaban mezclados con el valor real bajo la
+    # misma linea (8.5/9.5/10.5...), corrompiendo el consenso. Tambien
+    # confirmados en la misma respuesta real: "Multicorners" (linea 20.5,
+    # un mercado distinto con ese nombre), "Corners. total between 0 and
+    # 10m" (solo los primeros 10 minutos) y "Corners. Total (Range)" (apuesta
+    # por rangos tipo "6 - 8": sus dos valores extremos, "Under 6"/"Over 14",
+    # SI encajan con la regex over/under generica y se colaban tambien).
+    "home",
+    "away",
+    "multicorners",
+    "between",
+    "range",
+)
 MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str, tuple[str, ...]]] = [
     # (market_key interno, hints, tipo_de_valor, excluye)
-    ("cards_total", ("card",), "over_under", ("half", "halves", "team", "result")),
-    ("corners_total", ("corner",), "over_under", ("half", "halves", "team", "result")),
+    # "home"/"away" tambien en cards: mismo patron de nombres de API-Football
+    # que en corners (ver CORNERS_EXCLUDE) -- nunca verificado con una
+    # respuesta real para tarjetas todavia, pero es el mismo proveedor y el
+    # mismo estilo de nombres por equipo, asi que se excluye por si acaso
+    # en vez de esperar a que se repita el mismo bug.
+    ("cards_total", ("card",), "over_under", ("half", "halves", "team", "result", "home", "away")),
+    ("corners_total", ("corner",), "over_under", CORNERS_EXCLUDE),
     # Bug real reportado por el usuario (cuota de "ambos marcan" sin
     # sentido, confirmado contra la respuesta real): API-Football devuelve
     # "Both Teams Score" (partido completo, el unico correcto), PERO
