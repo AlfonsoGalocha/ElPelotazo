@@ -239,6 +239,54 @@ def test_match_form_endpoint_returns_recent_form_and_h2h(seeded_competition_code
         assert entry["venue"] == "away"
 
 
+def test_match_kickoff_utc_is_serialized_with_an_explicit_utc_offset():
+    """Bug real reportado por el usuario (todas las horas 1h antes de la
+    real): `kickoff_utc` se guarda naive pero SIEMPRE en UTC por
+    convencion (ver services/data_service.py) -- Pydantic serializaba un
+    datetime naive sin ningun sufijo de zona ("...T19:30:00"), y
+    `new Date(...)` en JavaScript interpreta eso como hora LOCAL del
+    navegador, no UTC. Alguien en UTC+1 veia cada partido 1 hora antes de
+    su hora real. El JSON debe llevar SIEMPRE un offset explicito."""
+    client = TestClient(app)
+    competition_code = "kickoff_utc_offset_test"
+    with session_scope() as db:
+        comp = Competition(code=competition_code, name="Offset Test League", country="Testland")
+        db.add(comp)
+        db.flush()
+        season = Season(competition_id=comp.id, label="2026/27")
+        db.add(season)
+        db.flush()
+        from backend.app.db.models.core import Team
+
+        home = Team(canonical_name="Offset Test Home")
+        away = Team(canonical_name="Offset Test Away")
+        db.add_all([home, away])
+        db.flush()
+        match = Match(
+            provider="offset_test_provider",
+            provider_id="offset-test-1",
+            competition_id=comp.id,
+            season_id=season.id,
+            # Naive a proposito, igual que lo que de verdad guarda la
+            # ingesta real -- el bug esta precisamente en que nunca lleva
+            # tzinfo en la BD.
+            kickoff_utc=dt.datetime(2026, 11, 20, 19, 30, 0),
+            home_team_id=home.id,
+            away_team_id=away.id,
+            status="scheduled",
+        )
+        db.add(match)
+        db.flush()
+        match_id = match.id
+
+    response = client.get("/matches", params={"competition_code": competition_code})
+    assert response.status_code == 200
+    body = response.json()
+    serialized = next(m["kickoff_utc"] for m in body if m["id"] == match_id)
+    assert serialized.endswith("+00:00") or serialized.endswith("Z")
+    assert serialized.startswith("2026-11-20T19:30:00")
+
+
 def test_list_matches_finished_filter_returns_most_recent_when_truncated_by_limit():
     """Bug real reportado por el usuario (pagina "Partidos", filtro
     "Jugados"): con mas partidos 'finished' desde el inicio de temporada

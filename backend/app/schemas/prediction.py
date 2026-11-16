@@ -4,7 +4,7 @@ import datetime as dt
 
 from pydantic import BaseModel
 
-from backend.app.schemas.match import MatchOut, RoundOut
+from backend.app.schemas.match import MatchOut, RoundOut, UtcDatetime
 
 
 class PredictionFactorOut(BaseModel):
@@ -41,7 +41,7 @@ class PredictionOut(BaseModel):
     signal_tier: str
     explanation: list[PredictionFactorOut]
     model_version_id: int
-    created_at: dt.datetime
+    created_at: UtcDatetime
     has_market: bool = False
     market_probability_source: str | None = None
     bookmakers_count: int | None = None
@@ -119,7 +119,7 @@ class HistoryPredictionOut(PredictionOut):
 
     actual_result: str | None = None
     is_correct: bool | None = None
-    settled_at: dt.datetime | None = None
+    settled_at: UtcDatetime | None = None
     # Closing Line Value (ver market/clv.py): `None` hasta que haya
     # historico de cuotas suficiente (MatchOddsHistory, solo desde que se
     # anhadio esa tabla -- nunca retroactivo).
