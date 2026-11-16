@@ -119,7 +119,7 @@ export default async function MatchDetailPage({ params }: { params: { id: string
         </div>
         <div className="flex flex-wrap items-center justify-center gap-4 sm:justify-between">
           <div className="flex items-center gap-3">
-            <TeamLogo name={match.home_team.canonical_name} size="lg" />
+            <TeamLogo name={match.home_team.canonical_name} logoUrl={match.home_team.logo_url} size="lg" />
             <span className="text-lg font-bold text-slate-100">{match.home_team.canonical_name}</span>
           </div>
           <div className="flex flex-col items-center gap-1">
@@ -136,7 +136,7 @@ export default async function MatchDetailPage({ params }: { params: { id: string
           </div>
           <div className="flex items-center gap-3">
             <span className="text-lg font-bold text-slate-100">{match.away_team.canonical_name}</span>
-            <TeamLogo name={match.away_team.canonical_name} size="lg" />
+            <TeamLogo name={match.away_team.canonical_name} logoUrl={match.away_team.logo_url} size="lg" />
           </div>
         </div>
       </div>

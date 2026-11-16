@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 
 from sqlalchemy.orm import Session
 
-from backend.app.db.models.core import Competition, Season
+from backend.app.db.models.core import Competition, Season, Team
 from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory, MatchStatistics
 from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
 from backend.app.ingestion.base import (
@@ -24,6 +24,23 @@ from backend.app.normalization.teams import resolve_team_id
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _update_team_logo(db: Session, team_id: int, logo_url: str | None) -> None:
+    """Guarda el escudo real de un equipo si la fuente lo trae (ver
+    `RawMatchRecord.home_logo_url`/`away_logo_url`, hoy solo API-Football).
+
+    `logo_url` es `None` para fuentes que no proveen escudo (football-data
+    .co.uk, openfootball...) -- en ese caso no se toca nada, nunca se borra
+    un escudo real ya guardado por una fuente anterior. Se compara contra
+    el valor actual para no emitir un UPDATE en cada ingesta cuando no ha
+    cambiado nada.
+    """
+    if not logo_url:
+        return
+    team = db.get(Team, team_id)
+    if team is not None and team.logo_url != logo_url:
+        team.logo_url = logo_url
 
 
 def competition_season_has_matches(db: Session, competition_code: str, season_label: str) -> bool:
@@ -129,6 +146,8 @@ def _find_absorbable_duplicate(
 def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, season_id: int) -> Match:
     home_team_id = resolve_team_id(db, record.provider, record.home_team_raw)
     away_team_id = resolve_team_id(db, record.provider, record.away_team_raw)
+    _update_team_logo(db, home_team_id, record.home_logo_url)
+    _update_team_logo(db, away_team_id, record.away_logo_url)
     referee_id = resolve_referee_id(db, record.referee_raw)
     # Bug real reportado por el usuario: API-Football da `fixture.date` CON
     # offset (p.ej. "2026-10-05T14:00:00+00:00"), a diferencia de

@@ -169,7 +169,7 @@ export default function MatchesPage() {
               <div className="flex min-w-0 items-center gap-3">
                 <span className="w-28 shrink-0 text-xs text-slate-500">{formatKickoff(match.kickoff_utc)}</span>
                 <div className="flex min-w-0 items-center gap-2 text-slate-200">
-                  <TeamLogo name={match.home_team.canonical_name} size="sm" />
+                  <TeamLogo name={match.home_team.canonical_name} logoUrl={match.home_team.logo_url} size="sm" />
                   <span className="truncate">{match.home_team.canonical_name}</span>
                   {match.status === "finished" ? (
                     <span className="mx-1 shrink-0 font-semibold text-slate-100">
@@ -179,7 +179,7 @@ export default function MatchesPage() {
                     <span className="mx-1 shrink-0 text-slate-500">vs</span>
                   )}
                   <span className="truncate">{match.away_team.canonical_name}</span>
-                  <TeamLogo name={match.away_team.canonical_name} size="sm" />
+                  <TeamLogo name={match.away_team.canonical_name} logoUrl={match.away_team.logo_url} size="sm" />
                 </div>
               </div>
               <CompetitionBadge

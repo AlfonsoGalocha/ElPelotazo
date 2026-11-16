@@ -64,6 +64,15 @@ class Team(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     canonical_name: Mapped[str] = mapped_column(String(120), unique=True)
     country: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Escudo REAL del equipo (nunca inventado/generico), capturado de
+    # `payload["teams"]["home"/"away"]["logo"]` al ingerir fixtures de
+    # API-Football (ver fixtures_provider.py y data_service.py::_upsert_match)
+    # -- API-Football ya lo trae gratis en la misma llamada que trae el
+    # partido, sin peticion ni coste adicional. `None` para equipos que
+    # nunca han aparecido en un fixture de API-Football todavia (p.ej. solo
+    # historico antiguo de football-data.co.uk) -- el frontend cae a un
+    # placeholder elegante en ese caso, nunca a una imagen inventada.
+    logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class TeamNameMapping(Base):

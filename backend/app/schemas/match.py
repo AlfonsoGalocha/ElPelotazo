@@ -29,6 +29,11 @@ UtcDatetime = Annotated[dt.datetime, PlainSerializer(_serialize_as_utc, return_t
 class TeamOut(BaseModel):
     id: int
     canonical_name: str
+    # Escudo real (API-Football), `None` si este equipo aun no ha
+    # aparecido en ningun fixture de API-Football -- ver
+    # db/models/core.py::Team.logo_url. El frontend cae a un placeholder
+    # elegante cuando viene `None`, nunca a una imagen inventada.
+    logo_url: str | None = None
 
     model_config = {"from_attributes": True}
 

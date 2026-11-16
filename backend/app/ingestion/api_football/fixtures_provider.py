@@ -91,6 +91,12 @@ class ApiFootballMatchProvider(ApiFootballClient, DataProvider):
                     home_goals_ht=halftime.get("home"),
                     away_goals_ht=halftime.get("away"),
                     matchday=matchday,
+                    # API-Football trae el escudo real en el mismo payload
+                    # del fixture, sin request ni coste adicional (pedido
+                    # real del usuario: escudos reales via API-Football,
+                    # ya que el proyecto tiene key de pago activa).
+                    home_logo_url=payload["teams"]["home"].get("logo"),
+                    away_logo_url=payload["teams"]["away"].get("logo"),
                 )
             )
 

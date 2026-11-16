@@ -137,9 +137,17 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
                           href={`/history/${row.match.id}`}
                           className="flex items-center gap-1.5 text-slate-200 hover:underline"
                         >
-                          <TeamLogo name={row.match.home_team.canonical_name} size="sm" />
+                          <TeamLogo
+                            name={row.match.home_team.canonical_name}
+                            logoUrl={row.match.home_team.logo_url}
+                            size="sm"
+                          />
                           {row.match.home_team.canonical_name} vs {row.match.away_team.canonical_name}
-                          <TeamLogo name={row.match.away_team.canonical_name} size="sm" />
+                          <TeamLogo
+                            name={row.match.away_team.canonical_name}
+                            logoUrl={row.match.away_team.logo_url}
+                            size="sm"
+                          />
                         </Link>
                         <div className="text-[11px] text-slate-500">
                           {formatMatchDateOnly(row.match.kickoff_utc, {
