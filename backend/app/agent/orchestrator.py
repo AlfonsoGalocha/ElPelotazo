@@ -80,7 +80,7 @@ o numeros seguidos de un punto ("1., 2., 3."), nunca con guiones ni asteriscos."
 # respuesta llegue al frontend (que la muestra en texto plano) o a Piper
 # (que la lee en voz alta tal cual, asteriscos incluidos). Solo asteriscos,
 # NUNCA guion bajo como marcador de enfasis: nombres de mercado reales que
-# Jarvis repite tal cual son snake_case ("over_2_5", "cards_over_3_5") --
+# Jarvis repite tal cual son snake_case ("over_2_5", "corners_over_8_5") --
 # tratar "_2_" como cursiva se comia el "2" (bug real detectado en tests).
 _MARKDOWN_BOLD_ITALIC = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*")
 _MARKDOWN_HEADER = re.compile(r"^#{1,6}\s*", re.MULTILINE)

@@ -1,16 +1,16 @@
 import type { Prediction } from "@/types";
-import { CARDS_MARKETS, CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES, MATCH_RESULT_MARKETS } from "@/types";
+import { CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES, MATCH_RESULT_MARKETS } from "@/types";
 
 // Pedido real del usuario: "pinchar un partido que me diga las cosas que
-// es lo mas probable ya sea goles corners tarjetas o ambos, que me haga
-// una comparacion [modelo vs cuota real]". Un resumen en lenguaje llano
+// es lo mas probable ya sea goles corners o ambos, que me haga una
+// comparacion [modelo vs cuota real]". Un resumen en lenguaje llano
 // ARRIBA del todo, con lo mas probable de cada categoria (si el partido
 // tiene predicciones en ella) -- las tablas tecnicas completas con TODOS
-// los mercados siguen debajo, nada se quita.
+// los mercados siguen debajo, nada se quita. (Tarjetas se quito del
+// todo, pedido real del usuario -- ver types/index.ts.)
 const GROUPS: { label: string; markets: string[] }[] = [
   { label: "Resultado", markets: MATCH_RESULT_MARKETS },
   { label: "Goles", markets: GOALS_MARKETS },
-  { label: "Tarjetas", markets: CARDS_MARKETS },
   { label: "Córners", markets: CORNERS_MARKETS },
 ];
 

@@ -187,12 +187,12 @@ def update_odds(competition: str = typer.Option(None)) -> None:
 
     Con API_FOOTBALL_ENABLED=true (y API_FOOTBALL_KEY configurada), usa
     API-Football: en UN UNICO fetch por partido trae 1X2, goles Over/Under,
-    BTTS Y tarjetas/corners (nunca pide `/odds` dos veces para el mismo
+    BTTS Y corners (nunca pide `/odds` dos veces para el mismo
     partido -- ver `update-secondary-odds`, que se salta solo si detecta
     que esta config ya lo cubrio). Sin esa config, sigue usando The Odds
     API exactamente como antes (ODDS_API_ENABLED=true / ODDS_API_KEY en
     `.env`, registro gratuito en https://the-odds-api.com, plan free = 500
-    requests/mes) -- esa fuente NUNCA cubre tarjetas/corners en ningun
+    requests/mes) -- esa fuente NUNCA cubre corners en ningun
     plan, solo 1X2/goles.
 
     Sin ninguna de las dos fuentes configurada, se salta sin error: el
@@ -219,7 +219,7 @@ def update_odds(competition: str = typer.Option(None)) -> None:
                 "edita el .env nuevo (no el .example)."
             )
         typer.echo(
-            "[update-odds] Opcion recomendada (cubre 1X2/goles/BTTS/tarjetas/corners de una vez):"
+            "[update-odds] Opcion recomendada (cubre 1X2/goles/BTTS/corners de una vez):"
         )
         typer.echo(
             "[update-odds]   Registrate en https://www.api-football.com "
@@ -227,7 +227,7 @@ def update_odds(competition: str = typer.Option(None)) -> None:
         )
         typer.echo("[update-odds]   API_FOOTBALL_ENABLED=true")
         typer.echo("[update-odds]   API_FOOTBALL_KEY=<tu-key>")
-        typer.echo("[update-odds] Alternativa gratis (solo 1X2/goles, NUNCA tarjetas/corners):")
+        typer.echo("[update-odds] Alternativa gratis (solo 1X2/goles, NUNCA corners):")
         typer.echo(
             "[update-odds]   Registrate gratis en https://the-odds-api.com y en tu .env pon:"
         )
@@ -295,7 +295,7 @@ def update_odds(competition: str = typer.Option(None)) -> None:
 
 @app.command()
 def update_secondary_odds(competition: str = typer.Option(None)) -> None:
-    """Descarga cuotas REALES de tarjetas/corners (API-Football) para los
+    """Descarga cuotas REALES de corners (API-Football) para los
     partidos de la JORNADA ACTUAL de cada competicion (nunca la temporada
     completa: el plan gratuito de API-Football son 100 requests/dia, y
     consultar toda la temporada lo agotaria de inmediato).
@@ -303,10 +303,10 @@ def update_secondary_odds(competition: str = typer.Option(None)) -> None:
     Requiere API_FOOTBALL_ENABLED=true y API_FOOTBALL_KEY en `.env`
     (registro en https://www.api-football.com o via RapidAPI — en ese caso
     pon ademas API_FOOTBALL_USE_RAPIDAPI=true). Sin esto configurado, se
-    salta sin error: tarjetas/corners siguen funcionando igual que hasta
+    salta sin error: corners siguen funcionando igual que hasta
     ahora, solo como "prediccion del modelo — sin mercado".
 
-    IMPORTANTE: The Odds API (`update-odds`) NO cubre estos mercados en
+    IMPORTANTE: The Odds API (`update-odds`) NO cubre este mercado en
     ningun plan (ver docs/data_sources.md) — por eso hace falta esta
     fuente aparte. Sin verificar end-to-end contra la API real desde este
     entorno (red restringida); si el matching de mercados falla, el propio
@@ -315,7 +315,7 @@ def update_secondary_odds(competition: str = typer.Option(None)) -> None:
 
     Se SALTA sin hacer nada si `update-odds` ya esta usando API-Football
     como fuente primaria (API_FOOTBALL_ENABLED=true): ese comando ya trae
-    tarjetas/corners en el MISMO fetch de `/odds`, pedirlo aqui otra vez
+    corners en el MISMO fetch de `/odds`, pedirlo aqui otra vez
     seria duplicar la llamada por partido sin ninguna ganancia.
     """
     init_db()
@@ -323,7 +323,7 @@ def update_secondary_odds(competition: str = typer.Option(None)) -> None:
     if settings.api_football_enabled and settings.api_football_key:
         typer.echo(
             "[update-secondary-odds] API-Football ya es la fuente primaria de cuotas "
-            "(ver 'update-odds'): tarjetas/corners se trajeron en ese mismo paso, "
+            "(ver 'update-odds'): corners se trajeron en ese mismo paso, "
             "no hay nada que hacer aqui."
         )
         return
@@ -331,7 +331,7 @@ def update_secondary_odds(competition: str = typer.Option(None)) -> None:
     provider = ApiFootballOddsProvider()
     if not provider.is_available():
         typer.echo(
-            "[update-secondary-odds] API_FOOTBALL_KEY no configurada: sin cuotas de tarjetas/corners."
+            "[update-secondary-odds] API_FOOTBALL_KEY no configurada: sin cuotas de corners."
         )
         typer.echo(
             "[update-secondary-odds] Registrate en https://www.api-football.com (o via RapidAPI) y en tu .env pon:"
@@ -365,7 +365,7 @@ def update_secondary_odds(competition: str = typer.Option(None)) -> None:
 
             typer.echo(
                 f"[update-secondary-odds] {comp}: {result.fixtures_fetched} partidos consultados, "
-                f"{result.matched} con cuotas de tarjetas/corners casadas."
+                f"{result.matched} con cuotas de corners casadas."
             )
             if result.matched_match_ids:
                 dates = sorted(
@@ -646,7 +646,7 @@ def refresh(
     typer.echo("=== [4/7] Cuotas de mercado reales: goles/1X2 (The Odds API) ===")
     update_odds(competition=competition)
 
-    typer.echo("=== [5/7] Cuotas de mercado reales: tarjetas/corners (API-Football) ===")
+    typer.echo("=== [5/7] Cuotas de mercado reales: corners (API-Football) ===")
     update_secondary_odds(competition=competition)
 
     typer.echo("=== [6/7] Entrenamiento de modelos ===")

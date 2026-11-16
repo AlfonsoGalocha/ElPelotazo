@@ -42,8 +42,17 @@ que las features de partidos anteriores no cambian ni un bit).
 
 ## Pendiente (fases futuras)
 
-- `features/referee.py`: tasa de tarjetas por arbitro — implementado pero
-  usado solo cuando se aborde Fase 2 (mercados de tarjetas).
-- `features/cards.py`, `features/corners.py`, `features/shots.py`,
-  `features/players.py`: stubs documentados, `NotImplementedError`
-  explicito, para Fases 2-5.
+- `features/corners.py`, `features/shots.py`, `features/players.py`:
+  stubs documentados, `NotImplementedError` explicito, para fases
+  futuras. (El mercado de corners real SI esta implementado, pero via
+  `prediction/secondary_markets.py`, no via este stub.)
+
+## Descartado
+
+- Mercado de tarjetas (y `features/cards.py`/`features/referee.py`, que
+  solo existian para el): pedido real del usuario, tras confirmar contra
+  una respuesta real de `/odds` que ninguna casa de las que agrega
+  API-Football ofrece ese mercado para estas 5 ligas (de ~120 mercados
+  distintos vistos para un partido, ninguno menciona "card"). Entrenar y
+  mostrar una prediccion que SIEMPRE sale "sin mercado" es ruido, no una
+  señal — ver docstring de `prediction/secondary_markets.py`.

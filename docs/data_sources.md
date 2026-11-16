@@ -99,14 +99,14 @@ oficial). Fragil ante cambios de maquetacion. `UNDERSTAT_ENABLED=false`.
 Estadisticas muy completas via tablas HTML, pero sin API y con rate limits
 estrictos (recomendado <=1 request/3s). `FBREF_ENABLED=false`.
 
-## API-Football — cuotas de tarjetas/corners implementadas, deshabilitada por defecto; fixtures/alineaciones PENDIENTE
+## API-Football — cuotas de corners implementadas y verificadas, deshabilitada por defecto; fixtures/alineaciones PENDIENTE
 
 El adapter de FIXTURES/alineaciones (`backend/app/ingestion/api_football/provider.py`)
 sigue sin implementar (plan gratuito de 100 requests/dia, inviable como
 fuente historica principal; openfootball ya cubre el calendario futuro, ver
 mas arriba). Lo que SI esta implementado es un adapter de CUOTAS de
-tarjetas/corners, porque The Odds API no ofrece esos mercados en ningun
-plan (ver seccion de abajo).
+corners, porque The Odds API no ofrece ese mercado en ningun plan (ver
+seccion de abajo).
 
 - Adapter: `backend/app/ingestion/api_football/odds_provider.py`
   (`ApiFootballOddsProvider`).
@@ -117,13 +117,22 @@ plan (ver seccion de abajo).
   temporada completa: el plan gratuito son 100 requests/dia, y una
   temporada entera lo agotaria de inmediato). 1 request de fixtures +
   1 request de odds por partido de esa jornada (~10 partidos/liga).
-- Busca mercados de tarjetas/corners por SUBCADENA en el nombre ("card"/
-  "corner", insensible a mayusculas) y parsea "Over/Under N" por regex
-  generico, en vez de asumir un nombre/formato exacto: si el nombre real
-  difiere ligeramente, sigue funcionando. Si tras procesar una liga
-  entera no se encuentra nada parecido a tarjetas/corners, se loguea con
-  nivel WARNING la lista completa de nombres de mercado vistos, para
-  ajustar el matching en un vistazo en vez de fallar en silencio.
+- Busca el mercado de corners por SUBCADENA en el nombre ("corner",
+  insensible a mayusculas) y parsea "Over/Under N" por regex generico, en
+  vez de asumir un nombre/formato exacto: si el nombre real difiere
+  ligeramente, sigue funcionando. Si tras procesar una liga entera no se
+  encuentra nada parecido a corners, se loguea con nivel WARNING la lista
+  completa de nombres de mercado vistos, para ajustar el matching en un
+  vistazo en vez de fallar en silencio.
+
+**Tarjetas (cards) NO se implementa**: confirmado contra una respuesta
+real de `/odds` (`scripts/debug_match_odds.py`) que ninguna casa de las
+que agrega API-Football ofrece mercado de tarjetas para estas 5 ligas —
+de ~120 mercados distintos vistos para un partido, ninguno menciona
+"card". Decision real del usuario: sin cuota real con la que compararse,
+mostrar una "prediccion" de tarjetas es solo ruido. Si algun dia una casa
+empieza a ofrecerlo, re-confirmar con el mismo script antes de volver a
+anhadirlo, nunca asumir.
 
 Activacion:
 1. Registrate en https://www.api-football.com/ (o via RapidAPI:
@@ -134,15 +143,17 @@ Activacion:
    autenticacion, son los mismos datos).
 3. `football-edge update-secondary-odds` (o `refresh`, que ya lo incluye).
 
-**Nota de honestidad**: igual que con The Odds API, este adapter se
-escribio siguiendo la documentacion publica de API-Football pero NO se
-pudo verificar end-to-end contra la API real (mismo entorno con el
-egress de red restringido). Los IDs de liga (`LEAGUE_IDS`) y la
-estructura general de `/fixtures` y `/odds` son los documentados
-publicamente, pero el nombre EXACTO de los mercados de tarjetas/corners
-puede variar; el matching por subcadena y el log de diagnostico (arriba)
-existen precisamente para que un desajuste se corrija en minutos en vez
-de investigarse a ciegas.
+**Nota de honestidad (actualizada tras verificacion real)**: este adapter
+se escribio originalmente siguiendo solo la documentacion publica de
+API-Football, sin poder probarse contra la API real (mismo entorno con
+el egress de red restringido). Desde entonces SI se ha verificado
+end-to-end con datos reales pegados por el usuario desde su propio
+entorno (ver `scripts/debug_match_odds.py`): el mercado de corners real
+se llama literalmente "Corners Over Under", y el matching por subcadena
+tenia que excluir ademas "Home/Away Corners Over/Under" (corners de un
+solo equipo), "Multicorners" y variantes de rango/ventana temporal — ver
+`CORNERS_EXCLUDE` en el propio adapter para el detalle de cada caso real
+encontrado.
 
 ## The Odds API — implementada, deshabilitada por defecto
 
@@ -200,16 +211,20 @@ modelo sigue funcionando, simplemente no hay con que compararlo.
   fuente actual trae esta cuota de mercado, asi que quedan siempre como
   "prediccion del modelo — sin mercado" (`/predictions/model-only`) hasta
   que se integre una fuente que si la traiga.
-- **Tarjetas y corners quedan aparcados (decision del usuario, 2026-09-18)**:
-  la unica fuente viable para esos mercados (API-Football) exige plan de
-  pago para acceder a la temporada en curso — el plan Free solo cubre
+- **Actualizacion (el usuario ya paga API-Football)**: la nota de abajo
+  (2026-09-18) quedo desactualizada en cuanto al PORQUE, pero el estado
+  final de tarjetas sigue siendo el mismo por un motivo distinto y real:
+  **corners** ya esta implementado y verificado end-to-end (ver seccion
+  de API-Football mas arriba); **tarjetas** sigue sin mercado, pero no
+  por plan de pago — confirmado con datos reales que ninguna casa que
+  agrega API-Football ofrece ese mercado para estas ligas en absoluto.
+- ~~Tarjetas y corners quedan aparcados (decision del usuario,
+  2026-09-18)~~ — nota historica, ver punto de arriba: la unica fuente
+  viable para esos mercados (API-Football) exigia entonces plan de pago
+  para acceder a la temporada en curso — el plan Free solo cubria
   temporadas historicas cerradas (2022-2024), inutil para cuotas de
-  partidos futuros. El adapter (`ingestion/api_football/odds_provider.py`)
-  queda implementado y funcional por si en el futuro se activa un plan de
-  pago, pero deshabilitado por decision de producto, no por un bug. Sin
-  el, esos mercados quedan siempre como "prediccion del modelo — sin
-  mercado" (`/predictions/model-only`) y no compiten en el ranking de
-  "mejores señales". El foco pasa a ser 1X2 y goles (incluido BTTS).
+  partidos futuros. El foco paso a ser 1X2 y goles (incluido BTTS)
+  mientras tanto.
 
 Activacion (gratis, sin tarjeta):
 1. Registrate en https://the-odds-api.com/#get-access (plan free = 500

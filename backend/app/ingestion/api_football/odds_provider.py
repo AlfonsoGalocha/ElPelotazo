@@ -3,10 +3,18 @@
 Cubre TODOS los mercados con fuente real que usa este proyecto en un
 UNICO fetch por partido (una sola llamada a `/odds` por `fixture_id`,
 nunca dos): 1X2 (match_result), goles Over/Under (over_under_goals),
-BTTS, y tarjetas/corners (cards_total/corners_total) -- estos dos
-ultimos porque se comprobo que The Odds API no los ofrece para futbol en
-NINGUN plan (su catalogo se limita a resultado y totales de goles), no es
-una cuestion de configuracion.
+BTTS, y corners (corners_total) -- este ultimo porque se comprobo que
+The Odds API no lo ofrece para futbol en NINGUN plan (su catalogo se
+limita a resultado y totales de goles), no es una cuestion de
+configuracion.
+
+Tarjetas (cards) NO se cubre (pedido real del usuario, tras confirmar
+contra una respuesta real de /odds): de ~120 mercados distintos
+devueltos para un partido, ninguno menciona "card" -- ninguna casa de
+las que agrega API-Football ofrece ese mercado para estas 5 ligas, asi
+que intentar reconocerlo solo produciria predicciones "sin mercado"
+permanentes. Si algun dia una casa empieza a ofrecerlo, re-confirmar con
+`scripts/debug_match_odds.py` antes de re-añadir el hint, no asumir.
 
 Fuente: https://www.api-football.com (o via RapidAPI, mismos datos,
 distinta autenticacion -- ver `Settings.api_football_use_rapidapi`). Pide
@@ -44,11 +52,10 @@ from backend.app.utils.logging import get_logger
 logger = get_logger(__name__)
 
 # Se busca por SUBCADENA (insensible a mayusculas), no por nombre exacto
-# -- ver docstring del modulo. Los mas especificos (card/corner) van
-# ANTES que "over/under" generico: el nombre real de esos mercados en
-# API-Football tambien contiene la palabra "over/under"
-# ("Cards Over/Under"), asi que si se comprobara el hint generico primero
-# se clasificarian mal.
+# -- ver docstring del modulo. El mas especifico (corner) va ANTES que
+# "over/under" generico: el nombre real de ese mercado en API-Football
+# tambien contiene la palabra "over/under" ("Corners Over Under"), asi
+# que si se comprobara el hint generico primero se clasificaria mal.
 CORNERS_EXCLUDE = (
     "half",
     "halves",
@@ -76,12 +83,6 @@ CORNERS_EXCLUDE = (
 )
 MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str, tuple[str, ...]]] = [
     # (market_key interno, hints, tipo_de_valor, excluye)
-    # "home"/"away" tambien en cards: mismo patron de nombres de API-Football
-    # que en corners (ver CORNERS_EXCLUDE) -- nunca verificado con una
-    # respuesta real para tarjetas todavia, pero es el mismo proveedor y el
-    # mismo estilo de nombres por equipo, asi que se excluye por si acaso
-    # en vez de esperar a que se repita el mismo bug.
-    ("cards_total", ("card",), "over_under", ("half", "halves", "team", "result", "home", "away")),
     ("corners_total", ("corner",), "over_under", CORNERS_EXCLUDE),
     # Bug real reportado por el usuario (cuota de "ambos marcan" sin
     # sentido, confirmado contra la respuesta real): API-Football devuelve
@@ -125,7 +126,15 @@ MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str, tuple[str, ...]]] = [
         "over_under_goals",
         ("over/under", "goals over", "total goals"),
         "over_under",
-        ("half", "halves", "team", "result"),
+        # "card": tarjetas se decidio NO soportar (ver docstring del
+        # modulo) -- pero si alguna casa algun dia nombra ese mercado
+        # "Cards Over/Under" (nunca confirmado, solo por si acaso), SIN
+        # este exclude caeria aqui por contener "over/under" y se
+        # guardaria como si fuera una linea de GOLES, mezclando dos
+        # estadisticas sin relacion. Mejor que un bet de tarjetas se
+        # ignore del todo (comportamiento ya correcto hoy, porque no hay
+        # ningun hint para "card") a que se clasifique mal.
+        ("half", "halves", "team", "result", "card"),
     ),
 ]
 
@@ -217,7 +226,7 @@ class ApiFootballOddsProvider(ApiFootballClient):
     def fetch_secondary_odds(
         self, competition_code: str, season_year: int, date_from: dt.date, date_to: dt.date
     ) -> list[FixtureOddsSnapshot]:
-        """Compatibilidad con `update-secondary-odds`: SOLO tarjetas/corners,
+        """Compatibilidad con `update-secondary-odds`: SOLO corners,
         filtrando el mismo resultado de `fetch_odds_for_window` en vez de
         volver a pedir `/odds` -- nunca duplica la llamada por partido."""
         snapshots = self.fetch_odds_for_window(competition_code, season_year, date_from, date_to)
@@ -226,7 +235,7 @@ class ApiFootballOddsProvider(ApiFootballClient):
                 s.home_team_raw,
                 s.away_team_raw,
                 s.commence_time,
-                [r for r in s.odds if r.market in ("cards_total", "corners_total")],
+                [r for r in s.odds if r.market == "corners_total"],
             )
             for s in snapshots
         ]

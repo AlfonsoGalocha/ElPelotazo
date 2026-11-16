@@ -18,19 +18,19 @@ def _odds_response(bet_name: str, values: list[dict], bookmaker: str = "Bet365")
     ]
 
 
-def test_parses_cards_market_by_substring_not_exact_name():
-    """Sin verificacion end-to-end contra la API real: se busca por
-    SUBCADENA ("card" en minusculas) porque el nombre exacto del mercado
-    puede variar ligeramente entre bookmakers/version de la API."""
+def test_cards_markets_are_ignored_entirely():
+    """Pedido real del usuario: tarjetas se quito del todo (confirmado
+    contra una respuesta real de /odds, `debug_match_odds.py`, que
+    ninguna casa agregada por API-Football ofrece ese mercado para estas
+    5 ligas). No hay ningun hint para "card" -- un bet asi se ignora, no
+    se guarda bajo ningun mercado (ni "cards_total", que ya no existe)."""
     response = _odds_response(
         "Cards Over/Under",
         [{"value": "Over 4.5", "odd": "1.90"}, {"value": "Under 4.5", "odd": "1.85"}],
     )
     records, seen = ApiFootballOddsProvider._parse_odds_response(response)
-    assert seen == {"Cards Over/Under"}
-    by_selection = {r.selection: (r.market, r.line, r.price) for r in records}
-    assert by_selection["over"] == ("cards_total", 4.5, 1.90)
-    assert by_selection["under"] == ("cards_total", 4.5, 1.85)
+    assert seen == {"Cards Over/Under"}  # se ve en los logs de diagnostico, pero no se guarda
+    assert records == []
 
 
 def test_parses_corners_market_case_insensitively():
@@ -108,13 +108,15 @@ def test_parses_both_teams_to_score_market():
     assert by_selection["no"] == ("btts", None, 2.05)
 
 
-def test_cards_market_is_not_misclassified_as_generic_over_under():
+def test_cards_market_is_never_misclassified_as_goals():
     """ "Cards Over/Under" contiene la subcadena "over/under" (el hint
-    generico de goles) -- debe clasificarse como cards_total, no
-    over_under_goals, porque el hint de card/corner se comprueba primero."""
+    generico de goles) -- sin el exclude "card" en `over_under_goals`,
+    caeria ahi y una linea de tarjetas se guardaria como si fuera de
+    goles, mezclando dos estadisticas sin relacion. Debe ignorarse del
+    todo, nunca clasificarse como ningun mercado."""
     response = _odds_response("Cards Over/Under", [{"value": "Over 4.5", "odd": "1.90"}])
     records, _ = ApiFootballOddsProvider._parse_odds_response(response)
-    assert records[0].market == "cards_total"
+    assert records == []
 
 
 def test_full_match_over_under_is_not_overwritten_by_half_time_markets():
@@ -411,10 +413,16 @@ def test_fetch_secondary_odds_reuses_the_combined_fetch_without_duplicate_reques
                         "name": "Bet365",
                         "bets": [
                             {
+                                "name": "Corners Over Under",
+                                "values": [{"value": "Over 8.5", "odd": "1.9"}],
+                            },
+                            {"name": "Match Winner", "values": [{"value": "Home", "odd": "1.8"}]},
+                            # Tarjetas se ignora del todo (pedido real del usuario, ver
+                            # odds_provider.py) -- no debe colarse bajo ningun mercado.
+                            {
                                 "name": "Cards Over/Under",
                                 "values": [{"value": "Over 4.5", "odd": "1.9"}],
                             },
-                            {"name": "Match Winner", "values": [{"value": "Home", "odd": "1.8"}]},
                         ],
                     }
                 ]
@@ -432,6 +440,4 @@ def test_fetch_secondary_odds_reuses_the_combined_fetch_without_duplicate_reques
     odds_calls = [c for c in fake_client.calls if c[0] == "/odds"]
     assert len(odds_calls) == 1  # un unico fetch de /odds, nunca uno por "familia" de mercado
     assert len(secondary) == 1
-    assert (
-        secondary[0].odds[0].market == "cards_total"
-    )  # match_winner queda fuera, es cards/corners SOLO
+    assert secondary[0].odds[0].market == "corners_total"  # match_winner/cards quedan fuera

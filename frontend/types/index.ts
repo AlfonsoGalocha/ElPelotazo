@@ -244,10 +244,6 @@ export const MARKET_DISPLAY_NAMES: Record<string, string> = {
   home_team_over_1_5: "Local más de 1.5 goles",
   away_team_over_0_5: "Visitante marca",
   away_team_over_1_5: "Visitante más de 1.5 goles",
-  cards_over_3_5: "Más de 3.5 tarjetas",
-  cards_over_4_5: "Más de 4.5 tarjetas",
-  cards_over_5_5: "Más de 5.5 tarjetas",
-  cards_under_4_5: "Menos de 4.5 tarjetas",
   corners_over_8_5: "Más de 8.5 córners",
   corners_over_9_5: "Más de 9.5 córners",
   corners_over_10_5: "Más de 10.5 córners",
@@ -266,7 +262,6 @@ export const GOALS_MARKETS = [
   "away_team_over_1_5",
 ];
 export const MATCH_RESULT_MARKETS = ["home_win", "draw", "away_win", "double_chance_1x", "double_chance_x2", "double_chance_12"];
-export const CARDS_MARKETS = ["cards_over_3_5", "cards_over_4_5", "cards_over_5_5", "cards_under_4_5"];
 export const CORNERS_MARKETS = [
   "corners_over_8_5",
   "corners_over_9_5",
@@ -274,8 +269,12 @@ export const CORNERS_MARKETS = [
   "corners_under_9_5",
 ];
 
-export function marketFamily(market: string): "goals" | "cards" | "corners" {
-  if (market.startsWith("cards_")) return "cards";
+// Tarjetas se quito del todo (pedido real del usuario): ninguna casa
+// agregada por API-Football ofrece ese mercado para estas 5 ligas
+// (confirmado contra una respuesta real de /odds), asi que el backend ya
+// no genera ninguna prediccion "cards_*" -- ver
+// backend/app/prediction/secondary_markets.py.
+export function marketFamily(market: string): "goals" | "corners" {
   if (market.startsWith("corners_")) return "corners";
   return "goals";
 }

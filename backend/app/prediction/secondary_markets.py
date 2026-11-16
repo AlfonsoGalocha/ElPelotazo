@@ -1,15 +1,22 @@
-"""Mercados de tarjetas y corners (Fase 2/3 del roadmap, ahora implementados).
+"""Mercado de corners (Fase 2/3 del roadmap, ahora implementado).
 
 Enfoque deliberadamente simple y honesto: un unico Poisson sobre el TOTAL
-de tarjetas/corners del partido (home+away), regresado sobre las mismas
-features de forma que ya calcula `features/form.py` (yellow_cards_for/against,
-corners_for/against, fouls_for/against — todas con shift(1), sin leakage).
+de corners del partido (home+away), regresado sobre las mismas features
+de forma que ya calcula `features/form.py` (corners_for/against — con
+shift(1), sin leakage).
 
 No se modela home/away por separado (a diferencia de goles) porque el
-brief pide sobre todo lineas de TOTAL de partido para estos mercados
-(seccion 18/19: "Over 3.5 cards", "Over 8.5 corners", etc.), y un unico
-Poisson total es mas simple, mas robusto con el volumen de datos disponible,
-y evita inventar una descomposicion home/away sin base solida.
+brief pide sobre todo lineas de TOTAL de partido para este mercado
+(seccion 18/19: "Over 8.5 corners", etc.), y un unico Poisson total es mas
+simple, mas robusto con el volumen de datos disponible, y evita inventar
+una descomposicion home/away sin base solida.
+
+Tarjetas (cards) se quito del todo (pedido real del usuario): ninguna
+casa de las que agrega API-Football ofrece mercado de tarjetas para
+estas 5 ligas (confirmado contra la respuesta real, `debug_match_odds.py`
+-- de ~120 mercados distintos para un partido, ninguno menciona "card"),
+asi que una prediccion de tarjetas SIEMPRE saldria "sin mercado", sin
+cuota real con la que compararse -- ruido puro, nunca una señal real.
 
 Arbitro NO se usa todavia como feature (features/referee.py esta listo pero
 el dataset ingerido no trae fiablemente `referee_raw` desde todas las
@@ -30,22 +37,18 @@ from sklearn.preprocessing import StandardScaler
 
 from backend.app.features.goals import feature_columns
 
-MAX_COUNT = 12  # cola "12+" para tarjetas/corners (rango realista de partido)
+MAX_COUNT = 12  # cola "12+" para corners (rango realista de partido)
 
 
 @dataclass(frozen=True)
 class SecondaryMarketSpec:
     display_name: str
-    stat_family: str  # "cards" | "corners"
+    stat_family: str  # "corners" (unica familia soportada -- ver docstring del modulo)
     kind: str  # "over" | "under"
     line: float
 
 
 SECONDARY_MARKET_DEFINITIONS: dict[str, SecondaryMarketSpec] = {
-    "cards_over_3_5": SecondaryMarketSpec("Over 3.5 Cards", "cards", "over", 3.5),
-    "cards_over_4_5": SecondaryMarketSpec("Over 4.5 Cards", "cards", "over", 4.5),
-    "cards_over_5_5": SecondaryMarketSpec("Over 5.5 Cards", "cards", "over", 5.5),
-    "cards_under_4_5": SecondaryMarketSpec("Under 4.5 Cards", "cards", "under", 4.5),
     "corners_over_8_5": SecondaryMarketSpec("Over 8.5 Corners", "corners", "over", 8.5),
     "corners_over_9_5": SecondaryMarketSpec("Over 9.5 Corners", "corners", "over", 9.5),
     "corners_over_10_5": SecondaryMarketSpec("Over 10.5 Corners", "corners", "over", 10.5),
@@ -53,23 +56,14 @@ SECONDARY_MARKET_DEFINITIONS: dict[str, SecondaryMarketSpec] = {
 }
 
 STAT_FAMILY_TOTAL_COLUMNS = {
-    "cards": ("home_yellow_cards", "away_yellow_cards", "home_red_cards", "away_red_cards"),
     "corners": ("home_corners", "away_corners"),
 }
 
 
 def compute_total_column(table: pd.DataFrame, stat_family: str) -> pd.Series:
-    """Total real de tarjetas (amarillas + 2x rojas, ponderacion estandar de
-    disciplina) o corners de un partido, a partir de las columnas crudas
-    (solo para ETIQUETAR el entrenamiento; nunca se usa como feature)."""
-    if stat_family == "cards":
-        cols = STAT_FAMILY_TOTAL_COLUMNS["cards"]
-        return (
-            table[cols[0]].fillna(0)
-            + table[cols[1]].fillna(0)
-            + table[cols[2]].fillna(0)
-            + table[cols[3]].fillna(0)
-        )
+    """Total real de corners de un partido, a partir de las columnas
+    crudas (solo para ETIQUETAR el entrenamiento; nunca se usa como
+    feature)."""
     if stat_family == "corners":
         cols = STAT_FAMILY_TOTAL_COLUMNS["corners"]
         return table[cols[0]].fillna(0) + table[cols[1]].fillna(0)

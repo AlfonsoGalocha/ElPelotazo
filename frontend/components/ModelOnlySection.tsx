@@ -4,14 +4,14 @@ import { MARKET_DISPLAY_NAMES, marketFamily } from "@/types";
 
 const FAMILY_LABELS: Record<string, string> = {
   goals: "⚽ Goles",
-  cards: "🟨 Tarjetas",
   corners: "🚩 Córners",
 };
 
-// Predicciones del modelo SIN mercado (tarjetas/corners siempre; goles
-// cuando aun no hay cuota). Existen y son validas, pero nunca deben
-// competir con las senhales que si tienen mercado: se muestran aparte,
-// etiquetadas explicitamente en vez de mezclarse silenciosamente.
+// Predicciones del modelo SIN mercado (corners siempre en el dataset
+// historico; goles cuando aun no hay cuota). Existen y son validas, pero
+// nunca deben competir con las senhales que si tienen mercado: se
+// muestran aparte, etiquetadas explicitamente en vez de mezclarse
+// silenciosamente. (Tarjetas se quito del todo, ver types/index.ts.)
 export default function ModelOnlySection({ predictions }: { predictions: Prediction[] }) {
   return (
     <div id="sin-mercado" className="rounded-lg border border-surface-border bg-surface-raised p-4">
@@ -19,9 +19,9 @@ export default function ModelOnlySection({ predictions }: { predictions: Predict
         Predicción del modelo — sin mercado
       </div>
       <p className="mb-3 text-xs text-slate-500">
-        Solo probabilidad del modelo: tarjetas y córners no tienen cuotas reales en las fuentes de
-        datos usadas, y algunos mercados de goles pueden no tenerlas todavía. Sin cuota de mercado no
-        hay edge que calcular, así que estas predicciones nunca compiten en "Mejores señales".
+        Solo probabilidad del modelo: córners no tiene cuotas reales en el dataset histórico, y
+        algunos mercados de goles pueden no tenerlas todavía. Sin cuota de mercado no hay edge que
+        calcular, así que estas predicciones nunca compiten en "Mejores señales".
       </p>
       <div className="flex flex-col gap-2">
         {predictions.map((p) => (

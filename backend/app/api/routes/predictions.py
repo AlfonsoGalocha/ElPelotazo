@@ -395,7 +395,7 @@ SCOPE_QUERY = Query(
 @router.get("/top-signals", response_model=list[PredictionOut])
 def top_signals(
     limit: int = Query(20, ge=1, le=100),
-    market_family: str | None = Query(None, description="'goals', 'cards' o 'corners'"),
+    market_family: str | None = Query(None, description="'goals' o 'corners'"),
     upcoming_only: bool = Query(True),
     scope: str = SCOPE_QUERY,
     competition_code: str | None = Query(None, description="Restringe a una competicion; sin ella, las 5 del MVP"),
@@ -490,7 +490,7 @@ def top_signals(
 def best_predictions(
     limit: int = Query(5, ge=1, le=50),
     market_family: str | None = Query(
-        None, description="'goals', 'cards' o 'corners'; omitir para mezclar todas"
+        None, description="'goals' o 'corners'; omitir para mezclar todas"
     ),
     upcoming_only: bool = Query(True),
     scope: str = SCOPE_QUERY,
