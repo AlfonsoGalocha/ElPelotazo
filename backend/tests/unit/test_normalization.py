@@ -72,3 +72,16 @@ def test_resolve_team_id_matches_hull_city_without_afc_suffix(db_session):
     id_fixture_source = resolve_team_id(db_session, "openfootball_fixtures", "Hull City AFC")
     id_api_football = resolve_team_id(db_session, "api_football", "Hull City")
     assert id_fixture_source == id_api_football
+
+
+def test_resolve_team_id_matches_racing_santander_short_name(db_session):
+    """Mismo bug que Hull City (ver arriba), detectado en LaLiga: API-Football
+    manda "Racing Santander" para el equipo que openfootball_fixtures
+    llama "Real Racing Club de Santander" (alias ya existente a
+    "Santander") -- sin el alias corto, quedaba un duplicado 'scheduled'
+    huerfano que atascaba la jornada actual de LaLiga."""
+    id_fixture_source = resolve_team_id(
+        db_session, "openfootball_fixtures", "Real Racing Club de Santander"
+    )
+    id_api_football = resolve_team_id(db_session, "api_football", "Racing Santander")
+    assert id_fixture_source == id_api_football
