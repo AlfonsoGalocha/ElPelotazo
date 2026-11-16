@@ -129,8 +129,17 @@ KNOWN_ALIASES: dict[str, str] = {
     "borussia monchengladbach": "Borussia Monchengladbach",
     "fc augsburg": "Augsburg",
     "fc bayern munchen": "Bayern Munich",
+    # Mismo bug que Hull City/Racing Santander (ver mas arriba): API-Football
+    # manda "Bayern München" (sin "FC") -- tras quitar el acento
+    # (_normalize_key) la clave queda "bayern munchen", DISTINTA de
+    # "fc bayern munchen" de la linea de arriba. Creaba un Team/Match
+    # fantasma, atascando la jornada actual de Bundesliga.
+    "bayern munchen": "Bayern Munich",
     "fc schalke 04": "Schalke 04",
     "hamburger sv": "Hamburg",
+    # Mismo bug: API-Football manda "1899 Hoffenheim" (sin el prefijo
+    # "TSG"), clave distinta de "tsg 1899 hoffenheim" (ver mas abajo).
+    "1899 hoffenheim": "Hoffenheim",
     "sc freiburg": "Freiburg",
     "sc paderborn 07": "Paderborn",
     "sv 07 elversberg": "Elversberg",
@@ -181,6 +190,12 @@ KNOWN_ALIASES: dict[str, str] = {
     "as monaco fc": "Monaco",
     "angers sco": "Angers",
     "es troyes ac": "Troyes",
+    # Mismo bug que Hull City/Racing Santander/Bayern Munchen/1899
+    # Hoffenheim (ver mas arriba): API-Football manda "Estac Troyes"
+    # (ESTAC = sigla del club, no el nombre completo), clave distinta de
+    # "es troyes ac" de la linea de arriba. Atascaba la jornada actual de
+    # Ligue 1.
+    "estac troyes": "Troyes",
     "fc lorient": "Lorient",
     "le havre ac": "Le Havre",
     "le mans fc": "Le Mans",

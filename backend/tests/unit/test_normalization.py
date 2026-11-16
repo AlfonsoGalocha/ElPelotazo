@@ -85,3 +85,27 @@ def test_resolve_team_id_matches_racing_santander_short_name(db_session):
     )
     id_api_football = resolve_team_id(db_session, "api_football", "Racing Santander")
     assert id_fixture_source == id_api_football
+
+
+def test_resolve_team_id_matches_bayern_munchen_without_fc_prefix(db_session):
+    """Mismo bug detectado en Bundesliga: API-Football manda "Bayern
+    München" (sin "FC"); tras quitar el acento la clave de alias queda
+    "bayern munchen", distinta de "fc bayern munchen" (ya existente)."""
+    id_fixture_source = resolve_team_id(db_session, "openfootball_fixtures", "FC Bayern München")
+    id_api_football = resolve_team_id(db_session, "api_football", "Bayern München")
+    assert id_fixture_source == id_api_football
+
+
+def test_resolve_team_id_matches_hoffenheim_without_tsg_prefix(db_session):
+    """Mismo bug: API-Football manda "1899 Hoffenheim" (sin "TSG")."""
+    id_fixture_source = resolve_team_id(db_session, "openfootball_fixtures", "TSG 1899 Hoffenheim")
+    id_api_football = resolve_team_id(db_session, "api_football", "1899 Hoffenheim")
+    assert id_fixture_source == id_api_football
+
+
+def test_resolve_team_id_matches_estac_troyes_abbreviation(db_session):
+    """Mismo bug detectado en Ligue 1: API-Football manda "Estac Troyes"
+    (sigla del club), distinta de "es troyes ac" (ya existente)."""
+    id_fixture_source = resolve_team_id(db_session, "openfootball_fixtures", "ES Troyes AC")
+    id_api_football = resolve_team_id(db_session, "api_football", "Estac Troyes")
+    assert id_fixture_source == id_api_football
