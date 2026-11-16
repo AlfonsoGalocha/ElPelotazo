@@ -81,3 +81,70 @@ def calibration_report_for_table(
     report["market"] = market_key
     report["n_folds"] = len(results)
     return report
+
+
+def ensemble_calibration_report(
+    table: pd.DataFrame, market_key: str, min_train_seasons: int = 2
+) -> dict:
+    """Igual que `calibration_report_for_table`, pero sobre el ENSEMBLE REAL
+    (Dixon-Coles + clasificador ML + pesos aprendidos), no sobre Dixon-Coles
+    aislado -- ver backtesting/ensemble_engine.py para el porque de este
+    motor separado. Compara, sobre las mismas predicciones out-of-fold
+    walk-forward: la probabilidad CRUDA del ensemble, la calibrada con
+    isotonic y la calibrada con Platt scaling (regresion logistica sobre el
+    logit de la probabilidad cruda) -- las dos opciones que
+    `models/calibration/calibrators.py` ya implementa, nunca evaluadas
+    hasta ahora contra el ensemble real.
+
+    Cada calibrador se ajusto, DENTRO de cada fold, en un holdout de
+    seleccion/calibracion separado del propio fold de test (ver
+    ensemble_engine.py) -- nunca sobre los mismos partidos que se reportan
+    aqui como "after", por lo que no hay data leakage ni en el ensemble ni
+    en la calibracion.
+    """
+    from backend.app.backtesting.ensemble_engine import run_ensemble_walk_forward_backtest
+
+    results = run_ensemble_walk_forward_backtest(
+        table, market_key, min_train_seasons=min_train_seasons
+    )
+    if not results:
+        return {
+            "error": "sin folds de backtest suficientes para este mercado/competicion (ensemble)"
+        }
+
+    y_true = np.concatenate([r.y_true for r in results])
+    y_prob_raw = np.concatenate([r.p_raw for r in results])
+
+    report: dict = {
+        "market": market_key,
+        "n_folds": len(results),
+        "n_test": int(len(y_true)),
+        "raw": {
+            "brier_score": brier_score(y_true, y_prob_raw),
+            "log_loss": log_loss_score(y_true, y_prob_raw),
+            "expected_calibration_error": expected_calibration_error(y_true, y_prob_raw),
+        },
+    }
+    for method in ("isotonic", "platt"):
+        # Un fold sin suficiente muestra de seleccion para ajustar ESTE
+        # calibrador simplemente no aporta filas a `p_calibrated[method]`
+        # (ver ensemble_engine.py) -- se concatenan solo los folds que SI
+        # lo ajustaron, nunca se inventa un valor para los que no.
+        y_true_method = np.concatenate(
+            [r.y_true for r in results if method in r.p_calibrated]
+        )
+        y_prob_method = np.concatenate(
+            [r.p_calibrated[method] for r in results if method in r.p_calibrated]
+        )
+        if len(y_true_method) == 0:
+            report[method] = {
+                "error": "ningun fold ajusto este calibrador (muestra de seleccion insuficiente)"
+            }
+            continue
+        report[method] = {
+            "n_test": int(len(y_true_method)),
+            "brier_score": brier_score(y_true_method, y_prob_method),
+            "log_loss": log_loss_score(y_true_method, y_prob_method),
+            "expected_calibration_error": expected_calibration_error(y_true_method, y_prob_method),
+        }
+    return report

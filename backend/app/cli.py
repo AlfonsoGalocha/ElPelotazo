@@ -17,7 +17,10 @@ from pathlib import Path
 import typer
 
 from backend.app.agent.alerts import generate_alerts_for_current_round
-from backend.app.backtesting.calibration import calibration_report_for_table
+from backend.app.backtesting.calibration import (
+    calibration_report_for_table,
+    ensemble_calibration_report,
+)
 from backend.app.backtesting.engine import run_walk_forward_backtest, summarize_backtest
 from backend.app.backtesting.reports import write_backtest_report
 from backend.app.config.settings import REPO_ROOT, get_settings
@@ -783,6 +786,64 @@ def calibration_report(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(report_data, indent=2, default=str))
     typer.echo(f"[calibration-report] informe completo escrito en {output_path}")
+
+
+@app.command("ensemble-calibration-report")
+def ensemble_calibration_report_cmd(
+    competition: str, market: str = "home_win", output: str | None = None
+) -> None:
+    """Igual que `calibration-report`, pero sobre el ENSEMBLE REAL (Dixon-Coles
+    + clasificador ML + pesos de mezcla aprendidos), no sobre Dixon-Coles
+    aislado -- ver backtesting/ensemble_engine.py.
+
+    `calibration-report` solo puede responder "¿calibrar Dixon-Coles solo
+    mejora algo?" (ya demostrado que NO, en LaLiga, para home_win/draw/
+    double_chance_1x). Este comando responde la pregunta que de verdad
+    importa: "¿calibrar lo que REALMENTE se sirve en produccion mejora
+    algo, y con que metodo (isotonic o Platt)?" -- evaluado walk-forward,
+    con el ganador ML y los pesos de ensemble reaprendidos en cada fold
+    sobre un holdout de seleccion separado del propio fold de test (nunca
+    leakage). Sigue siendo solo DIAGNOSTICO: no cambia nada del pipeline
+    de produccion por si solo.
+    """
+    init_db()
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=competition).one_or_none()
+        if comp is None:
+            typer.echo(f"Competicion no encontrada: {competition}")
+            raise typer.Exit(1)
+        matches = load_matches_dataframe(db, comp.id)
+        table = build_match_feature_table(matches)
+        report_data = ensemble_calibration_report(table, market)
+
+    if "error" in report_data:
+        typer.echo(f"[ensemble-calibration-report] {report_data['error']}")
+        return
+
+    def _fmt(block: dict) -> str:
+        if "error" in block:
+            return block["error"]
+        return (
+            f"brier={block['brier_score']:.4f} log_loss={block['log_loss']:.4f} "
+            f"ECE={block['expected_calibration_error']:.4f} (n={block['n_test']})"
+        )
+
+    typer.echo(
+        f"[ensemble-calibration-report] {competition}/{market} "
+        f"(n_folds={report_data['n_folds']}, n_test={report_data['n_test']}):"
+    )
+    typer.echo(f"  raw      : {_fmt(report_data['raw'])}")
+    typer.echo(f"  isotonic : {_fmt(report_data['isotonic'])}")
+    typer.echo(f"  platt    : {_fmt(report_data['platt'])}")
+
+    output_path = (
+        Path(output)
+        if output
+        else REPO_ROOT / "data" / "processed" / f"ensemble_calibration_{competition}_{market}.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report_data, indent=2, default=str))
+    typer.echo(f"[ensemble-calibration-report] informe completo escrito en {output_path}")
 
 
 @app.command()
