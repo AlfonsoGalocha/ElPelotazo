@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getBestOfDay } from "@/lib/api";
+import { formatMatchDateOnly } from "@/lib/dates";
 import { MARKET_DISPLAY_NAMES, marketFamily } from "@/types";
 import SignalBadge from "./SignalBadge";
 import MarketQualityBadge from "./MarketQualityBadge";
@@ -55,7 +56,7 @@ export default async function BestOfDayWidget() {
             <div>
               <div className="text-[11px] uppercase tracking-wide text-slate-500">
                 {prediction.match.competition.name} ·{" "}
-                {new Date(prediction.match.kickoff_utc).toLocaleDateString("es-ES", {
+                {formatMatchDateOnly(prediction.match.kickoff_utc, {
                   weekday: "short",
                   day: "2-digit",
                   month: "short",

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getCompetitions, getTopSignals } from "@/lib/api";
 import type { SignalScope } from "@/lib/api";
+import { formatMatchDateOnly } from "@/lib/dates";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
 import MarketQualityBadge from "@/components/MarketQualityBadge";
@@ -83,7 +84,7 @@ export default async function TopSignalsPage({
       <h1 className="mb-1 text-xl font-semibold text-slate-100">Mejores señales</h1>
       <p className="mb-4 text-sm text-slate-500">
         {date
-          ? `Solo partidos del ${new Date(`${date}T00:00:00`).toLocaleDateString("es-ES", {
+          ? `Solo partidos del ${formatMatchDateOnly(`${date}T00:00:00`, {
               weekday: "long",
               day: "2-digit",
               month: "short",
@@ -280,7 +281,7 @@ export default async function TopSignalsPage({
                   </Link>
                 </td>
                 <td className="px-3 py-2 text-slate-400">
-                  {new Date(p.match.kickoff_utc).toLocaleDateString("es-ES", {
+                  {formatMatchDateOnly(p.match.kickoff_utc, {
                     weekday: "short",
                     day: "2-digit",
                     month: "short",

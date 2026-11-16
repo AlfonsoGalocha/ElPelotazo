@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Prediction } from "@/types";
 import { MARKET_DISPLAY_NAMES } from "@/types";
+import { formatMatchDateOnly, formatMatchTimeOnly } from "@/lib/dates";
 import SignalBadge from "./SignalBadge";
 
 // Pedido real del usuario: en vez de una lista vertical, partidos en
@@ -34,7 +35,6 @@ export default function MatchGridCard({
   if (predictions.length === 0) return null;
   const match = predictions[0].match;
   const best = forcedBest ?? predictions.find((p) => p.is_best_prediction);
-  const kickoff = new Date(match.kickoff_utc);
 
   return (
     <Link
@@ -42,9 +42,9 @@ export default function MatchGridCard({
       className="flex flex-col gap-2 rounded-lg border border-surface-border bg-surface-raised p-3 text-sm hover:border-slate-500 hover:bg-black/20"
     >
       <div className="text-xs text-slate-500">
-        {kickoff.toLocaleDateString("es-ES", { weekday: "short", day: "2-digit", month: "short" })}
+        {formatMatchDateOnly(match.kickoff_utc, { weekday: "short", day: "2-digit", month: "short" })}
         {" · "}
-        {kickoff.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" })}
+        {formatMatchTimeOnly(match.kickoff_utc, { hour: "2-digit", minute: "2-digit" })}
       </div>
       <div className="font-medium leading-snug text-slate-100">
         {match.home_team.canonical_name}

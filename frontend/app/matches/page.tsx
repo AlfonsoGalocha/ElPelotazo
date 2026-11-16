@@ -3,12 +3,13 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { getCompetitions, getMatchesList } from "@/lib/api";
+import { formatMatchDateTime } from "@/lib/dates";
 import type { Competition, Match } from "@/types";
 
 type StatusFilter = "all" | "scheduled" | "finished";
 
 function formatKickoff(iso: string): string {
-  return new Date(iso).toLocaleString("es-ES", {
+  return formatMatchDateTime(iso, {
     weekday: "short",
     day: "2-digit",
     month: "short",

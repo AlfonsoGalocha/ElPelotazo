@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { Prediction } from "@/types";
 import { MARKET_DISPLAY_NAMES } from "@/types";
+import { formatMatchDateOnly } from "@/lib/dates";
 import SignalBadge from "./SignalBadge";
 import MarketQualityBadge from "./MarketQualityBadge";
 
@@ -10,7 +11,6 @@ import MarketQualityBadge from "./MarketQualityBadge";
 // una si no la hay).
 export default function FeaturedMatchBox({ prediction }: { prediction: Prediction }) {
   const match = prediction.match;
-  const kickoff = new Date(match.kickoff_utc);
 
   return (
     <Link
@@ -20,7 +20,7 @@ export default function FeaturedMatchBox({ prediction }: { prediction: Predictio
       <div>
         <div className="text-xs uppercase tracking-wide text-slate-500">
           {match.competition.name} ·{" "}
-          {kickoff.toLocaleDateString("es-ES", {
+          {formatMatchDateOnly(match.kickoff_utc, {
             weekday: "short",
             day: "2-digit",
             month: "short",
