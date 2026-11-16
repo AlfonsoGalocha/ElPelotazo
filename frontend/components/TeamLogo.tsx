@@ -2,16 +2,20 @@
 
 import { useEffect, useState } from "react";
 
-// Pedido real del usuario (rediseño): escudos REALES por equipo,
-// automaticos por nombre -- nunca emojis, nunca un logo generico/
-// inventado. Cuando no se encuentra un escudo real (nombre sin match en
-// TheSportsDB, sin red, etc.) cae a un placeholder elegante: un circulo
-// con las iniciales del equipo, color derivado del propio nombre (para
-// que cada equipo tenga SIEMPRE el mismo color, sin tabla manual que
-// mantener).
+// Pedido real del usuario (rediseño, y luego "ya tenemos key de
+// API-Football"): escudos REALES por equipo -- nunca emojis, nunca un
+// logo generico/inventado. Fuente PREFERIDA: `logoUrl` (el campo
+// `Team.logo_url` que ya guarda el backend, capturado directamente de
+// API-Football al ingerir cada fixture -- real, estable, sin busqueda por
+// nombre). Si no llega (equipo que aun no ha aparecido en ningun fixture
+// de API-Football) se cae a `/api/team-logo` (TheSportsDB, busqueda por
+// nombre) como red de seguridad. Si NINGUNA de las dos fuentes tiene
+// escudo, placeholder elegante: un circulo con las iniciales del equipo,
+// color derivado del propio nombre (para que cada equipo tenga SIEMPRE el
+// mismo color, sin tabla manual que mantener).
 //
-// Honestidad: la ruta /api/team-logo (ver ese fichero) no se ha podido
-// probar contra la red real desde este entorno de desarrollo (egress
+// Honestidad: la ruta /api/team-logo (fallback) no se ha podido probar
+// contra la red real desde este entorno de desarrollo (egress
 // restringido) -- comprobar visualmente una vez desplegado con acceso a
 // internet real.
 const SIZE_CLASSES: Record<"sm" | "md" | "lg", string> = {
@@ -61,20 +65,28 @@ const logoCache = new Map<string, string | null>();
 
 export default function TeamLogo({
   name,
+  logoUrl: providedLogoUrl,
   size = "md",
   className = "",
 }: {
   name: string;
+  // Escudo real ya resuelto por el backend (`Team.logo_url`, via
+  // API-Football) -- cuando llega, se usa directamente y nunca se llama a
+  // `/api/team-logo`. `null`/`undefined` activan el fallback por nombre.
+  logoUrl?: string | null;
   size?: "sm" | "md" | "lg";
   className?: string;
 }) {
-  const [logoUrl, setLogoUrl] = useState<string | null>(() => logoCache.get(name) ?? null);
+  const [fallbackLogoUrl, setFallbackLogoUrl] = useState<string | null>(
+    () => logoCache.get(name) ?? null
+  );
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     setFailed(false);
+    if (providedLogoUrl) return; // ya tenemos un escudo real, no hace falta el fallback
     if (logoCache.has(name)) {
-      setLogoUrl(logoCache.get(name) ?? null);
+      setFallbackLogoUrl(logoCache.get(name) ?? null);
       return;
     }
     let cancelled = false;
@@ -83,27 +95,29 @@ export default function TeamLogo({
       .then((data: { logoUrl: string | null }) => {
         if (cancelled) return;
         logoCache.set(name, data.logoUrl);
-        setLogoUrl(data.logoUrl);
+        setFallbackLogoUrl(data.logoUrl);
       })
       .catch(() => {
         if (!cancelled) {
           logoCache.set(name, null);
-          setLogoUrl(null);
+          setFallbackLogoUrl(null);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [name]);
+  }, [name, providedLogoUrl]);
 
-  if (!logoUrl || failed) {
+  const resolvedLogoUrl = providedLogoUrl || fallbackLogoUrl;
+
+  if (!resolvedLogoUrl || failed) {
     return <InitialsAvatar name={name} size={size} />;
   }
 
   return (
     // eslint-disable-next-line @next/next/no-img-element -- hotlink externo con fallback via onError; next/image no permite ese swap tan simple.
     <img
-      src={logoUrl}
+      src={resolvedLogoUrl}
       alt={name}
       title={name}
       className={`shrink-0 rounded-full bg-white/5 object-contain ${SIZE_CLASSES[size].split(" ").slice(0, 2).join(" ")} ${className}`}

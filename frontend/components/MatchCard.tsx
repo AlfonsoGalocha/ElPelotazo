@@ -40,13 +40,13 @@ export default function MatchCard({ prediction }: { prediction: Prediction }) {
 
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
-          <TeamLogo name={match.home_team.canonical_name} size="md" />
+          <TeamLogo name={match.home_team.canonical_name} logoUrl={match.home_team.logo_url} size="md" />
           <span className="truncate text-sm font-medium text-slate-100">{match.home_team.canonical_name}</span>
         </div>
         <span className="shrink-0 px-1 text-xs font-medium text-slate-600">vs</span>
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2.5 text-right">
           <span className="truncate text-sm font-medium text-slate-100">{match.away_team.canonical_name}</span>
-          <TeamLogo name={match.away_team.canonical_name} size="md" />
+          <TeamLogo name={match.away_team.canonical_name} logoUrl={match.away_team.logo_url} size="md" />
         </div>
       </div>
 

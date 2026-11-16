@@ -29,6 +29,13 @@ class RawMatchRecord:
     referee_raw: str | None = None
     matchday: int | None = None  # jornada, cuando la fuente la provee (ver fixtures_provider.py)
 
+    # Escudo REAL del equipo, cuando la fuente lo trae en el mismo payload
+    # que el partido (API-Football: `teams.home/away.logo`) -- `None` para
+    # fuentes que no lo proveen (football-data.co.uk, openfootball...),
+    # nunca un valor inventado. Ver db/models/core.py::Team.logo_url.
+    home_logo_url: str | None = None
+    away_logo_url: str | None = None
+
     home_shots: int | None = None
     away_shots: int | None = None
     home_shots_on_target: int | None = None

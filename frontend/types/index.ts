@@ -1,6 +1,10 @@
 export interface Team {
   id: number;
   canonical_name: string;
+  // Escudo real (API-Football), `null` si este equipo aun no ha aparecido
+  // en ningun fixture de API-Football -- ver TeamLogo.tsx (placeholder
+  // elegante en ese caso, nunca una imagen inventada).
+  logo_url: string | null;
 }
 
 export interface Competition {

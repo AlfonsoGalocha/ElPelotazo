@@ -50,6 +50,8 @@ def _fixture(
     home_goals=None,
     away_goals=None,
     round_name: str = "Regular Season - 10",
+    home_logo: str | None = None,
+    away_logo: str | None = None,
 ):
     return {
         "fixture": {
@@ -57,7 +59,10 @@ def _fixture(
             "date": "2026-01-10T20:00:00+00:00",
             "status": {"short": status},
         },
-        "teams": {"home": {"name": home}, "away": {"name": away}},
+        "teams": {
+            "home": {"name": home, "logo": home_logo},
+            "away": {"name": away, "logo": away_logo},
+        },
         "goals": {"home": home_goals, "away": away_goals},
         "score": {"halftime": {"home": None, "away": None}},
         "league": {"round": round_name},
@@ -111,6 +116,39 @@ def test_fetch_matches_logs_warning_when_round_format_unrecognized(caplog):
 
     assert records[0].matchday is None
     assert any("unrecognized_round_format" in r.getMessage() for r in caplog.records)
+
+
+def test_fetch_matches_captures_real_team_crest_urls():
+    """Pedido real del usuario: escudos reales de los equipos via
+    API-Football, sin peticion ni coste adicional -- el campo `logo` ya
+    viene en el mismo payload del fixture."""
+    payload = {
+        "response": [
+            _fixture(
+                5,
+                "NS",
+                home_logo="https://media.api-sports.io/football/teams/541.png",
+                away_logo="https://media.api-sports.io/football/teams/529.png",
+            )
+        ],
+        "errors": [],
+    }
+    provider = ApiFootballMatchProvider(http_client=_FakeHttpClient(payload))
+
+    records = provider.fetch_matches("laliga", "2025/26")
+
+    assert records[0].home_logo_url == "https://media.api-sports.io/football/teams/541.png"
+    assert records[0].away_logo_url == "https://media.api-sports.io/football/teams/529.png"
+
+
+def test_fetch_matches_leaves_crest_urls_none_when_api_does_not_provide_them():
+    payload = {"response": [_fixture(6, "NS")], "errors": []}
+    provider = ApiFootballMatchProvider(http_client=_FakeHttpClient(payload))
+
+    records = provider.fetch_matches("laliga", "2025/26")
+
+    assert records[0].home_logo_url is None
+    assert records[0].away_logo_url is None
 
 
 def test_fetch_matches_raises_for_unsupported_competition():
