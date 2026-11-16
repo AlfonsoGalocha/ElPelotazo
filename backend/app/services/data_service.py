@@ -17,7 +17,7 @@ from backend.app.ingestion.base import (
     RawOddsRecord,
 )
 from backend.app.ingestion.odds.provider import OddsApiProvider
-from backend.app.normalization.bookmakers import canonical_bookmaker
+from backend.app.normalization.bookmakers import canonical_bookmaker, is_excluded_bookmaker
 from backend.app.normalization.competitions import resolve_competition_id, resolve_season_id
 from backend.app.normalization.players import resolve_referee_id
 from backend.app.normalization.teams import resolve_team_id
@@ -228,6 +228,10 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
     if record.odds:
         db.query(MatchOdds).filter_by(match_id=match.id).delete()
         for odds in record.odds:
+            # Pedido real del usuario: Betano fuera del todo, ver
+            # normalization/bookmakers.py::EXCLUDED_BOOKMAKERS.
+            if is_excluded_bookmaker(odds.bookmaker):
+                continue
             db.add(
                 MatchOdds(
                     match_id=match.id,
@@ -340,6 +344,13 @@ def _attach_odds_snapshots(
         deduped_odds: dict[tuple[str, str, float | None, str], RawOddsRecord] = {}
         duplicate_keys: set[tuple[str, str, float | None, str]] = set()
         for odds in snapshot.odds:
+            # Pedido real del usuario: Betano fuera del todo (la unica
+            # casa que metia cuotas sin sentido) -- se descarta ANTES de
+            # entrar en deduped_odds, asi ni se guarda ni cuenta en
+            # bookmakers_used/bookmakers_count. Ver
+            # normalization/bookmakers.py::EXCLUDED_BOOKMAKERS.
+            if is_excluded_bookmaker(odds.bookmaker):
+                continue
             bookmaker = canonical_bookmaker(odds.bookmaker)
             key = (bookmaker, odds.market, odds.line, odds.selection)
             if key in deduped_odds:

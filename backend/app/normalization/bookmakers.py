@@ -40,6 +40,22 @@ KNOWN_ALIASES: dict[str, str] = {
     "williamhill": "William Hill",
 }
 
+# Pedido real del usuario ("quiero fuera" a Betano, confirmado por el
+# usuario como la unica casa que mete cuotas sin sentido): casas EXCLUIDAS
+# del todo -- ni se guardan en MatchOdds/MatchOddsHistory, ni cuentan en
+# el consenso de mercado (bookmakers_used/bookmakers_count), en NINGUN
+# mercado ni fuente. Se comprueba sobre la clave normalizada (minusculas,
+# sin acentos/espacios), igual que KNOWN_ALIASES, para que no dependa de
+# que mayusculas/espacios exactos coincidan con los de la fuente.
+EXCLUDED_BOOKMAKERS: frozenset[str] = frozenset({"betano"})
+
+
+def is_excluded_bookmaker(raw_name: str) -> bool:
+    """True si esta casa debe descartarse por completo (ver
+    EXCLUDED_BOOKMAKERS) -- se comprueba ANTES de guardar nada, nunca
+    despues, para que ni aparezca en bookmakers_used/bookmakers_count."""
+    return _normalize_key(raw_name) in EXCLUDED_BOOKMAKERS
+
 
 def _normalize_key(name: str) -> str:
     key = name.strip().lower()
