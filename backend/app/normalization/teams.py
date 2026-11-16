@@ -92,6 +92,17 @@ KNOWN_ALIASES: dict[str, str] = {
     "everton fc": "Everton",
     "fulham fc": "Fulham",
     "hull city afc": "Hull",
+    # Bug real reportado por el usuario: API-Football llama a este equipo
+    # "Hull City" (sin "AFC"), una clave DISTINTA de "hull city afc" de
+    # arriba -- sin este alias, `resolve_team_id` le daba un team_id
+    # distinto al de openfootball_fixtures ("Hull"), asi que el partido
+    # finalizado que trae la API-Football nunca se absorbia contra la fila
+    # ya existente (creada como 'scheduled' por openfootball): quedaba un
+    # duplicado huerfano para siempre en 'scheduled', y eso bastaba para
+    # que `round_service.get_current_round` considerara esa jornada como
+    # "actual" indefinidamente aunque el resto de sus partidos ya hubieran
+    # terminado.
+    "hull city": "Hull",
     "ipswich town fc": "Ipswich",
     "leeds united fc": "Leeds",
     "liverpool fc": "Liverpool",
