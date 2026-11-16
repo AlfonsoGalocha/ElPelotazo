@@ -58,3 +58,17 @@ def test_resolve_team_id_matches_api_football_short_prefix_variants(db_session):
     id_api_football = resolve_team_id(db_session, "api_football", "FSV Mainz 05")
     id_odds_api = resolve_team_id(db_session, "the_odds_api", "FSV Mainz 05")
     assert id_fixture_source == id_api_football == id_odds_api
+
+
+def test_resolve_team_id_matches_hull_city_without_afc_suffix(db_session):
+    """Bug real reportado por el usuario: openfootball_fixtures manda "Hull
+    City AFC" (ya tenia alias a "Hull") pero api_football manda "Hull
+    City" (SIN "AFC") -- una clave de alias DISTINTA, nunca reconocida
+    como el mismo equipo. El partido finalizado que trae api_football
+    creaba un Team/Match fantasma en vez de absorber el ya existente:
+    quedaba un duplicado 'scheduled' huerfano para siempre, lo que a su
+    vez rompia la deteccion de "jornada actual" de TODA la liga (ver
+    round_service.py) aunque el resto de la jornada ya estuviera jugada."""
+    id_fixture_source = resolve_team_id(db_session, "openfootball_fixtures", "Hull City AFC")
+    id_api_football = resolve_team_id(db_session, "api_football", "Hull City")
+    assert id_fixture_source == id_api_football
