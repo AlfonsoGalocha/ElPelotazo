@@ -24,7 +24,7 @@ from backend.app.config.settings import REPO_ROOT, get_settings
 from backend.app.db.database import init_db, session_scope
 from backend.app.db.models.core import Competition, Season, Team, TeamNameMapping
 from backend.app.db.models.matches import Match
-from backend.app.db.models.modeling import Prediction
+from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.features.goals import build_match_feature_table, feature_columns
 from backend.app.ingestion.api_football.fixtures_provider import ApiFootballMatchProvider
 from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
@@ -528,6 +528,26 @@ def _merge_team(db, duplicate: Team, canonical: Team) -> tuple[int, int]:
             keep, drop = (match, sibling) if match.status == "finished" else (sibling, match)
             if keep.status != "finished" and drop.status == "finished":
                 keep, drop = drop, keep
+            # Bug real reportado por el usuario: si `drop` es un duplicado de
+            # una temporada YA LIQUIDADA (ambas filas del mismo partido real
+            # llegaron a tener sus propias predicciones generadas Y
+            # liquidadas antes de que existiera el alias que las reconoce
+            # como el mismo equipo -- no solo el caso de la jornada actual,
+            # donde `drop` sigue 'scheduled' y nunca llega a liquidarse),
+            # borrar `Prediction` sin antes borrar su `PredictionResult`
+            # revienta con ForeignKeyViolation en Postgres (produccion;
+            # SQLite, usado en tests, no fuerza la FK por defecto y deja
+            # una fila huerfana en silencio en vez de romper). Al no estar
+            # en una sesion independiente, ese fallo deshacia TODA la
+            # fusion de este comando (de cualquier equipo, no solo el
+            # problematico) al no llegar nunca al `db.commit()` final.
+            drop_prediction_ids = [
+                p.id for p in db.query(Prediction.id).filter(Prediction.match_id == drop.id)
+            ]
+            if drop_prediction_ids:
+                db.query(PredictionResult).filter(
+                    PredictionResult.prediction_id.in_(drop_prediction_ids)
+                ).delete(synchronize_session=False)
             db.query(Prediction).filter(Prediction.match_id == drop.id).delete()
             db.delete(drop)
             db.flush()
