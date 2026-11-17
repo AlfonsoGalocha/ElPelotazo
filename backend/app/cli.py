@@ -22,6 +22,10 @@ from backend.app.backtesting.calibration import (
     ensemble_calibration_report,
 )
 from backend.app.backtesting.engine import run_walk_forward_backtest, summarize_backtest
+from backend.app.backtesting.ranking_comparison import (
+    compare_ranking_strategies,
+    load_settled_predictions,
+)
 from backend.app.backtesting.reports import write_backtest_report
 from backend.app.config.settings import REPO_ROOT, get_settings
 from backend.app.db.database import init_db, session_scope
@@ -921,6 +925,72 @@ def report(date: str = typer.Option(None)) -> None:
     output_path = REPO_ROOT / "data" / "processed" / f"report_{target_date.isoformat()}.json"
     output_path.write_text(json.dumps(report_data, indent=2, default=str), encoding="utf-8")
     typer.echo(f"[report] escrito en {output_path}")
+
+
+@app.command("compare-ranking-strategies")
+def compare_ranking_strategies_cmd(
+    competition: str = typer.Option(None),
+    market: str = typer.Option(None),
+    output: str | None = None,
+) -> None:
+    """Revision "motor profesional 2.0", Fase 7: compara `signal_score` (v1,
+    el de produccion) contra `signal_score_v2` (probabilidad calibrada +
+    EV ajustado al riesgo + incertidumbre) sobre predicciones YA
+    LIQUIDADAS, restringido al TOP-N de cada estrategia -- la evidencia
+    real que decide si v2 deberia activarse en produccion, nunca una
+    suposicion. Ver backtesting/ranking_comparison.py para la metodologia
+    completa (nunca hay riesgo de leakage: ambos scores se calculan sobre
+    campos ya congelados en el momento de generar la prediccion, antes de
+    conocerse el resultado real).
+
+    Sin --competition, compara sobre TODAS las predicciones liquidadas del
+    sistema (de cualquier competicion/mercado).
+    """
+    init_db()
+    with session_scope() as db:
+        settled = load_settled_predictions(db, competition_code=competition, market=market)
+        report_data = compare_ranking_strategies(settled)
+
+    scope = f"{competition or 'todas las competiciones'}/{market or 'todos los mercados'}"
+    if report_data.n_settled_with_market == 0:
+        typer.echo(
+            f"[compare-ranking-strategies] {scope}: sin predicciones liquidadas con cuota de "
+            "mercado todavia -- nada que comparar."
+        )
+        return
+
+    typer.echo(
+        f"[compare-ranking-strategies] {scope} "
+        f"(n_liquidadas_con_mercado={report_data.n_settled_with_market}):"
+    )
+    for s in report_data.slices:
+        roi_str = f"{s.roi:+.3f}" if s.roi is not None else "—"
+        win_rate_str = f"{s.win_rate:.1%}" if s.win_rate is not None else "—"
+        typer.echo(
+            f"  {s.strategy:3s} top-{s.top_n:>4s}: n={s.n_bets:4d}  roi={roi_str}  "
+            f"win_rate={win_rate_str}  pnl={s.total_pnl:+.2f}  "
+            f"max_drawdown={s.max_drawdown:.2f}  brier={s.brier_score:.4f}"
+            if s.brier_score is not None
+            else f"  {s.strategy:3s} top-{s.top_n:>4s}: n=0"
+        )
+
+    output_path = (
+        Path(output)
+        if output
+        else REPO_ROOT / "data" / "processed" / f"ranking_comparison_{competition or 'all'}.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(
+            {
+                "n_settled_with_market": report_data.n_settled_with_market,
+                "slices": [vars(s) for s in report_data.slices],
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    typer.echo(f"[compare-ranking-strategies] informe completo escrito en {output_path}")
 
 
 if __name__ == "__main__":
