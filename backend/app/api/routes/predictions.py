@@ -272,6 +272,7 @@ def _base_signal_query(
     competition_code: str | None = None,
     min_edge_pp: float | None = None,
     min_bookmakers: int | None = None,
+    min_ev: float | None = None,
 ):
     """`scope` decide QUE VENTANA de partidos se considera (seccion 1 de la
     revision de arquitectura), en este orden de prioridad:
@@ -341,6 +342,12 @@ def _base_signal_query(
         query = query.filter(Prediction.edge >= min_edge_pp / 100.0)
     if min_bookmakers is not None:
         query = query.filter(Prediction.bookmakers_used >= min_bookmakers)
+    if min_ev is not None:
+        # Pedido real del usuario ("revision motor 2.0", Fase 6/8): filtro
+        # por Expected Value minimo, como fraccion (0.10 = EV +10%) -- un
+        # ajuste fino adicional, igual que `min_edge_pp`/`min_bookmakers`,
+        # nunca sustituye al filtro duro de `evaluate_quality_gate`.
+        query = query.filter(Prediction.expected_value >= min_ev)
     return query
 
 
@@ -409,6 +416,9 @@ def top_signals(
     max_fair_odds: float | None = Query(None, ge=1.0, description="Cuota justa MAXIMA del modelo (1/model_probability)"),
     min_edge: float | None = Query(None, ge=0.0, description="Edge minimo en PUNTOS PORCENTUALES (ej. 5 = 5pp)"),
     min_bookmakers: int | None = Query(None, ge=1, description="Numero minimo de casas respaldando la cuota"),
+    min_ev: float | None = Query(
+        None, description="Expected Value minimo, como fraccion (0.10 = EV +10%)"
+    ),
     quality: str | None = QUALITY_QUERY,
     db: Session = Depends(get_db),
 ) -> list[dict]:
@@ -438,11 +448,14 @@ def top_signals(
     (no la de mercado), pedido explicito de usuario para acotar por
     rango (p.ej. "solo entre 1 y 2" = favoritos claros segun el modelo).
 
-    `min_edge`/`min_bookmakers`/`quality`: filtros ADICIONALES ajustables
-    por request (pensados para sliders/selectores de frontend), nunca
-    sustituyen al filtro DURO de calidad (`Settings`/`evaluate_quality_gate`,
-    que ya exige un minimo de casas y edge no negativo por defecto) --
-    son un afinado extra sobre lo que ya paso ese filtro.
+    `min_edge`/`min_bookmakers`/`min_ev`/`quality`: filtros ADICIONALES
+    ajustables por request (pensados para sliders/selectores de frontend),
+    nunca sustituyen al filtro DURO de calidad
+    (`Settings`/`evaluate_quality_gate`, que ya exige un minimo de casas y
+    edge no negativo por defecto) -- son un afinado extra sobre lo que ya
+    paso ese filtro. `min_ev` es Expected Value minimo como fraccion
+    (0.10 = EV +10%): un edge grande no implica EV positivo si la cuota es
+    baja (ver prediction/edge.py).
     """
     settings = get_settings()
     candidates = _base_signal_query(
@@ -457,6 +470,7 @@ def top_signals(
         competition_code,
         min_edge,
         min_bookmakers,
+        min_ev=min_ev,
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
