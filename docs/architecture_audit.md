@@ -1481,3 +1481,80 @@ y testeada pero inactiva, igual que ya paso con el techo de cuota.
   esta verificado solo con datos SINTETICOS en esta sesion -- su
   comportamiento con el volumen y la distribucion reales de las 5 ligas
   del MVP todavia no se ha observado (seccion 15.6).
+
+### 15.8 Hallazgo tras la primera ejecucion real: v2/v2_edge_cap/v2_edge_cap_longshot salen IDENTICOS
+
+El usuario corrio `compare-ranking-strategies-walk-forward` sobre su BD
+real (n=1133, `min_train_n=30` por defecto) y las tres estrategias con
+curva (`v2_edge_cap`, `v2_edge_cap_longshot`) salieron BYTE A BYTE
+identicas a `v2` (sin ningun techo) en TODOS los top-N (5/10/20/50/100) y
+en TODAS las metricas (ROI, win-rate, PnL, max-drawdown, Brier) -- un
+resultado mucho mas fuerte que "el techo rara vez actua", y que exige NO
+asumir una causa (instruccion explicita del usuario para toda esta
+auditoria) sino comprobarla.
+
+Dos reproducciones sinteticas para descartar un bug en el bucle
+walk-forward en si:
+
+1. Con un `risk_adjusted_expected_value` OPTIMISTA (`model_probability *
+   market_odds - 1`, sin ajuste de incertidumbre) y una relacion
+   edge-vs-acierto fuertemente decreciente desde el principio de la
+   serie cronologica: `v2_edge_cap` SI difiere de `v2` de forma clara
+   (p.ej. top-10: `v2 roi=0.0` vs `v2_edge_cap roi=-1.0`).
+2. Con un `risk_adjusted_expected_value` CONSERVADOR-WILSON (igual que
+   produccion de verdad: `compute_expected_value(uncertainty_low,
+   market_odds)`, con `uncertainty_low` calculado via
+   `compute_uncertainty_interval` con tamanhos de muestra efectivos
+   pequenhos tipicos, 3-20): `v2_edge_cap` TODAVIA difiere de `v2`,
+   aunque con una magnitud menor (p.ej. top-20: `v2 roi=-1.0` vs
+   `v2_edge_cap roi=-0.25`).
+
+Ninguna de las dos reproducciones (ver
+`test_compare_ranking_strategies_walk_forward_*` para la version con
+"spy", y los experimentos ad-hoc de esta fase) logra el resultado real:
+cero diferencia en absolutamente ningun top-N. Esto descarta que el
+bucle walk-forward este roto en si mismo (si lo estuviera, mis
+reproducciones sinteticas tambien saldrian identicas) y apunta a algo
+especifico de la distribucion real de datos: el candidato mas probable
+es que, para las predicciones que YA quedan en el TOP del ranking segun
+`v2` (es decir, las de mayor `risk_adjusted_expected_value` crudo tras el
+recorte Wilson), la curva de edge/cola ajustada con el historico real
+nunca prediga un `hit_rate` tan bajo como para que
+`min(raw_ev, curva_implica_ev)` se resuelva por debajo de `raw_ev` --
+dicho de otro modo, puede que el propio recorte Wilson de `v2` ya este
+descartando (empujando a score bajo/cero) precisamente las apuestas de
+edge extremo que el techo esta disenhado para corregir, dejando sin
+efecto visible al techo justo donde mas importa (el TOP del ranking).
+
+Para comprobar esto con evidencia real (no suposicion) se anhadio
+`scripts/debug_walk_forward_cap_binding.py`: reutiliza EXACTAMENTE la
+misma logica de produccion (nunca la reimplementa) para recorrer el
+mismo walk-forward e instrumentar, fila a fila:
+
+1. cuantas predicciones evaluadas tienen `risk_adjusted_expected_value`
+   crudo ya <= 0 (ahi ningun techo puede cambiar nada, por el
+   `max(capped, 0)` final de `signal_score_v2`);
+2. de las que tienen EV crudo > 0 (las UNICAS donde un techo podria
+   actuar), cuantas tienen el techo de edge/de cola REALMENTE activo
+   (`capped_ev < raw_ev`, comprobado via la propia
+   `reality_capped_expected_value`, nunca reimplementado);
+3. especificamente dentro del TOP-100 de `v2`, cuantas de esas
+   predicciones cambian de score bajo `v2_edge_cap`/
+   `v2_edge_cap_longshot`.
+
+Verificado con un escenario sintetico disenhado para que el techo SI
+actue (test
+`test_main_runs_end_to_end_and_detects_a_real_edge_cap_binding` en
+`backend/tests/unit/test_debug_walk_forward_cap_binding_script.py`): el
+script detecta correctamente el binding cuando ocurre, asi que un
+resultado de "cero binding" al correrlo contra la BD real seria una
+senhal fiable, no un falso negativo del propio script.
+
+**Pendiente**: pedir al usuario que ejecute
+
+```
+docker compose exec backend python scripts/debug_walk_forward_cap_binding.py
+```
+
+y pegue el resultado, antes de proponer ningun cambio de codigo (sigue
+vigente "no modifiques codigo hasta haber identificado la causa").
