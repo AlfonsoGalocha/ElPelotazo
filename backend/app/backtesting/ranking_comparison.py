@@ -13,15 +13,22 @@ real (`PredictionResult.outcome`) es posterior e independiente -- comparar
 estrategias de ranking sobre estos datos no tiene ningun riesgo de leakage
 porque ninguna de las dos formulas ve el resultado antes de puntuar.
 
-Metodologia: para cada estrategia ("v1" = `signal_score` ya congelado,
-"v2" = `signal_score_v2` recalculado ahora sobre los mismos campos
-congelados), se ordenan TODAS las predicciones liquidadas por su score
+Metodologia: para cada estrategia ("v1" = `signal_score`, "v2" =
+`signal_score_v2`, AMBAS recalculadas aqui sobre los mismos campos
+congelados -- nunca se lee `prediction.signal_score` directamente, ver
+`_score_v1`: desde que v2 se activo en produccion esa columna congela
+v2, no v1), se ordenan TODAS las predicciones liquidadas por su score
 descendente y se simula apostar 1 unidad a cada una de las primeras N (para
 varios N, incluido "todas") -- si una formula de ranking es realmente mejor
 que otra, el ROI/win-rate de su TOP-N pequenho deberia ser mayor que el de
-"todas", y mayor que el de la otra formula para el mismo N. Si no lo es,
-esa es la evidencia real que pide el usuario antes de cambiar nada en
-produccion.
+"todas", y mayor que el de la otra formula para el mismo N.
+
+NOTA (2026-11): v2 ya es la formula de PRODUCCION (ver
+docs/architecture_audit.md seccion 11, activada tras evidencia real de
+`ensemble-calibration-report`/esta misma herramienta) -- esta
+comparacion sigue siendo util para vigilar si una futura v3 mejora sobre
+v2, o para verificar que v2 sigue rindiendo bien a medida que crece el
+historico real.
 
 Limitacion declarada: `signal_score_v2` se recalcula aqui SIN
 `market_track_record` real (usa el valor neutro 1.0 para ambas formulas)
@@ -44,7 +51,7 @@ from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.models.calibration.metrics import brier_score, log_loss_score
-from backend.app.prediction.ranking import signal_score_v2
+from backend.app.prediction.ranking import signal_score, signal_score_v2
 
 TOP_N_VALUES: tuple[int, ...] = (5, 10, 20, 50, 100)
 
@@ -70,9 +77,15 @@ class RankingComparisonReport:
 
 
 def _score_v1(prediction: Prediction) -> float:
-    # CONGELADO en services/prediction_service.py en el momento real de
-    # generar la prediccion -- nunca se recalcula con la formula de hoy.
-    return prediction.signal_score or 0.0
+    # RECALCULADO con la formula v1 (nunca leyendo `prediction.signal_score`
+    # directamente): desde que v2 se activo en produccion
+    # (services/prediction_service.py, ver docs/architecture_audit.md
+    # seccion 11), esa columna congela v2 para las predicciones nuevas --
+    # leerla aqui haria que "v1" y "v2" fueran literalmente el mismo
+    # numero para cualquier prediccion reciente, rompiendo la comparacion.
+    # Recalcular la formula v1 explicita mantiene la comparacion valida
+    # SIEMPRE, sea cual sea la formula activa en produccion.
+    return signal_score(prediction)
 
 
 def _score_v2(prediction: Prediction) -> float:

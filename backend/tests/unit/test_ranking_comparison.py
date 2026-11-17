@@ -1,7 +1,11 @@
 """Fase 7 de la revision "motor profesional 2.0": comparar ROI/win-rate/
-Brier real de v1 (`signal_score` ya congelado) vs v2 (`signal_score_v2`)
+Brier real de v1 (`signal_score`, recalculada) vs v2 (`signal_score_v2`)
 sobre predicciones YA LIQUIDADAS, restringido al TOP-N de cada estrategia
 -- sin reentrenar nada, sin riesgo de leakage (ver docstring del modulo).
+v2 ya es la formula activa en produccion (ver
+docs/architecture_audit.md seccion 11); esta comparacion recalcula AMBAS
+desde los campos congelados, nunca lee `prediction.signal_score`
+directamente (esa columna ahora congela v2 para predicciones nuevas).
 """
 
 from __future__ import annotations
@@ -70,10 +74,11 @@ def test_compare_ranking_strategies_excludes_predictions_without_market_odds():
 
 
 def test_compare_ranking_strategies_top_n_uses_the_highest_scored_first():
-    """El TOP-1 de v1 (por `signal_score` congelado) debe ser exactamente
-    la prediccion con mayor `signal_score`, acertada o no."""
-    winner_high_score = _prediction(1, signal_score=0.9)
-    loser_low_score = _prediction(2, signal_score=0.1)
+    """El TOP-1 de v1 (recalculado con la formula v1 real, nunca leyendo
+    `prediction.signal_score` -- ver `_score_v1`) debe ser exactamente la
+    prediccion con mayor score v1, acertada o no."""
+    winner_high_score = _prediction(1, edge=0.35)
+    loser_low_score = _prediction(2, edge=0.01)
     pairs = [(winner_high_score, _result(False)), (loser_low_score, _result(True))]
 
     report = compare_ranking_strategies(pairs, top_n_values=(1,))
@@ -89,7 +94,7 @@ def test_compare_ranking_strategies_v2_can_rank_differently_from_v1():
     test_ranking.py::test_signal_score_v2_never_favors_the_getafe_style_extreme_case)."""
     extreme_but_shaky = _prediction(
         1,
-        signal_score=0.50,  # v1: alto, domina el ranking v1
+        edge=0.40,  # v1: edge enorme, domina el ranking v1 (el sintoma real)
         model_probability=0.819,
         market_odds=2.39,
         risk_adjusted_expected_value=-0.04,  # v2: EV ajustado negativo -> score_v2 = 0
@@ -98,7 +103,7 @@ def test_compare_ranking_strategies_v2_can_rank_differently_from_v1():
     )
     solid_and_supported = _prediction(
         2,
-        signal_score=0.05,  # v1: bajo
+        edge=0.05,  # v1: edge modesto
         model_probability=0.65,
         market_odds=1.75,
         risk_adjusted_expected_value=0.05,  # v2: EV ajustado positivo -> score_v2 > 0

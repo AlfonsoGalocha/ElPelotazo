@@ -16,7 +16,7 @@ from backend.app.prediction.anomaly import (
 )
 from backend.app.prediction.confidence import signal_tier
 from backend.app.prediction.market_quality import market_quality_tier
-from backend.app.prediction.ranking import odds_age_minutes, rank_signals
+from backend.app.prediction.ranking import odds_age_minutes, rank_signals_v2
 from backend.app.schemas.prediction import (
     BestOfDayOut,
     CurrentRoundPredictionsOut,
@@ -155,7 +155,7 @@ def predictions_summary(db: Session = Depends(get_db)) -> dict:
 
     candidates = _base_signal_query(db, None, True, scope="current_round").all()
     by_match = _group_by_match(candidates)
-    included, _ = rank_signals(candidates, settings)
+    included, _ = rank_signals_v2(candidates, settings)
     opportunities = [
         s
         for s in included
@@ -474,7 +474,7 @@ def top_signals(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
-    included, excluded = rank_signals(candidates, settings, track_records)
+    included, excluded = rank_signals_v2(candidates, settings, track_records)
     if excluded:
         logger.info(
             "ranking.top_signals.excluded: total=%d reasons=%s",
@@ -548,7 +548,7 @@ def best_predictions(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
-    included, _ = rank_signals(candidates, settings, track_records)
+    included, _ = rank_signals_v2(candidates, settings, track_records)
     included = _filter_by_quality(included, quality, settings)
     included = [
         s
@@ -596,7 +596,7 @@ def best_of_day(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
-    included, _ = rank_signals(candidates, settings, track_records)
+    included, _ = rank_signals_v2(candidates, settings, track_records)
 
     strict_min_edge = settings.min_edge_pp * 2
     checked: list[dict] = []
@@ -658,7 +658,7 @@ def best_predictions_debug(
     candidates = _base_signal_query(
         db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
     ).all()
-    included, excluded = rank_signals(candidates)
+    included, excluded = rank_signals_v2(candidates)
     return {
         "included": [
             {

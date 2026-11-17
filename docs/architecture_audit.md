@@ -773,23 +773,37 @@ muestra un patron NO monotono y a contramano: su top-10/20 (sus señales
 "mas seguras") rinden PEOR que su propio top-50 -- exactamente el
 sintoma que el usuario reporto (el ranking actual no correlaciona bien
 con lo que realmente acierta). v2 top-5 rinde notablemente mejor
-(ROI+23.2%, 80% de acierto) que v1 top-5. **Pero** n=5/10/20 son
-muestras demasiado pequenas para una conclusion estadisticamente solida
-por si solas (un solo resultado distinto cambia el ROI en decenas de
-puntos) -- la direccion es consistente con el diagnostico y alentadora,
-pero NO es, por si sola, prueba suficiente para fijar v2 como default
-de forma irreversible. Se mantiene v1 como default; se recomienda volver
-a correr `compare-ranking-strategies` periodicamente a medida que se
-liquiden mas predicciones (crece n en el top-N con el tiempo).
+(ROI+23.2%, 80% de acierto) que v1 top-5. n=5/10/20 son muestras
+demasiado pequenas para una conclusion estadisticamente solida por si
+solas, pero la direccion es consistente con el diagnostico del usuario
+Y el usuario confirmo via la app en vivo que el sintoma seguia
+presente (porque v1 seguia siendo el default en ese momento) -- con
+esa confirmacion real adicional, se decidio ACTIVAR v2 en produccion
+(ver abajo), no seguir esperando mas muestra de forma indefinida.
+
+**ACTIVADO EN PRODUCCION (2026-11)**: `signal_score_v2` sustituye a
+`signal_score` (v1) en TODOS los puntos que generan lo que ve el
+usuario: `services/prediction_service.py` (snapshot congelado de cada
+prediccion nueva), `/predictions/top-signals`, `/predictions/best`,
+`/predictions/best-of-day`, `/predictions/summary`,
+`/predictions/best/debug`, y `prediction/anomaly.py::best_prediction_per_match`
+(la "mejor prediccion" de cada partido). `signal_score`/`rank_signals`
+(v1) NUNCA se borraron -- siguen existiendo como funciones, y
+`backtesting/ranking_comparison.py` las RECALCULA explicitamente
+(nunca lee `prediction.signal_score`, que desde ahora congela v2) para
+poder seguir comparando v1 contra v2 -- o v2 contra una v3 futura --
+indefinidamente, independientemente de cual sea el default activo.
 
 ### 11.6 Limitaciones que siguen existiendo
 
 - Shin's method sigue sin implementar (sin fuente verificable, ver
   seccion 10 punto 7) — solo normalizacion proporcional.
-- `signal_score_v2` sigue sin activarse como default de produccion: la
-  evidencia real (11.5) es alentadora pero estadisticamente delgada en
-  el tramo top-N que de verdad importa (n=5-20). `v1` sigue siendo lo
-  que genera y congela produccion.
+- La decision de activar v2 se tomo con evidencia real direccionalmente
+  fuerte pero estadisticamente delgada en el tramo top-N (n=5-20) —
+  nunca se fingio que fuera una prueba estadistica solida por si sola.
+  Se recomienda seguir corriendo `compare-ranking-strategies`
+  periodicamente a medida que se liquiden mas predicciones, para
+  confirmar que v2 sigue rindiendo bien con mas muestra.
 - El umbral de `HIGH_UNCERTAINTY` (0.60) y la pendiente/suelo de
   `factor_incertidumbre` en v2 (0.70/0.30) se derivaron de un dataset
   SINTETICO (Poisson simple) por falta de acceso a datos reales desde
