@@ -9,11 +9,11 @@ from backend.app.db.models.modeling import Prediction
 from backend.app.prediction.anomaly import best_prediction_per_match
 from backend.app.prediction.ranking import (
     ExclusionReason,
-    edge_reliability_factor,
     evaluate_quality_gate,
     odds_age_minutes,
     rank_signals,
     rank_signals_v2,
+    reality_capped_expected_value,
     signal_score,
     signal_score_v2,
     uncertainty_factor,
@@ -418,12 +418,16 @@ def test_rank_signals_v2_uses_the_same_hard_quality_gate_as_v1():
     assert excluded[0].reason == ExclusionReason.INVALID_ODDS
 
 
-# edge_reliability_factor (fix real tras activar v2: el caso Getafe-Atletico
-# -- match_id=61, edge +39.6pp -- seguia arriba del ranking porque su
-# `uncertainty_low` era ESTRECHO: `uncertainty_factor` mide ruido de MUESTRA,
-# nunca desacuerdo con el mercado. `scripts/debug_edge_vs_hitrate.py`, corrido
-# por el usuario sobre 1133 predicciones liquidadas reales, confirmo que el
-# hit rate cae de forma practicamente monotona con el tamanho del edge.)
+# reality_capped_expected_value (fix real tras activar v2: el caso
+# Getafe-Atletico -- match_id=61, edge +39.6pp -- seguia arriba del
+# ranking. `scripts/debug_edge_vs_hitrate.py`, corrido por el usuario
+# sobre 1133 predicciones liquidadas reales, confirmo que el hit rate
+# cae de forma practicamente monotona con el tamanho del edge. Un primer
+# intento (factor multiplicativo sobre el score final) reducia el score
+# un 72% pero seguia sin ser suficiente -- verificado EN VIVO contra la
+# BD real del usuario tras desplegarlo: `risk_adjusted_expected_value`
+# (+0.70) nunca se corregia, asi que el descuento no alcanzaba. La
+# correccion real pone un TECHO al EV mismo con la misma curva.)
 
 
 def _decreasing_curve():
@@ -439,34 +443,44 @@ def _decreasing_curve():
     return curve
 
 
-def test_edge_reliability_factor_is_neutral_without_edge_or_curve():
+def test_reality_capped_expected_value_is_neutral_without_curve_edge_or_odds():
     curve = _decreasing_curve()
-    assert edge_reliability_factor(None, curve) == 1.0
-    assert edge_reliability_factor(0.40, None) == 1.0
-    assert edge_reliability_factor(None, None) == 1.0
+    assert reality_capped_expected_value(0.70, None, 2.37, curve) == 0.70
+    assert reality_capped_expected_value(0.70, 0.396, None, curve) == 0.70
+    assert reality_capped_expected_value(0.70, 0.396, 2.37, None) == 0.70
 
 
-def test_edge_reliability_factor_is_one_at_the_baseline_edge():
-    """Un edge minimo (~0pp) acierta igual que el baseline con el que se
-    normaliza -- nunca se penaliza por debajo de 1.0."""
+def test_reality_capped_expected_value_caps_an_optimistic_ev_for_a_getafe_style_edge():
+    """Con el caso real (edge +39.6pp, cuota 2.37): la curva predice un
+    hit rate real de ~15% para ese tamanho de edge (clip al extremo mas
+    alto observado, 35pp) -- eso implica un EV real de
+    0.15*2.37-1 ~= -0.64, MUY lejos del +0.70 optimista que daba
+    `uncertainty_low` por si solo."""
     curve = _decreasing_curve()
-    assert edge_reliability_factor(0.0, curve) == pytest.approx(1.0)
+    capped = reality_capped_expected_value(0.70, 0.396, 2.37, curve)
+    assert capped == pytest.approx(0.15 * 2.37 - 1.0, abs=1e-6)
+    assert capped < 0.70
 
 
-def test_edge_reliability_factor_decreases_for_larger_edges():
+def test_reality_capped_expected_value_never_raises_ev_above_the_raw_estimate():
+    """Es un TECHO, nunca un piso: si el EV ya calculado es peor que lo
+    que implica la curva, se queda como esta -- nunca se "mejora"
+    artificialmente."""
     curve = _decreasing_curve()
-    small_edge = edge_reliability_factor(0.02, curve)  # 2pp
-    getafe_style_edge = edge_reliability_factor(0.396, curve)  # +39.6pp real
-    assert small_edge > getafe_style_edge
-    assert 0.0 <= getafe_style_edge < small_edge <= 1.0
+    assert reality_capped_expected_value(-0.90, 0.396, 2.37, curve) == -0.90
 
 
-def test_edge_reliability_factor_never_exceeds_one():
-    """Si el edge TAN PEQUENHO acertase mejor que el baseline (ruido en la
-    cola de la curva), nunca se premia por encima de 1.0 -- solo penaliza,
-    nunca bonifica."""
+def test_reality_capped_expected_value_barely_touches_a_modest_well_supported_edge():
+    """Un edge pequenho, donde la curva real SI respalda una probabilidad
+    de acierto razonable, no se anula -- la correccion es un techo sobre
+    el optimismo EXCESIVO, nunca una penalizacion generica a cualquier
+    edge."""
     curve = _decreasing_curve()
-    assert edge_reliability_factor(-0.05, curve) <= 1.0
+    raw_ev = 0.04
+    capped = reality_capped_expected_value(raw_ev, 0.02, 2.0, curve)
+    real_ev = 0.52 * 2.0 - 1.0  # curva real a edge=2pp: hit rate 0.52
+    assert capped == pytest.approx(min(raw_ev, real_ev), abs=1e-6)
+    assert capped > -0.10  # lejos del colapso del caso Getafe
 
 
 def test_signal_score_v2_is_neutral_without_edge_reliability_curve():
@@ -479,42 +493,53 @@ def test_signal_score_v2_is_neutral_without_edge_reliability_curve():
     )
 
 
-def test_signal_score_v2_penalizes_a_getafe_style_extreme_edge_via_reliability_curve():
-    """La correccion real: incluso con EV ajustado al riesgo POSITIVO (el
-    caso real en produccion: uncertainty_low=0.718, cuota de mercado bien
-    pagada), un edge enorme debe puntuar PEOR que uno modesto una vez se
-    conecta `edge_reliability_curve`, porque la evidencia real dice que ese
-    tamanho de edge acierta menos, no mas."""
+def test_signal_score_v2_zeroes_out_a_getafe_style_extreme_edge_once_capped():
+    """La correccion real: aunque `risk_adjusted_expected_value` siga
+    siendo optimista (+0.70, el caso real: `uncertainty_low=0.718` sobre
+    cuota 2.37), la curva real dice que un edge de este tamanho acierta
+    ~15% de las veces -- eso implica un EV real muy negativo que anula
+    el score entero (igual que v2 ya anulaba un EV negativo calculado
+    directamente)."""
     curve = _decreasing_curve()
     extreme_edge = _prediction(
         match_id=1,
         model_probability=0.819,
         risk_adjusted_expected_value=0.70,
         edge=0.396,
+        market_odds=2.37,
         uncertainty_low=0.718,
         uncertainty_high=0.911,
     )
+    without_curve = signal_score_v2(extreme_edge)
+    assert without_curve > 0.0  # el bug real: un EV optimista seguia dando score positivo
+
+    with_curve = signal_score_v2(extreme_edge, edge_reliability_curve=curve)
+    assert with_curve == 0.0  # el techo real deja el EV negativo -> score anulado
+
+
+def test_signal_score_v2_keeps_a_modest_well_supported_edge_positive():
+    """Un edge modesto, bien respaldado por la curva real, NO se anula --
+    el techo solo actua sobre el optimismo excesivo de edges grandes,
+    nunca penaliza cualquier edge por igual."""
+    curve = _decreasing_curve()
     modest_edge = _prediction(
         match_id=2,
-        model_probability=0.65,
-        risk_adjusted_expected_value=0.70,
+        model_probability=0.60,
+        risk_adjusted_expected_value=0.05,
         edge=0.02,
-        uncertainty_low=0.718,
-        uncertainty_high=0.911,
+        market_odds=2.0,
     )
-    without_curve = signal_score_v2(extreme_edge) > 0.0  # el bug real: seguia arriba
-    assert without_curve
-
-    with_curve_extreme = signal_score_v2(extreme_edge, edge_reliability_curve=curve)
-    with_curve_modest = signal_score_v2(modest_edge, edge_reliability_curve=curve)
-    assert with_curve_extreme < signal_score_v2(extreme_edge)  # el factor SI penaliza
-    assert with_curve_modest > with_curve_extreme  # y el modesto ya no pierde por el edge
+    assert signal_score_v2(modest_edge, edge_reliability_curve=curve) > 0.0
 
 
 def test_rank_signals_v2_passes_edge_reliability_curve_through_to_every_prediction():
     curve = _decreasing_curve()
-    extreme_edge = _prediction(match_id=1, risk_adjusted_expected_value=0.70, edge=0.396)
-    modest_edge = _prediction(match_id=2, risk_adjusted_expected_value=0.70, edge=0.02)
+    extreme_edge = _prediction(
+        match_id=1, risk_adjusted_expected_value=0.70, edge=0.396, market_odds=2.37
+    )
+    modest_edge = _prediction(
+        match_id=2, risk_adjusted_expected_value=0.05, edge=0.02, market_odds=2.0
+    )
 
     included, _ = rank_signals_v2([extreme_edge, modest_edge], edge_reliability_curve=curve)
 
@@ -526,13 +551,17 @@ def test_best_prediction_per_match_passes_edge_reliability_curve_through():
     `rank_signals_v2` -- la curva pasada debe decidir cual de las dos
     predicciones del MISMO partido es la mejor."""
     curve = _decreasing_curve()
-    extreme_edge = _prediction(match_id=1, risk_adjusted_expected_value=0.70, edge=0.396)
-    modest_edge = _prediction(match_id=1, risk_adjusted_expected_value=0.70, edge=0.02)
+    extreme_edge = _prediction(
+        match_id=1, risk_adjusted_expected_value=0.70, edge=0.396, market_odds=2.37
+    )
+    modest_edge = _prediction(
+        match_id=1, risk_adjusted_expected_value=0.05, edge=0.02, market_odds=2.0
+    )
 
     without_curve = best_prediction_per_match({1: [extreme_edge, modest_edge]})[1]
     with_curve = best_prediction_per_match(
         {1: [extreme_edge, modest_edge]}, edge_reliability_curve=curve
     )[1]
 
-    assert without_curve is extreme_edge  # sin curva: empatan en todo salvo edge, gana el primero evaluado con mayor score bruto
-    assert with_curve is modest_edge  # con curva real: el edge enorme ya no gana
+    assert without_curve is extreme_edge  # sin curva: su EV optimista (+0.70) gana
+    assert with_curve is modest_edge  # con la curva real: el EV de Getafe se anula

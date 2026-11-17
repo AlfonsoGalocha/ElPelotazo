@@ -415,8 +415,8 @@ def test_evaluate_settled_predictions_empty_db_returns_no_competitions():
 
 
 # fit_edge_reliability_curve (fix real tras activar signal_score_v2: ver
-# prediction/ranking.py::edge_reliability_factor para el contexto completo
-# -- un edge grande en produccion acierta MENOS, no mas, evidencia real en
+# prediction/ranking.py::reality_capped_expected_value para el contexto
+# completo -- un edge grande en produccion acierta MENOS, no mas, evidencia real en
 # scripts/debug_edge_vs_hitrate.py).
 
 
