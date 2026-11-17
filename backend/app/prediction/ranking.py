@@ -230,9 +230,19 @@ def rank_signals(
 # default -- nunca se asume de entrada.
 #
 # Diferencias deliberadas frente a v1:
-#   1. Usa `calibrated_probability` cuando existe (requiere holdout real de
-#      >= MIN_CALIBRATION_MATCHES, ver model_service.py -- nunca se inventa
-#      cuando falta, cae a `model_probability`), en vez de SIEMPRE la cruda.
+#   1. Usa SIEMPRE `model_probability` (la cruda), igual que v1 -- NUNCA
+#      `calibrated_probability`. Esto parecia lo contrario de lo pedido en
+#      un primer diseno ("preferir la calibrada cuando exista"), pero se
+#      corrigio con evidencia real: `football-edge ensemble-calibration-report`
+#      corrido contra LaLiga para home_win/draw/away_win/double_chance_1x
+#      (los 4 mercados centrales del caso que motivo esta revision) muestra
+#      que TANTO isotonic COMO Platt scaling empeoran Brier/log-loss/ECE
+#      frente a la cruda en los 4 mercados, de forma consistente -- no es
+#      ruido de un mercado aislado. Preferir una probabilidad que
+#      demostradamente calibra peor seria exactamente la "mezcla sin
+#      validar" que el usuario pidio evitar. Si en el futuro un mercado o
+#      liga distinta demuestra lo contrario con el mismo comando, esto
+#      deberia revisarse CON ESA EVIDENCIA, nunca a priori.
 #   2. Usa `risk_adjusted_expected_value` (EV con el extremo conservador del
 #      intervalo de incertidumbre, ver prediction/edge.py y
 #      prediction/uncertainty.py) en vez de `edge` en bruto: mide
@@ -263,12 +273,15 @@ def signal_score_v2(
     settings: Settings | None = None,
     market_track_record: float | None = None,
 ) -> float:
-    """score_v2 = p_usada^2 * max(EV_ajustado_al_riesgo, 0) * confidence
+    """score_v2 = model_probability^2 * max(EV_ajustado_al_riesgo, 0) * confidence
                   * data_quality * market_quality_multiplier * market_track_record
                   * factor_incertidumbre
 
-    `p_usada` = `calibrated_probability` si existe, si no `model_probability`
-    (nunca al reves: calibrar solo tiene sentido si hay evidencia real detras).
+    Usa `model_probability` (CRUDA), nunca `calibrated_probability` --
+    ver el bloque de comentarios justo arriba de este modulo para la
+    evidencia real (isotonic y Platt empeoran Brier/log-loss/ECE en los 4
+    mercados centrales de LaLiga, medido con
+    `ensemble_calibration_report`).
     """
     settings = settings or get_settings()
     quality_tier = market_quality_tier(
@@ -280,15 +293,10 @@ def signal_score_v2(
     )
     quality_multiplier = MARKET_QUALITY_MULTIPLIER[quality_tier]
     track_record = market_track_record if market_track_record is not None else 1.0
-    p_used = (
-        prediction.calibrated_probability
-        if prediction.calibrated_probability is not None
-        else prediction.model_probability
-    )
     risk_adjusted_ev = max(prediction.risk_adjusted_expected_value or 0.0, 0.0)
 
     return (
-        (p_used**2)
+        (prediction.model_probability**2)
         * risk_adjusted_ev
         * prediction.confidence
         * prediction.data_quality

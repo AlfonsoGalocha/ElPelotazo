@@ -80,8 +80,13 @@ def _score_v2(prediction: Prediction) -> float:
 
 
 def _probability_for_strategy(prediction: Prediction, strategy: str) -> float:
-    if strategy == "v2" and prediction.calibrated_probability is not None:
-        return prediction.calibrated_probability
+    """Ambas estrategias usan `model_probability` (CRUDA), nunca
+    `calibrated_probability` -- ver prediction/ranking.py::signal_score_v2
+    para la evidencia real (ensemble_calibration_report contra LaLiga)
+    que descarto preferir la calibrada. `strategy` se mantiene como
+    parametro por si una futura estrategia SI la necesitara, no por
+    diferenciar v1/v2 hoy."""
+    del strategy  # sin diferencia hoy; ver docstring
     return prediction.model_probability
 
 

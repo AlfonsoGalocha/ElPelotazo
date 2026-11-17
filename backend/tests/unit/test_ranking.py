@@ -295,28 +295,32 @@ def test_uncertainty_factor_never_drops_below_the_floor():
     assert uncertainty_factor(0.0, 1.0) == pytest.approx(0.30)  # ancho maximo posible
 
 
-def test_signal_score_v2_prefers_calibrated_probability_when_available():
-    """Pedido real del usuario (Fase 6, punto 1): la probabilidad CALIBRADA
-    manda cuando existe, nunca siempre la cruda."""
-    with_calibration = _prediction(
-        model_probability=0.90,
-        calibrated_probability=0.60,
+def test_signal_score_v2_always_uses_raw_model_probability_never_calibrated():
+    """Diseno inicial de v2 preferia `calibrated_probability` cuando
+    existia -- corregido con evidencia real: `ensemble_calibration_report`
+    corrido contra LaLiga para home_win/draw/away_win/double_chance_1x
+    (los 4 mercados centrales del caso que motivo esta revision) muestra
+    que isotonic Y Platt scaling empeoran Brier/log-loss/ECE frente a la
+    cruda en los 4, de forma consistente -- preferir la calibrada seria
+    preferir una probabilidad demostradamente peor. v2 ignora
+    `calibrated_probability` por completo."""
+    same_model_probability_different_calibration = _prediction(
+        model_probability=0.60,
+        calibrated_probability=0.90,  # deliberadamente muy distinta -- debe ser irrelevante
         risk_adjusted_expected_value=0.10,
         uncertainty_low=0.55,
         uncertainty_high=0.65,
     )
-    without_calibration = _prediction(
+    same_model_probability_no_calibration = _prediction(
         model_probability=0.60,
         calibrated_probability=None,
         risk_adjusted_expected_value=0.10,
         uncertainty_low=0.55,
         uncertainty_high=0.65,
     )
-    # Mismo todo salvo que una tiene calibrada=0.60 (y model_probability
-    # distinto, irrelevante) y la otra no tiene calibrada en absoluto pero
-    # SI tiene model_probability=0.60 -- deben puntuar IGUAL, porque ambas
-    # terminan usando 0.60 como "p_usada".
-    assert signal_score_v2(with_calibration) == pytest.approx(signal_score_v2(without_calibration))
+    assert signal_score_v2(same_model_probability_different_calibration) == pytest.approx(
+        signal_score_v2(same_model_probability_no_calibration)
+    )
 
 
 def test_signal_score_v2_uses_risk_adjusted_ev_not_raw_edge():

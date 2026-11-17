@@ -678,9 +678,10 @@ validando despues, sin pedir confirmacion fase a fase.
   corregidos antes de continuar).
 - **`prediction/ranking.py::signal_score_v2`/`rank_signals_v2`** (nuevo,
   NUNCA sustituye a v1 en produccion por si solo): usa
-  `calibrated_probability` cuando existe, `risk_adjusted_expected_value`
-  en vez de `edge` bruto, y un factor CONTINUO de penalizacion por ancho
-  de intervalo (ademas del corte binario de `HIGH_UNCERTAINTY`).
+  `model_probability` (cruda, igual que v1 -- ver 11.5: la calibrada se
+  descarto con evidencia real), `risk_adjusted_expected_value` en vez de
+  `edge` bruto, y un factor CONTINUO de penalizacion por ancho de
+  intervalo (ademas del corte binario de `HIGH_UNCERTAINTY`).
 - **`backtesting/ranking_comparison.py`** (nuevo): compara v1 vs v2 sobre
   predicciones YA LIQUIDADAS, por TOP-N de cada estrategia (ROI, win
   rate, PnL, drawdown, Brier, log loss). Sin riesgo de leakage: ambos
@@ -704,11 +705,16 @@ intervalo de Wilson para incertidumbre (`prediction/uncertainty.py`, Fase
 ### 11.4 Como funciona el ranking nuevo (signal_score_v2)
 
 ```
-p_usada = calibrated_probability si existe, si no model_probability
-score_v2 = p_usada^2 * max(risk_adjusted_expected_value, 0) * confidence
+score_v2 = model_probability^2 * max(risk_adjusted_expected_value, 0) * confidence
            * data_quality * market_quality_multiplier * market_track_record
            * factor_incertidumbre(ancho_intervalo)
 ```
+
+(Nunca `calibrated_probability`: el diseno inicial de esta formula la
+preferia cuando existia, pero `ensemble-calibration-report` corrido
+contra LaLiga -- ver 11.5 -- mostro que isotonic y Platt empeoran
+Brier/log-loss/ECE en los 4 mercados centrales probados. Corregido con
+esa evidencia, no a priori.)
 
 `factor_incertidumbre` decae linealmente de 1.0 (ancho=0) a un suelo de
 0.30 (ancho=1.0, el maximo teorico) — nunca colapsa a cero por si solo
@@ -718,37 +724,72 @@ edge negativo). **v2 NO esta activo en produccion**: solo
 `rank_signals`/`signal_score` (v1) generan y congelan lo que ve el
 usuario hoy. v2 es la candidata que se backtestea contra v1.
 
-### 11.5 Resultados comparativos del backtesting
+### 11.5 Resultados comparativos del backtesting (datos REALES, corridos por el usuario)
 
-**No inventados.** Esta sesion no tiene acceso al historico real de
-predicciones liquidadas (vive solo en el Docker Compose del usuario) ni
-puede reentrenar el ensemble contra datos de produccion — todo el motor
-de validacion (`ensemble_engine.py`, `ranking_comparison.py`) esta
-construido y probado con datos sinteticos, pero los NUMEROS REALES que
-decidirian si v2 sustituye a v1 requieren ejecutar, contra la base de
-datos real:
+Esta sesion no tiene acceso al historico real (vive solo en el Docker
+Compose del usuario), pero el usuario corrio los comandos y pego la
+salida real -- estos son resultados REALES, no sinteticos.
+
+**`ensemble-calibration-report` (laliga, los 4 mercados centrales del
+caso que motivo esta revision), walk-forward real, 7 folds, n=2719:**
+
+| mercado           | raw ECE | isotonic ECE | platt ECE |
+|--------------------|---------|--------------|-----------|
+| home_win           | 0.0400  | 0.0577 (peor)| 0.0445 (peor) |
+| draw               | 0.0243  | 0.0433 (peor)| 0.0279 (peor) |
+| away_win           | 0.0403  | 0.0526 (peor)| 0.0321 (peor) |
+| double_chance_1x   | 0.0592  | 0.0923 (peor)| 0.0724 (peor) |
+
+Brier score y log loss muestran el mismo patron en los 4 mercados: raw
+siempre mejor que isotonic y que Platt. **Conclusion real, no supuesta**:
+ni isotonic ni Platt mejoran el ensemble real en NINGUNO de los 4
+mercados centrales -- consistente, no ruido de un mercado aislado. Como
+consecuencia directa de esta evidencia, `signal_score_v2` se corrigio
+para NUNCA usar `calibrated_probability` (el diseno inicial de este
+mismo documento, seccion 11.4, lo preferia cuando existia -- era
+incorrecto, corregido aqui con los numeros reales en la mano, no a
+priori).
+
+**`compare-ranking-strategies` (todas las competiciones/mercados,
+n=1133 predicciones liquidadas con cuota real):**
 
 ```
-docker compose exec backend football-edge ensemble-calibration-report laliga --market home_win
-docker compose exec backend football-edge ensemble-calibration-report laliga --market double_chance_1x
-docker compose exec backend football-edge compare-ranking-strategies
+       top-5        top-10       top-20       top-50       top-100      all (n=1133)
+v1   roi=+0.007   roi=-0.219   roi=-0.138   roi=+0.062   roi=+0.016   roi=-0.083
+     win=60.0%    win=50.0%    win=55.0%    win=72.0%    win=66.0%    win=51.5%
+v2   roi=+0.232   roi=+0.018   roi=-0.032   roi=-0.019   roi=+0.013   roi=-0.083
+     win=80.0%    win=60.0%    win=65.0%    win=58.0%    win=54.0%    win=51.5%
 ```
 
-El primer par de comandos responde "¿calibrar el ENSEMBLE real (no solo
-Dixon-Coles) mejora algo, y con que metodo?" — la pregunta que
-`calibration-report` nunca pudo responder de verdad. El tercero responde
-"¿v2 habria dado mejor ROI/win-rate que v1 en el TOP-N real?". Hasta que
-estos comandos se corran contra datos reales y se interpreten, **v1
-sigue siendo el default de produccion** — cambiar eso sin esa evidencia
-seria exactamente el tipo de "mezcla arbitraria sin validar" que esta
-revision pidio evitar.
+(`all` es identico entre v1/v2 por construccion: el conjunto de
+apuestas no cambia, solo el orden -- lo que SI varia es el max_drawdown,
+ligeramente mejor en v2.)
+
+**Lectura honesta**: a n=1133 (la cifra mas fiable que hay), apostar a
+TODO lo que pasa el filtro duro pierde dinero (ROI -8.3%) en ambas
+estrategias -- elegir bien importa, confirmado con datos reales. En los
+tramos TOP-N (donde se juega la diferencia real entre v1 y v2), v1
+muestra un patron NO monotono y a contramano: su top-10/20 (sus señales
+"mas seguras") rinden PEOR que su propio top-50 -- exactamente el
+sintoma que el usuario reporto (el ranking actual no correlaciona bien
+con lo que realmente acierta). v2 top-5 rinde notablemente mejor
+(ROI+23.2%, 80% de acierto) que v1 top-5. **Pero** n=5/10/20 son
+muestras demasiado pequenas para una conclusion estadisticamente solida
+por si solas (un solo resultado distinto cambia el ROI en decenas de
+puntos) -- la direccion es consistente con el diagnostico y alentadora,
+pero NO es, por si sola, prueba suficiente para fijar v2 como default
+de forma irreversible. Se mantiene v1 como default; se recomienda volver
+a correr `compare-ranking-strategies` periodicamente a medida que se
+liquiden mas predicciones (crece n en el top-N con el tiempo).
 
 ### 11.6 Limitaciones que siguen existiendo
 
 - Shin's method sigue sin implementar (sin fuente verificable, ver
   seccion 10 punto 7) — solo normalizacion proporcional.
-- `signal_score_v2` no esta activo en produccion hasta que el backtest
-  real (11.5) lo justifique.
+- `signal_score_v2` sigue sin activarse como default de produccion: la
+  evidencia real (11.5) es alentadora pero estadisticamente delgada en
+  el tramo top-N que de verdad importa (n=5-20). `v1` sigue siendo lo
+  que genera y congela produccion.
 - El umbral de `HIGH_UNCERTAINTY` (0.60) y la pendiente/suelo de
   `factor_incertidumbre` en v2 (0.70/0.30) se derivaron de un dataset
   SINTETICO (Poisson simple) por falta de acceso a datos reales desde
