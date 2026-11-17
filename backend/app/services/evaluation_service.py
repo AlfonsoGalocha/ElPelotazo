@@ -434,10 +434,10 @@ def fit_edge_reliability_curve(db: Session) -> IsotonicRegression | None:
     return model
 
 
-MIN_SETTLED_FOR_PROBABILITY_RELIABILITY = 30  # mismo criterio que los otros MIN_SETTLED_FOR_*
+MIN_SETTLED_FOR_ODDS_RELIABILITY = 30  # mismo criterio que los otros MIN_SETTLED_FOR_*
 
 
-def fit_probability_reliability_curve(db: Session) -> IsotonicRegression | None:
+def fit_odds_reliability_curve(db: Session) -> IsotonicRegression | None:
     """Evidencia real (pedido del usuario, tras el fix de edge de la
     seccion 12: "victoria local" a cuota 5.50/6.00, con
     `model_probability` de 33.5%/28.3%, seguia siendo "mejor oportunidad"
@@ -446,7 +446,7 @@ def fit_probability_reliability_curve(db: Session) -> IsotonicRegression | None:
     mismas 1133 predicciones liquidadas reales, confirma un
     "favorite-longshot bias" claro en el propio sistema -- el modelo
     SOBRESTIMA sistematicamente su propia probabilidad en el extremo de
-    cuota alta/probabilidad baja:
+    cuota alta:
 
         cuota 1-2:  model_prob 66.0% vs hit rate real 68.2% (bien calibrado)
         cuota 2-3:  model_prob 41.0% vs hit rate real 38.7%
@@ -455,17 +455,22 @@ def fit_probability_reliability_curve(db: Session) -> IsotonicRegression | None:
         cuota 6+:   model_prob 15.8% vs hit rate real  3.6%  (ROI -77.9%)
 
     Es DISTINTO del problema de edge grande (seccion 12): esto ocurre
-    incluso con edge MODESTO, es un problema de la propia probabilidad
-    del modelo en la cola de "poco probable", no de cuanto discrepa del
-    mercado.
+    incluso con edge MODESTO, es un problema de la propia CUOTA (no de
+    cuanto discrepa del mercado).
 
-    Se ajusta una `IsotonicRegression` (misma herramienta que
-    `fit_edge_reliability_curve`/`models/calibration/calibrators.py`,
-    aqui con `increasing=True` porque la relacion esperada es CRECIENTE:
-    a mayor `model_probability`, mayor hit rate real) sobre
-    (model_probability -> resultado real), agregada sobre TODAS las
-    competiciones/mercados a la vez (mismo motivo que
-    `fit_edge_reliability_curve`: asi se midio la evidencia).
+    IMPORTANTE -- bug real corregido antes de desplegar esto (verificado
+    EN VIVO: el caso Getafe match_id=61, model_probability=0.335, cuota
+    5.50, seguia arriba del ranking casi sin penalizar): la PRIMERA
+    version de esta funcion ajustaba la curva sobre
+    `model_probability -> resultado`, pero la evidencia de arriba esta
+    medida por CUOTA, no por probabilidad del modelo -- un
+    `model_probability` de 33.5% aparece tanto en apuestas de cuota ~3
+    (bien calibradas) como de cuota ~5.5 (mal calibradas); agrupar por
+    probabilidad MEZCLA ambos casos y diluye la correccion justo donde
+    mas hace falta. Se ajusta sobre `market_odds` directamente (la MISMA
+    variable que agrupa `scripts/debug_odds_vs_hitrate.py`), con
+    `increasing=False` (cuota mas alta -> hit rate real mas bajo, al
+    reves que con la probabilidad).
 
     OJO: esto NO sustituye a `model_probability` para mostrar ni para
     rankear directamente (la seccion 11.5 ya mostro con
@@ -476,7 +481,7 @@ def fit_probability_reliability_curve(db: Session) -> IsotonicRegression | None:
     `fit_edge_reliability_curve`, nunca para reemplazar la probabilidad
     que ve el usuario.
 
-    `None` si hay menos de `MIN_SETTLED_FOR_PROBABILITY_RELIABILITY`
+    `None` si hay menos de `MIN_SETTLED_FOR_ODDS_RELIABILITY`
     liquidaciones con cuota real en total.
     """
     rows = (
@@ -485,12 +490,12 @@ def fit_probability_reliability_curve(db: Session) -> IsotonicRegression | None:
         .filter(Prediction.market_odds.isnot(None))
         .all()
     )
-    if len(rows) < MIN_SETTLED_FOR_PROBABILITY_RELIABILITY:
+    if len(rows) < MIN_SETTLED_FOR_ODDS_RELIABILITY:
         return None
 
-    model_probability = np.array([p.model_probability for p, _r in rows])
+    market_odds = np.array([p.market_odds for p, _r in rows])
     outcome = np.array([float(r.outcome) for _p, r in rows])
 
-    model = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=True, out_of_bounds="clip")
-    model.fit(model_probability, outcome)
+    model = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=False, out_of_bounds="clip")
+    model.fit(market_odds, outcome)
     return model
