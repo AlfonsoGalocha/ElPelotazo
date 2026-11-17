@@ -103,7 +103,7 @@ export default async function TopSignalsPage({
           : scope === "all_upcoming"
             ? `De los próximos ${days} días (sin restricción de jornada).`
             : `${SCOPE_LABELS[scope]} de cada competición — nunca un partido de otra jornada aunque tenga más edge.`}{" "}
-        Solo predicciones con mercado real y válido (cuota entre 1.45 y 6.0, edge no
+        Solo predicciones con mercado real y válido (cuota entre 1.45 y 4.0, edge no
         negativo, al menos una casa de apuestas respaldando el consenso) — ni una cuota irrisoria
         (1.02, edge casi nulo) ni un edge grande en un resultado muy improbable (cuota justa 8,
         mercado a 15) son predicciones prácticas para destacar, aunque matemáticamente haya

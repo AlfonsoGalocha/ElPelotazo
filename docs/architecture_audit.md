@@ -1694,3 +1694,107 @@ y pegue el resultado completo -- con eso se decide si la diferencia
 `v1 > v2_edge_cap` es real/estable (y entonces hay que revisar produccion
 en serio) o se concentra en un tramo concreto (y entonces el hallazgo es
 mas matizado de lo que parece en el agregado).
+
+## 16. Fase 15 (sesion 2026-11, continuacion): el filtro duro, no el scoring, es lo que faltaba
+
+### 16.1 El desglose confirmo que `v1 > v2_edge_cap` es real y estable
+
+El usuario corrio `debug_walk_forward_by_segment.py`. Resultado: la
+diferencia NO es un artefacto de una liga ni de un tramo temporal
+concreto -- se mantiene en las dos mitades cronologicas (top-20: primera
+mitad v1=-0.176 vs v2_edge_cap=-0.860; segunda mitad v1=-0.103 vs
+v2_edge_cap=-0.475) y en la mayoria de competiciones (laliga,
+bundesliga, serie_a, ligue_1: v1 gana claramente en top-20; premier_league
+es la unica razonablemente pareja). Por mercado es mas mixto (algunos,
+como `double_chance_x2`/`under_2_5`, favorecen a v2_edge_cap en algun
+corte), pero el patron agregado es consistente: real, no un artefacto de
+muestra.
+
+### 16.2 Mientras tanto, en produccion: el caso de siempre, sin resolver
+
+El usuario mando una captura real del dashboard (2026-11-17): "Destacados
+de la jornada" / "Mejores oportunidades" mostrando Getafe-Atletico
+"Victoria local" cuota 5.50 (modelo 33.5%, edge 16.5%), Nice-PSG
+"Victoria local" cuota 6.00 (modelo 28.3%, edge 12.8%) y Elversberg-Freiburg
+"Victoria local" cuota 3.40 (modelo 44.7%, edge 16.4%) como protagonistas
+-- el MISMO patron que motivo TODA esta investigacion desde la seccion 1,
+pese a los techos de EV ya activos (secciones 12-15). Feedback directo del
+usuario: "simplemente quiero que las mejores predicciones no sean las que
+mas edge tienen... quiero que actue con sentido comun... dejate de tocar
+mil mierdas y empieza a arreglarlo ya".
+
+Diagnostico (sin tocar mas curvas): `/predictions/top-signals` (la unica
+llamada que alimenta tanto "Destacados" como la rejilla completa del
+dashboard, ver `DashboardBoard.tsx`) llama a `rank_signals_v2` con
+`edge_reliability_curve` -- el pipeline correcto. El problema nunca fue
+el WIRING: es que `evaluate_quality_gate` (el filtro DURO que decide QUE
+entra, antes de cualquier scoring) ya tenia exactamente el mecanismo
+necesario (`max_signal_odds`, excluye cuotas por encima de un maximo) --
+pero su valor por defecto (`6.0`) se eligio el 2026-09-18 SIN la
+evidencia real que se reunio despues. Con ese valor, cuota 5.50 y 6.00
+simplemente pasan el filtro, y por mucho que el scoring las penalice
+despues, siguen compitiendo por el top-N -- exactamente el escenario que
+el propio comentario de `max_signal_odds` ya advertia ("si un dia hay
+pocas senhales candidatas, un tiro muy largo podria colarse igual").
+
+Los techos de EV (secciones 12-15) intentaron resolver esto VIA SCORING
+(penalizar sin excluir), y la seccion 15.10 acaba de demostrar con
+evidencia real out-of-sample que, en la practica, no penalizan lo
+bastante: `v1` sigue ganando a `v2_edge_cap` en casi todos los cortes.
+
+### 16.3 El fix: bajar `max_signal_odds` de 6.0 a 4.0 (mismo mecanismo, evidencia real)
+
+Nunca una formula nueva ni pesos inventados ("no quiero una formula
+arbitraria con pesos inventados", pedido original, seccion 7): se ajusta
+el valor de un filtro que YA EXISTIA, a donde la evidencia real
+(`debug_odds_vs_hitrate.py`, n=1133, seccion 13.2) ya mostraba que hacia
+falta:
+
+| cuota | hit rate real | ROI real |
+|---|---|---|
+| 1-2 | 68.2% | -2.5% |
+| 2-3 | 38.7% | -10.3% |
+| 3-4 | 28.4% | -2.8% |
+| **4-6** | **13.9%** (modelo decia ~21.7%) | **-34.3%** |
+| **6+** | **3.6%** (modelo decia ~15.8%) | **-77.9%** |
+
+El ROI historico es ~vig normal hasta cuota 4 y se desploma justo
+despues -- exactamente donde ya estaba puesto `LONGSHOT_ODDS_THRESHOLD`
+(seccion 15) para otro mecanismo. `max_signal_odds` pasa de `6.0` a
+`4.0` (`backend/app/config/settings.py`): Getafe (5.50) y Nice-PSG (6.00)
+quedan excluidos de TODO ranking de senhales (`/top-signals`, `/best`,
+dashboard) desde el filtro duro, nunca solo penalizados en el scoring;
+Elversberg (3.40) sigue pasando, correctamente, porque la evidencia real
+en ese rango de cuota es ~vig normal, no catastrofica.
+
+Efecto colateral deliberado: esto tambien hace que los techos de EV
+(edge/cola, secciones 12/15) dejen de tener casi nada que corregir en el
+rango de cuota donde mas fallaban en la practica (>=4), porque esas
+senhales ya no llegan al scoring. Se mantienen activos (edge) o
+construidos-pero-inactivos (cola) para el rango 1.45-4.0 restante, sin
+cambios.
+
+Tests actualizados/anhadidos (`test_ranking.py`):
+`test_max_signal_odds_default_excludes_the_real_getafe_style_longshot`
+(regresion directa del caso real, cuota 5.50 excluida por defecto; cuota
+3.90 sigue pasando) y las 3 pruebas existentes que fijaban el longshot a
+cuota 5.5 para comprobar el EFECTO del scoring (no del filtro duro) se
+actualizaron para pasar `Settings(max_signal_odds=10.0)` explicito, sin
+cambiar lo que cada una verifica. Texto de `frontend/app/top-signals/page.tsx`
+actualizado (decia "cuota entre 1.45 y 6.0"). Suite completa: 446/446 en
+verde.
+
+### 16.4 Limitaciones que siguen existiendo
+
+- `4.0` sigue siendo un umbral, no una funcion continua de la evidencia
+  real -- una cuota 4.1 con un modelo excepcionalmente bien respaldado
+  tampoco competira nunca, aunque en teoria pudiera ser una senhal
+  solida. Es la misma limitacion que ya tenia `max_signal_odds` con
+  `6.0`, ahora con un valor con evidencia real detras en vez de uno
+  elegido a ojo.
+- No resuelve el hallazgo mas amplio de la seccion 15.10/16.1
+  (`v1 > v2_edge_cap` dentro del rango 1.45-4.0 que SIGUE compitiendo) --
+  sigue pendiente decidir que hacer con eso, pero ya no es lo que
+  produce el sintoma visible en el dashboard.
+- Ajustable (`max_signal_odds` sigue siendo un valor de `Settings`, no
+  hardcodeado) si el usuario, con mas historico, quiere moverlo.
