@@ -35,6 +35,7 @@ from backend.app.db.models.core import Competition, Season, Team, TeamNameMappin
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.features.goals import build_match_feature_table, feature_columns
+from backend.app.ingestion.api_football.client import INTERNATIONAL_COMPETITION_EDITIONS
 from backend.app.ingestion.api_football.fixtures_provider import ApiFootballMatchProvider
 from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
 from backend.app.ingestion.football_data.fixtures_provider import OpenFootballFixturesProvider
@@ -187,6 +188,58 @@ def update_fixtures(competition: str = typer.Option(None)) -> None:
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-fixtures] {comp} {season_label}: ERROR {exc}")
                 db.rollback()  # ver comentario equivalente en `update()`
+
+
+@app.command("update-international")
+def update_international(
+    competition: str = typer.Option(
+        "uefa_nations_league",
+        help="Codigo de competicion de selecciones (ver INTERNATIONAL_COMPETITION_EDITIONS).",
+    ),
+) -> None:
+    """Ingiere TODO el historico real de una competicion de SELECCIONES
+    (seccion "Selecciones", pedido real del usuario, 2026-11) via
+    API-Football -- la UNICA fuente real para estas competiciones: a
+    diferencia de las 5 ligas de club, no existe un mirror historico tipo
+    football-data.co.uk/openfootball para selecciones, asi que `update`
+    (pensado para ese mirror) no sirve aqui.
+
+    Recorre TODAS las ediciones conocidas de la competicion
+    (`INTERNATIONAL_COMPETITION_EDITIONS`, p.ej. Nations League es BIENAL:
+    2018/2020/2022/2024/2026) en una sola ejecucion -- a diferencia de
+    `update` para clubes, el volumen aqui es pequenho (unas pocas decenas
+    de partidos por edicion), no hace falta la logica de "solo reingerir
+    la temporada en curso" para evitar un `refresh` lento.
+
+    Cada edicion se etiqueta con el MISMO `Season.label` que
+    `update-fixtures`/`update-odds` ya usarian para esa fecha (via
+    `season_label_from_date`, nunca un anho suelto) -- para que la edicion
+    EN CURSO comparta fila de `Season` con lo que esos comandos vayan
+    trayendo en vivo, en vez de duplicarla.
+    """
+    init_db()
+    editions = INTERNATIONAL_COMPETITION_EDITIONS.get(competition)
+    if editions is None:
+        typer.echo(
+            f"[update-international] Competicion no soportada: {competition!r}. "
+            f"Opciones: {sorted(INTERNATIONAL_COMPETITION_EDITIONS)}"
+        )
+        raise typer.Exit(code=1)
+
+    provider = ApiFootballMatchProvider()
+    with session_scope() as db:
+        for year in editions:
+            season_label = season_label_from_date(dt.date(year, 9, 1))
+            try:
+                n = ingest_matches(db, provider, competition, season_label)
+                typer.echo(
+                    f"[update-international] {competition} {season_label} ({year}): {n} partidos"
+                )
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(
+                    f"[update-international] {competition} {season_label} ({year}): ERROR {exc}"
+                )
+                db.rollback()
 
 
 @app.command()

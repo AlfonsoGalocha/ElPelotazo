@@ -320,9 +320,13 @@ def test_corners_total_range_market_edge_values_are_excluded():
 
 
 def test_league_ids_cover_all_five_mvp_leagues():
+    """Subconjunto, no igualdad exacta (seccion "Selecciones", 2026-11):
+    `LEAGUE_IDS` ahora tambien cubre competiciones de selecciones (ver
+    `INTERNATIONAL_COMPETITION_EDITIONS`) ademas de las 5 ligas de club
+    del MVP -- anhadir una no debe romper esta prueba."""
     from backend.app.ingestion.api_football.odds_provider import LEAGUE_IDS
 
-    assert set(LEAGUE_IDS) == {"laliga", "premier_league", "bundesliga", "serie_a", "ligue_1"}
+    assert {"laliga", "premier_league", "bundesliga", "serie_a", "ligue_1"} <= set(LEAGUE_IDS)
     assert all(isinstance(v, int) for v in LEAGUE_IDS.values())
 
 

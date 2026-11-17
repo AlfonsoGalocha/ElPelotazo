@@ -37,6 +37,27 @@ LEAGUE_IDS: dict[str, int] = {
     "bundesliga": 78,
     "serie_a": 135,
     "ligue_1": 61,
+    # Seccion "Selecciones" -- confirmado contra la respuesta REAL de
+    # /leagues?country=World (scripts/debug_api_football_national_teams.py,
+    # ejecutado por el usuario, 2026-11-17), nunca un ID de memoria: id=5,
+    # coverage.odds=True y partidos reales en curso en ese mismo momento
+    # (Denmark vs Norway, Wales vs Portugal...). Es la UNICA competicion
+    # de selecciones "top" con cuotas reales via este proveedor -- Mundial,
+    # Eurocopa y sus clasificatorios salieron con coverage.odds=False en
+    # esa misma respuesta real.
+    "uefa_nations_league": 5,
+}
+
+# API-Football etiqueta cada EDICION de una competicion de selecciones con
+# un unico anho (nunca "YYYY/YY" como las ligas de club) -- aqui se
+# convierte igualmente a traves de `season_label_from_date` (ver
+# cli.py::update_international) para que comparta exactamente el mismo
+# `Season.label` que `update-fixtures`/`update-odds` ya usan para la
+# temporada EN CURSO, y asi nunca crear una fila de `Season` duplicada
+# para la misma edicion real. Nations League es BIENAL desde 2018 (nunca
+# anual): 2018, 2020, 2022, 2024, 2026 son las unicas ediciones reales.
+INTERNATIONAL_COMPETITION_EDITIONS: dict[str, list[int]] = {
+    "uefa_nations_league": [2018, 2020, 2022, 2024, 2026],
 }
 
 
