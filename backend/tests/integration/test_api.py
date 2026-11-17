@@ -886,8 +886,10 @@ def test_top_signals_filters_by_min_edge_min_bookmakers_and_quality(seeded_compe
         low_edge_id, high_edge_id = valid_predictions[0].id, valid_predictions[1].id
         valid_predictions[0].edge = 0.02  # 2pp
         valid_predictions[0].bookmakers_used = 1
+        valid_predictions[0].expected_value = 0.01  # EV +1%
         valid_predictions[1].edge = 0.12  # 12pp
         valid_predictions[1].bookmakers_used = 12
+        valid_predictions[1].expected_value = 0.20  # EV +20%
         db.flush()
 
     client = TestClient(app)
@@ -915,6 +917,14 @@ def test_top_signals_filters_by_min_edge_min_bookmakers_and_quality(seeded_compe
     quality_ids = {p["id"] for p in quality_response.json()}
     assert low_edge_id in quality_ids
     assert high_edge_id not in quality_ids
+
+    min_ev_response = client.get(
+        "/predictions/top-signals",
+        params={"limit": 100, "days": 30, "scope": "all_upcoming", "min_ev": 0.10},
+    )
+    min_ev_ids = {p["id"] for p in min_ev_response.json()}
+    assert low_edge_id not in min_ev_ids
+    assert high_edge_id in min_ev_ids
 
 
 class _FakeApiFootballProvider:

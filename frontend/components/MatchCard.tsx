@@ -7,6 +7,7 @@ import TeamLogo from "./TeamLogo";
 import CompetitionBadge from "./CompetitionBadge";
 import SignalBadge from "./SignalBadge";
 import MarketQualityBadge from "./MarketQualityBadge";
+import AnomalyBadges from "./AnomalyBadge";
 
 // Tarjeta de partido del rediseño (spec exacta pedida por el usuario):
 // escudos de ambos equipos, competicion+jornada, fecha/hora, mercado
@@ -83,6 +84,7 @@ export default function MatchCard({ prediction }: { prediction: Prediction }) {
         <div className="flex flex-wrap items-center gap-1.5">
           <SignalBadge tier={prediction.signal_tier} />
           <MarketQualityBadge quality={prediction.market_quality} />
+          <AnomalyBadges flags={prediction.anomaly_flags} />
         </div>
         <span className="flex items-center gap-1 text-xs font-medium text-accent opacity-0 transition-opacity group-hover:opacity-100">
           Análisis completo

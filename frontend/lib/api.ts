@@ -104,6 +104,10 @@ export interface TopSignalsOptions {
   // duro de calidad del backend, solo lo afinan por request.
   minEdge?: number; // en PUNTOS PORCENTUALES (ej. 5 = 5pp)
   minBookmakers?: number;
+  // Expected Value minimo, como fraccion (0.10 = EV +10%) -- pedido real
+  // del usuario ("revision motor 2.0", Fase 6/8): un edge grande no es lo
+  // mismo que rentabilidad esperada positiva.
+  minEv?: number;
   quality?: "HIGH" | "MEDIUM" | "LOW" | "ALL";
 }
 
@@ -126,6 +130,7 @@ export function getTopSignals(opts: TopSignalsOptions = {}): Promise<Prediction[
     maxFairOdds,
     minEdge,
     minBookmakers,
+    minEv,
     quality,
   } = opts;
   const qs = new URLSearchParams({ limit: String(limit) });
@@ -138,6 +143,7 @@ export function getTopSignals(opts: TopSignalsOptions = {}): Promise<Prediction[
   if (maxFairOdds !== undefined) qs.set("max_fair_odds", String(maxFairOdds));
   if (minEdge !== undefined) qs.set("min_edge", String(minEdge));
   if (minBookmakers !== undefined) qs.set("min_bookmakers", String(minBookmakers));
+  if (minEv !== undefined) qs.set("min_ev", String(minEv));
   if (quality) qs.set("quality", quality);
   return apiFetch<Prediction[]>(`/predictions/top-signals?${qs.toString()}`);
 }

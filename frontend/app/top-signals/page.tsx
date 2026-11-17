@@ -6,6 +6,7 @@ import { formatMatchDateOnly } from "@/lib/dates";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
 import MarketQualityBadge from "@/components/MarketQualityBadge";
+import AnomalyBadges from "@/components/AnomalyBadge";
 import { EmptyState } from "@/components/EmptyState";
 
 const SCOPE_LABELS: Record<SignalScope, string> = {
@@ -27,6 +28,7 @@ export default async function TopSignalsPage({
     max_fair_odds?: string;
     min_edge?: string;
     min_bookmakers?: string;
+    min_ev?: string;
     quality?: "HIGH" | "MEDIUM" | "LOW" | "ALL";
   };
 }) {
@@ -40,6 +42,7 @@ export default async function TopSignalsPage({
   const maxFairOdds = searchParams.max_fair_odds ? Number(searchParams.max_fair_odds) : undefined;
   const minEdge = searchParams.min_edge ? Number(searchParams.min_edge) : undefined;
   const minBookmakers = searchParams.min_bookmakers ? Number(searchParams.min_bookmakers) : undefined;
+  const minEv = searchParams.min_ev ? Number(searchParams.min_ev) / 100 : undefined;
   const quality = searchParams.quality ?? "ALL";
   const hasFairOddsFilter = minFairOdds !== undefined || maxFairOdds !== undefined;
   const hasAnyFilter =
@@ -49,6 +52,7 @@ export default async function TopSignalsPage({
     scope !== "current_round" ||
     minEdge !== undefined ||
     minBookmakers !== undefined ||
+    minEv !== undefined ||
     quality !== "ALL";
   // Pedido explicito del usuario ("quitame tanto filtro"): solo Jornada +
   // Competicion quedan siempre visibles (lo que se usa a diario). El resto
@@ -62,6 +66,7 @@ export default async function TopSignalsPage({
     (searchParams.days !== undefined && searchParams.days !== "4") ||
     minEdge !== undefined ||
     minBookmakers !== undefined ||
+    minEv !== undefined ||
     quality !== "ALL";
 
   const [predictions, competitions] = await Promise.all([
@@ -76,6 +81,7 @@ export default async function TopSignalsPage({
       maxFairOdds,
       minEdge,
       minBookmakers,
+      minEv,
       quality,
     }).catch(() => []),
     getCompetitions().catch(() => []),
@@ -223,6 +229,18 @@ export default async function TopSignalsPage({
               defaultValue={searchParams.min_edge ?? ""}
               className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
             />
+            <label htmlFor="min_ev" className="ml-2">
+              EV mínimo (%):
+            </label>
+            <input
+              id="min_ev"
+              type="number"
+              name="min_ev"
+              step="1"
+              placeholder="0"
+              defaultValue={searchParams.min_ev ?? ""}
+              className="w-16 rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+            />
             <label htmlFor="min_bookmakers" className="ml-2">
               Casas mín.:
             </label>
@@ -304,7 +322,10 @@ export default async function TopSignalsPage({
                 </td>
                 <td className="px-3 py-2">{p.fair_odds.toFixed(2)}</td>
                 <td className="px-3 py-2">
-                  <SignalBadge tier={p.signal_tier} />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <SignalBadge tier={p.signal_tier} />
+                    <AnomalyBadges flags={p.anomaly_flags} />
+                  </div>
                 </td>
                 <td className="px-3 py-2">
                   <MarketQualityBadge quality={p.market_quality} />
