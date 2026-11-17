@@ -49,6 +49,11 @@ def _print_buckets(y_true: np.ndarray, y_prob: np.ndarray, market_odds: np.ndarr
 
 
 def main() -> None:
+    # Los valores escalares se extraen DENTRO del `with` (nunca despues):
+    # `session_scope` cierra la sesion al salir del bloque, y los objetos
+    # ORM quedan "detached" -- acceder a un atributo despues lanza
+    # `DetachedInstanceError` (bug real, visto al correr esto por
+    # primera vez contra datos reales).
     with session_scope() as db:
         rows = (
             db.query(Prediction, PredictionResult)
@@ -57,15 +62,19 @@ def main() -> None:
             .filter(Prediction.market_odds.isnot(None))
             .all()
         )
+        values = [
+            (bool(r.outcome), p.model_probability, p.market_odds, p.bookmakers_used or 0)
+            for p, r in rows
+        ]
 
-    print(f"Total predicciones liquidadas con cuota: {len(rows)}\n")
-    if not rows:
+    print(f"Total predicciones liquidadas con cuota: {len(values)}\n")
+    if not values:
         return
 
-    y_true = np.array([bool(r.outcome) for _p, r in rows])
-    y_prob = np.array([p.model_probability for p, _r in rows])
-    market_odds = np.array([p.market_odds for p, _r in rows])
-    bookmakers_used = np.array([p.bookmakers_used or 0 for p, _r in rows])
+    y_true = np.array([v[0] for v in values])
+    y_prob = np.array([v[1] for v in values])
+    market_odds = np.array([v[2] for v in values])
+    bookmakers_used = np.array([v[3] for v in values])
 
     print("=== TODAS (cualquier numero de casas) ===")
     _print_buckets(y_true, y_prob, market_odds)
