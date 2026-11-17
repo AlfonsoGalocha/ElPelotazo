@@ -1619,3 +1619,78 @@ docker compose exec backend python scripts/backfill_risk_adjusted_expected_value
 y despues repita `compare-ranking-strategies-walk-forward` -- esa es la
 primera vez que esa comparacion tendra datos reales con los que
 diferenciar `v1`/`v2`/`v2_edge_cap`/`v2_edge_cap_longshot`.
+
+### 15.10 Primera comparacion real (post-backfill): v1 le gana a toda la familia v2
+
+El usuario corrio el backfill (1133 filas rellenadas) y repitio
+`compare-ranking-strategies-walk-forward`. Primera vez que esta
+comparacion tiene datos reales con los que diferenciar algo. Dos
+resultados:
+
+1. **La pregunta que motivo la seccion 15 (¿activar
+   `v2_edge_cap_longshot`?): NO**, por la propia regla del usuario
+   ("si no demuestra mejorar la anterior, no la activa"). En los cortes
+   mas selectivos (top-5/10/20) sale IDENTICA a `v2_edge_cap`
+   (produccion): roi=-1.0, win_rate=0% en top-5 y top-10 para ambas. Solo
+   mejora algo en top-50/100 (roi=-0.366 vs -0.474 en top-50; -0.276 vs
+   -0.335 en top-100), pero sigue en negativo y sigue peor que `v1` en
+   esos mismos cortes. Se queda construida, testeada y documentada, sin
+   activar -- igual que el techo de cuota (seccion 14).
+
+2. **Hallazgo mas serio, no buscado**: `v1` le gana a TODA la familia v2
+   (incluida `v2_edge_cap`, produccion actual) en absolutamente todos los
+   top-N:
+
+   | top-N | v1 roi | v2_edge_cap roi (produccion) |
+   |---|---|---|
+   | 5 | -0.403 | -1.000 |
+   | 10 | -0.241 | -1.000 |
+   | 20 | -0.176 | -0.860 |
+   | 50 | **+0.016** (unico positivo de toda la tabla) | -0.474 |
+   | 100 | -0.009 | -0.335 |
+
+   Salvedades explicitas (seccion 5 del pedido original: "no elijas la
+   estrategia con mayor ROI sin considerar tamanho de muestra, drawdown y
+   estabilidad temporal"): top-5/10/20 son muestras de 5-20 apuestas,
+   nada fiables en solitario; el bucket "all" da roi=-0.091 igual en las
+   cuatro estrategias por construccion (el orden no importa si se
+   apuesta a todo) y solo refleja el vig del mercado.
+
+El usuario pidio investigar ANTES de tocar produccion: comprobar si
+`v1 > v2_edge_cap` es real y estable, o un artefacto de un tramo
+concreto del historico (una liga con pocos datos liquidados todavia, un
+periodo de un modelo mas viejo).
+
+**`scripts/debug_walk_forward_by_segment.py`** (nuevo): repite
+`compare_ranking_strategies_walk_forward` (nunca una formula nueva, nunca
+reimplementada) sobre varios recortes del mismo historico real, siempre
+con la misma metodologia walk-forward:
+
+1. todo el historico (linea base);
+2. cada competicion por separado;
+3. cada mercado liquidado por separado;
+4. primera mitad cronologica vs segunda mitad cronologica, partidas por
+   la fecha MEDIANA real de kickoff (no un numero de dias arbitrario),
+   para que ambas mitades tengan tamanho de muestra comparable -- prueba
+   directamente si la diferencia se concentra en un periodo concreto.
+
+Imprime solo `v1`/`v2`/`v2_edge_cap` en top-20/top-50 (bastante muestra
+sin llegar al "all", que no aporta nada a esta pregunta por
+construccion); `v2_edge_cap_longshot` ya quedo descartada arriba, no se
+repite. Anhadido tambien `min_kickoff`/`max_kickoff` a
+`load_settled_predictions_with_kickoff` para poder partir por fecha sin
+tocar la funcion de comparacion en si. Dos tests nuevos reales contra BD
+(`test_debug_walk_forward_by_segment_script.py`): el filtro de fecha
+selecciona exactamente lo esperado, y el script completo corre sin
+`DetachedInstanceError` ni ningun otro error.
+
+**Pendiente**: pedir al usuario que ejecute
+
+```
+docker compose exec backend python scripts/debug_walk_forward_by_segment.py
+```
+
+y pegue el resultado completo -- con eso se decide si la diferencia
+`v1 > v2_edge_cap` es real/estable (y entonces hay que revisar produccion
+en serio) o se concentra en un tramo concreto (y entonces el hallazgo es
+mas matizado de lo que parece en el agregado).
