@@ -70,6 +70,11 @@ def run_instrumented_walk_forward(settled_with_kickoff, min_train_n: int = 30) -
     n_evaluated = 0
     n_raw_ev_nonpositive = 0
     n_raw_ev_positive = 0
+    n_raw_ev_is_null = 0
+    n_raw_ev_is_zero_not_null = 0
+    n_raw_ev_negative = 0
+    n_uncertainty_low_is_null = 0
+    sample_rows: list[tuple[int, object, object, object, object]] = []
     n_edge_curve_available = 0
     n_edge_cap_binding = 0  # EV crudo > 0 Y el techo de edge lo reduce
     n_longshot_curve_available = 0
@@ -99,9 +104,29 @@ def run_instrumented_walk_forward(settled_with_kickoff, min_train_n: int = 30) -
                 )
 
             n_evaluated += 1
+            if prediction.risk_adjusted_expected_value is None:
+                n_raw_ev_is_null += 1
+            if prediction.uncertainty_low is None:
+                n_uncertainty_low_is_null += 1
+            if len(sample_rows) < 10:
+                sample_rows.append(
+                    (
+                        prediction.id,
+                        prediction.risk_adjusted_expected_value,
+                        prediction.uncertainty_low,
+                        prediction.model_probability,
+                        prediction.market_odds,
+                    )
+                )
+
             raw_ev = prediction.risk_adjusted_expected_value or 0.0
             if raw_ev <= 0.0:
                 n_raw_ev_nonpositive += 1
+                if prediction.risk_adjusted_expected_value is not None:
+                    if prediction.risk_adjusted_expected_value == 0.0:
+                        n_raw_ev_is_zero_not_null += 1
+                    else:
+                        n_raw_ev_negative += 1
             else:
                 n_raw_ev_positive += 1
 
@@ -155,7 +180,17 @@ def run_instrumented_walk_forward(settled_with_kickoff, min_train_n: int = 30) -
 
     print(f"evaluadas={n_evaluated}")
     print(f"  raw_risk_adjusted_ev <= 0 (ningun techo puede cambiar nada): {n_raw_ev_nonpositive}")
+    print(f"    de las cuales columna NULL (-> tratada como 0.0 por 'or 0.0'): {n_raw_ev_is_null}")
+    print(f"    de las cuales columna == 0.0 explicito (no NULL): {n_raw_ev_is_zero_not_null}")
+    print(f"    de las cuales columna negativa (no NULL): {n_raw_ev_negative}")
+    print(f"  uncertainty_low columna NULL: {n_uncertainty_low_is_null}")
     print(f"  raw_risk_adjusted_ev > 0 (unicas donde un techo PODRIA actuar): {n_raw_ev_positive}")
+    print(
+        "  muestra de las primeras 10 filas evaluadas (id, risk_adjusted_ev, "
+        "uncertainty_low, model_probability, market_odds):"
+    )
+    for row in sample_rows:
+        print(f"    {row}")
     print(
         f"    con curva de edge disponible en ese momento: {n_edge_curve_available}  "
         f"-- techo de edge REALMENTE activo (capped < crudo): {n_edge_cap_binding}"
