@@ -16,7 +16,7 @@ from backend.app.prediction.predictor import (
     predict_markets_for_table,
     predict_secondary_markets_for_table,
 )
-from backend.app.prediction.ranking import signal_score
+from backend.app.prediction.ranking import signal_score_v2
 from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
 from backend.app.services.evaluation_service import market_track_records
 from backend.app.services.match_service import load_matches_dataframe
@@ -257,8 +257,18 @@ def generate_predictions_for_competition(
         # Nunca se recalcula despues con umbrales/pesos mas nuevos: si la
         # formula cambia, solo afecta a predicciones generadas A PARTIR de
         # ese cambio, no reescribe el pasado.
+        #
+        # Usa `signal_score_v2` (revision "motor 2.0", activada en
+        # produccion tras evidencia real: `ensemble-calibration-report`
+        # descarto calibracion en los 4 mercados centrales de LaLiga, y
+        # `compare-ranking-strategies` mostro a v1 favoreciendo edges
+        # enormes con probabilidad poco respaldada -- el sintoma real
+        # reportado por el usuario. Ver docs/architecture_audit.md seccion
+        # 11). `signal_score` (v1) se mantiene como funcion aparte, nunca
+        # borrada, para seguir pudiendo comparar contra ella si en el
+        # futuro hace falta.
         track_record = track_records.get((competition_code, output.market))
-        prediction.signal_score = signal_score(prediction, market_track_record=track_record)
+        prediction.signal_score = signal_score_v2(prediction, market_track_record=track_record)
         db.add(prediction)
         predictions.append(prediction)
 

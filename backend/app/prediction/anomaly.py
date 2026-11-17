@@ -147,15 +147,19 @@ def best_prediction_per_match(
     predictions_by_match: dict[int, list[Prediction]],
     settings: Settings | None = None,
 ) -> dict[int, Prediction | None]:
-    """Para cada `match_id`, la `Prediction` con mayor `signal_score` entre
-    las que pasan `evaluate_quality_gate` Y no tienen CONTRADICCION (seccion
-    1 del brief: "mejor prediccion" nunca es una senhal contradictoria)."""
-    from backend.app.prediction.ranking import rank_signals
+    """Para cada `match_id`, la `Prediction` con mayor `signal_score_v2`
+    entre las que pasan `evaluate_quality_gate` Y no tienen CONTRADICCION
+    (seccion 1 del brief: "mejor prediccion" nunca es una senhal
+    contradictoria). `signal_score_v2` es la formula de PRODUCCION desde
+    la revision "motor 2.0" (ver prediction/ranking.py) -- usa EV ajustado
+    al riesgo en vez de edge bruto, para no premiar un edge enorme cuando
+    la propia probabilidad esta poco respaldada."""
+    from backend.app.prediction.ranking import rank_signals_v2
 
     settings = settings or get_settings()
     result: dict[int, Prediction | None] = {}
     for match_id, predictions in predictions_by_match.items():
-        included, _ = rank_signals(predictions, settings)
+        included, _ = rank_signals_v2(predictions, settings)
         best = None
         for ranked in included:
             flags = compute_anomaly_flags(ranked.prediction, predictions, settings)
