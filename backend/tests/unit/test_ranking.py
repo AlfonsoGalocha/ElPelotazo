@@ -11,7 +11,10 @@ from backend.app.prediction.ranking import (
     evaluate_quality_gate,
     odds_age_minutes,
     rank_signals,
+    rank_signals_v2,
     signal_score,
+    signal_score_v2,
+    uncertainty_factor,
 )
 
 
@@ -266,3 +269,144 @@ def test_rank_signals_defaults_to_neutral_when_match_or_entry_is_missing():
     )
     assert included_a[0].score == pytest.approx(signal_score(no_match_relation))
     assert included_b[0].score == pytest.approx(signal_score(with_match_but_unknown_history))
+
+
+# ---------------------------------------------------------------------------
+# signal_score_v2 (revision "motor profesional 2.0")
+
+
+def test_uncertainty_factor_is_neutral_without_interval_data():
+    assert uncertainty_factor(None, None) == 1.0
+    assert uncertainty_factor(0.5, None) == 1.0
+
+
+def test_uncertainty_factor_is_one_for_a_zero_width_interval():
+    assert uncertainty_factor(0.7, 0.7) == 1.0
+
+
+def test_uncertainty_factor_decreases_monotonically_with_width():
+    narrow = uncertainty_factor(0.70, 0.80)  # ancho 0.10
+    medium = uncertainty_factor(0.50, 0.90)  # ancho 0.40
+    wide = uncertainty_factor(0.10, 0.95)  # ancho 0.85
+    assert narrow > medium > wide
+
+
+def test_uncertainty_factor_never_drops_below_the_floor():
+    assert uncertainty_factor(0.0, 1.0) == pytest.approx(0.30)  # ancho maximo posible
+
+
+def test_signal_score_v2_prefers_calibrated_probability_when_available():
+    """Pedido real del usuario (Fase 6, punto 1): la probabilidad CALIBRADA
+    manda cuando existe, nunca siempre la cruda."""
+    with_calibration = _prediction(
+        model_probability=0.90,
+        calibrated_probability=0.60,
+        risk_adjusted_expected_value=0.10,
+        uncertainty_low=0.55,
+        uncertainty_high=0.65,
+    )
+    without_calibration = _prediction(
+        model_probability=0.60,
+        calibrated_probability=None,
+        risk_adjusted_expected_value=0.10,
+        uncertainty_low=0.55,
+        uncertainty_high=0.65,
+    )
+    # Mismo todo salvo que una tiene calibrada=0.60 (y model_probability
+    # distinto, irrelevante) y la otra no tiene calibrada en absoluto pero
+    # SI tiene model_probability=0.60 -- deben puntuar IGUAL, porque ambas
+    # terminan usando 0.60 como "p_usada".
+    assert signal_score_v2(with_calibration) == pytest.approx(signal_score_v2(without_calibration))
+
+
+def test_signal_score_v2_uses_risk_adjusted_ev_not_raw_edge():
+    """A diferencia de v1 (que usa `edge`), v2 ignora `edge` por completo y
+    usa `risk_adjusted_expected_value` -- cambiar solo `edge` no debe mover
+    el score_v2 nada."""
+    base = _prediction(risk_adjusted_expected_value=0.20)
+    only_edge_changed = _prediction(risk_adjusted_expected_value=0.20, edge=0.99)
+    assert signal_score_v2(base) == pytest.approx(signal_score_v2(only_edge_changed))
+
+    different_ev = _prediction(risk_adjusted_expected_value=0.40)
+    assert signal_score_v2(different_ev) > signal_score_v2(base)
+
+
+def test_signal_score_v2_is_zero_for_negative_risk_adjusted_ev():
+    negative_ev = _prediction(risk_adjusted_expected_value=-0.10)
+    assert signal_score_v2(negative_ev) == 0.0
+
+
+def test_signal_score_v2_penalizes_wide_uncertainty_interval():
+    narrow = _prediction(
+        risk_adjusted_expected_value=0.20, uncertainty_low=0.75, uncertainty_high=0.85
+    )
+    wide = _prediction(
+        risk_adjusted_expected_value=0.20, uncertainty_low=0.30, uncertainty_high=0.90
+    )
+    assert signal_score_v2(wide) < signal_score_v2(narrow)
+
+
+def test_signal_score_v2_never_favors_the_getafe_style_extreme_case():
+    """El caso real que motivo toda la revision: modelo 81.9% / mercado
+    41.9% (edge brutal, +40pp) con la probabilidad poco respaldada
+    (intervalo ancho [0.40, 0.95]) frente a una senhal mas modesta pero
+    solida (edge menor, intervalo estrecho). v1 (que solo mira
+    probabilidad^2 * edge) favorece claramente a la extrema; v2 NO debe
+    hacerlo."""
+    extreme_but_shaky = _prediction(
+        match_id=1,
+        model_probability=0.819,
+        calibrated_probability=None,
+        market_probability=0.419,
+        market_odds=2.39,
+        edge=0.40,
+        expected_value=0.957,
+        risk_adjusted_expected_value=-0.04,  # con uncertainty_low=0.40 y cuota 2.39: 0.40*2.39-1
+        uncertainty_low=0.40,
+        uncertainty_high=0.95,
+        confidence=0.6,
+        data_quality=0.6,
+    )
+    solid_and_well_supported = _prediction(
+        match_id=2,
+        model_probability=0.65,
+        calibrated_probability=None,
+        market_probability=0.55,
+        market_odds=1.75,
+        edge=0.10,
+        expected_value=0.1375,
+        risk_adjusted_expected_value=0.05,
+        uncertainty_low=0.60,
+        uncertainty_high=0.70,
+        confidence=0.8,
+        data_quality=0.8,
+    )
+
+    # v1 (el problema real reportado): la extrema puntua mas alto solo por
+    # el edge/probabilidad en bruto.
+    assert signal_score(extreme_but_shaky) > signal_score(solid_and_well_supported)
+
+    # v2 (la correccion): la extrema, con EV ajustado al riesgo negativo,
+    # queda en CERO -- la solida gana.
+    assert signal_score_v2(extreme_but_shaky) == 0.0
+    assert signal_score_v2(solid_and_well_supported) > signal_score_v2(extreme_but_shaky)
+
+
+def test_rank_signals_v2_orders_by_score_v2_descending():
+    low = _prediction(match_id=1, risk_adjusted_expected_value=0.05)
+    high = _prediction(match_id=2, risk_adjusted_expected_value=0.30)
+
+    included, _ = rank_signals_v2([low, high])
+
+    assert [s.prediction.match_id for s in included] == [2, 1]
+
+
+def test_rank_signals_v2_uses_the_same_hard_quality_gate_as_v1():
+    good = _prediction(match_id=1)
+    bad_odds = _prediction(match_id=2, market_odds=1.0)
+
+    included, excluded = rank_signals_v2([good, bad_odds])
+
+    assert len(included) == 1
+    assert included[0].prediction is good
+    assert excluded[0].reason == ExclusionReason.INVALID_ODDS
