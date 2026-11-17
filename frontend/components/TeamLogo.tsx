@@ -120,7 +120,7 @@ export default function TeamLogo({
       src={resolvedLogoUrl}
       alt={name}
       title={name}
-      className={`shrink-0 rounded-full bg-white/5 object-contain ${SIZE_CLASSES[size].split(" ").slice(0, 2).join(" ")} ${className}`}
+      className={`shrink-0 rounded-lg bg-white/5 object-contain ${SIZE_CLASSES[size].split(" ").slice(0, 2).join(" ")} ${className}`}
       onError={() => setFailed(true)}
       loading="lazy"
     />
