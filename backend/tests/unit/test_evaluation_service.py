@@ -15,9 +15,11 @@ from backend.app.normalization.competitions import COMPETITIONS
 from backend.app.services.data_service import ingest_matches
 from backend.app.services.evaluation_service import (
     MIN_SETTLED_FOR_EDGE_RELIABILITY,
+    MIN_SETTLED_FOR_PROBABILITY_RELIABILITY,
     MIN_SETTLED_FOR_TRACK_RECORD,
     evaluate_settled_predictions,
     fit_edge_reliability_curve,
+    fit_probability_reliability_curve,
     market_track_records,
     settle_finished_predictions,
 )
@@ -539,3 +541,41 @@ def test_fit_edge_reliability_curve_decreases_hit_rate_prediction_with_edge_size
     small_edge_hit_rate = curve.predict([2.0])[0]
     large_edge_hit_rate = curve.predict([35.0])[0]
     assert small_edge_hit_rate > large_edge_hit_rate
+
+
+# fit_probability_reliability_curve (favorite-longshot bias, seccion 13
+# de docs/architecture_audit.md -- ver prediction/ranking.py::reality_capped_expected_value
+# para el contexto completo: tras el fix de edge, el usuario reporto
+# "victoria local" a cuota 5.50/6.00 seguia destacada pese a
+# model_probability bajo. `scripts/debug_odds_vs_hitrate.py` confirmo que
+# el modelo sobrestima su propia probabilidad en esa cola.)
+
+
+def test_fit_probability_reliability_curve_is_none_below_minimum_sample():
+    with _isolated_db_session() as db:
+        rows = [(0.55, 0.02, True)] * (MIN_SETTLED_FOR_PROBABILITY_RELIABILITY - 1)
+        _seed_settled_predictions_with_edge(db, "probability-reliability-too-few", rows)
+        db.commit()
+        curve = fit_probability_reliability_curve(db)
+    assert curve is None
+
+
+def test_fit_probability_reliability_curve_increases_hit_rate_prediction_with_probability():
+    """Mismo patron que la evidencia real (`debug_odds_vs_hitrate.py`):
+    probabilidad baja (cuota alta, "longshot") acierta mucho menos que
+    probabilidad alta (favorito) -- la curva ajustada debe reflejarlo
+    (nunca al reves, por construccion `increasing=True`)."""
+    with _isolated_db_session() as db:
+        rows = (
+            [(0.65, 0.05, True)] * 22
+            + [(0.65, 0.05, False)] * 8  # favorito: ~73% acierto
+            + [(0.18, 0.05, True)] * 2
+            + [(0.18, 0.05, False)] * 28  # longshot: ~7% acierto
+        )
+        _seed_settled_predictions_with_edge(db, "probability-reliability-increasing", rows)
+        db.commit()
+        curve = fit_probability_reliability_curve(db)
+    assert curve is not None
+    low_probability_hit_rate = curve.predict([0.18])[0]
+    high_probability_hit_rate = curve.predict([0.65])[0]
+    assert low_probability_hit_rate < high_probability_hit_rate

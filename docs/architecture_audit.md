@@ -1007,3 +1007,160 @@ devolvio una curva ajustada real contra la BD de produccion).
   de la seccion 12.3 (un primer intento parecia razonable en tests
   sinteticos pero no bastaba en produccion real) es la razon de fondo
   para seguir verificando esto con datos reales, no darlo por cerrado.
+
+## 13. Fase 12 (sesion 2026-11, continuacion): favorite-longshot bias
+
+### 13.1 Problema real encontrado tras el fix de edge
+
+Con el techo de EV por edge ya desplegado y verificado (seccion 12), el
+usuario reporto un patron RELACIONADO pero distinto: "victoria local" a
+cuota 5.50/6.00 (con `model_probability` de 33.5%/28.3%) seguia
+destacada como "mejor oportunidad" en el dashboard. Cita textual: "una
+cuota 5 o una cuota 6 no es una buena prediccion".
+
+Es una hipotesis DISTINTA a la de edge grande: esta vez la pregunta es
+si la CUOTA/PROBABILIDAD en si (independiente del tamanho del edge)
+predice peor acierto -- el conocido "favorite-longshot bias" de la
+literatura de apuestas deportivas (los mercados, y potencialmente un
+modelo entrenado contra ellos, tienden a sobrevalorar las selecciones
+poco probables).
+
+### 13.2 Evidencia real antes de corregir
+
+Se anhadio `backtesting/metrics.py::performance_by_odds_bucket` (mismo
+patron que `performance_by_edge_bucket`, nunca una metrica nueva de
+cero) y `scripts/debug_odds_vs_hitrate.py`, corrido por el usuario
+contra las mismas 1133 predicciones liquidadas reales:
+
+| cuota | n   | model_prob media | hit rate real | ROI    |
+|-------|-----|-------------------|----------------|--------|
+| 1-2   | 642 | 66.0%             | 68.2%          | -2.5%  |
+| 2-3   | 243 | 41.0%             | 38.7%          | -10.3% |
+| 3-4   | 141 | 28.4%             | 28.4%          | -2.8%  |
+| 4-6   | 79  | 21.7%             | 13.9%          | -34.3% |
+| 6+    | 28  | 15.8%             | 3.6%           | -77.9% |
+
+Conclusion real, clara e inequivoca: en las cuotas 1-4 el modelo esta
+razonablemente bien calibrado (`model_prob` y `hit rate` casi
+coinciden); a partir de cuota 4 el modelo SOBRESTIMA su propia
+probabilidad de forma creciente y dramatica (21.7% dicho vs 13.9% real;
+15.8% dicho vs 3.6% real) -- confirma el "favorite-longshot bias" en
+este sistema concreto, con datos reales, nunca asumido de antemano. Es
+un problema DISTINTO del de edge grande: ocurre incluso con edge
+modesto.
+
+### 13.3 La correccion: segunda cota real sobre el EV
+
+Mismo principio ya validado en la seccion 12 (nunca un blend, un TECHO
+al EV basado en evidencia independiente), aplicado a una segunda fuente
+de sesgo:
+
+- **`services/evaluation_service.py::fit_probability_reliability_curve(db)`**
+  (nuevo): ajusta una `IsotonicRegression` (`increasing=True`, porque la
+  relacion esperada es creciente: mas `model_probability`, mas hit rate
+  real) sobre `(model_probability -> resultado real)`, agregada sobre
+  TODAS las competiciones/mercados a la vez (mismo motivo que
+  `fit_edge_reliability_curve`). `None` con menos de
+  `MIN_SETTLED_FOR_PROBABILITY_RELIABILITY` (30, mismo criterio que los
+  otros `MIN_SETTLED_FOR_*`) liquidaciones con cuota real.
+
+  **OJO, para no contradecir la seccion 11.5**: esto NO reemplaza
+  `model_probability` para mostrar ni para rankear (ese camino ya se
+  probo con `ensemble_calibration_report`, walk-forward y sin fuga, y
+  empeoraba Brier/ECE en los 4 mercados centrales de LaLiga) -- se usa
+  UNICAMENTE como otra cota conservadora sobre el EV, nunca para
+  sustituir la probabilidad que ve el usuario. Tampoco contradice esa
+  evidencia: aquella media calibracion POR MERCADO con walk-forward en
+  el rango de probabilidad tipico de esos 4 mercados (mayormente medio);
+  esta mide sesgo AGREGADO especificamente en la cola de probabilidad
+  baja/cuota alta, una region que aquel estudio no aislaba.
+
+- **`prediction/ranking.py::reality_capped_expected_value`** (extendida,
+  no duplicada): ahora acepta tambien `model_probability` y
+  `probability_reliability_curve`, y toma el **minimo** entre TODAS las
+  cotas disponibles (la de edge Y la de probabilidad) -- cualquier
+  evidencia real que diga "este EV es mas optimista de lo que deberia"
+  puede bajarlo, ninguna puede subirlo. Nunca un blend.
+
+```
+ev_techo = min(
+    risk_adjusted_expected_value,
+    hit_rate_real_por_edge(edge) * market_odds - 1,          # seccion 12
+    hit_rate_real_por_probabilidad(model_probability) * market_odds - 1,  # seccion 13
+)
+score_v2 = model_probability^2 * max(ev_techo, 0) * confidence
+           * data_quality * market_quality_multiplier * market_track_record
+           * factor_incertidumbre(ancho_intervalo)
+```
+
+- `signal_score_v2`/`rank_signals_v2`/`best_prediction_per_match` ganan
+  el parametro opcional `probability_reliability_curve` (mismo patron
+  que `edge_reliability_curve`: `None` es neutro). Cableado en TODOS los
+  mismos puntos de produccion ya cableados en la seccion 12:
+  `services/prediction_service.py`, los 5 endpoints de `/predictions/*`,
+  `/matches/*`, `/history/*`, `agent/tools.py`, `agent/alerts.py` --
+  cada uno calcula AMBAS curvas una vez por request/generacion (mismo
+  patron que `market_track_records`).
+
+### 13.4 Tests anhadidos
+
+- `backtesting/test_metrics.py`: 3 tests para `performance_by_odds_bucket`
+  (agrupa por rango de cuota en un dataset sintetico verificable,
+  vacio sin cuotas validas, reporta Brier/ROI/hit_rate por bucket).
+- `test_ranking.py`: tests para `reality_capped_expected_value` con la
+  curva de probabilidad (neutro sin ella, anula un EV optimista para un
+  caso "longshot" sintetico, apenas toca un favorito bien calibrado,
+  toma el MINIMO cuando ambas curvas -- edge y probabilidad -- estan
+  conectadas a la vez); `signal_score_v2`/`rank_signals_v2`/
+  `best_prediction_per_match` con la curva de probabilidad conectada de
+  extremo a extremo.
+- `test_evaluation_service.py`: 2 tests para
+  `fit_probability_reliability_curve` (`None` por debajo del minimo; la
+  curva ajustada predice menor hit rate para probabilidad baja que para
+  probabilidad alta), corridos contra el mismo motor SQLite EN MEMORIA
+  aislado que ya protegia los tests de `fit_edge_reliability_curve`
+  (mismo riesgo de contaminacion cruzada: tambien pool TODO sin filtrar
+  por competicion a proposito).
+- `scripts/debug_odds_vs_hitrate.py` + su test de extremo a extremo
+  (mismo patron que `debug_edge_vs_hitrate.py`, incluida la leccion del
+  `DetachedInstanceError` real: valores extraidos DENTRO del `with
+  session_scope()`).
+- Suite completa: 417 tests, todos en verde. `ruff check backend scripts`:
+  cero errores nuevos frente al baseline antes de este cambio (comparado
+  explicitamente con `git stash`).
+
+### 13.5 Como verificarlo tras desplegar
+
+`git pull` + `docker compose up -d --build` (sin migracion de esquema
+ni regenerar predicciones -- ambas curvas se calculan EN VIVO en cada
+request). Una "victoria local"/senhal con `model_probability` baja y
+cuota alta (tipo cuota 5+) deberia dejar de aparecer como oportunidad
+destacada en cuanto haya al menos 30 liquidaciones con cuota real en la
+BD -- que ya las hay, confirmado en vivo durante esta misma sesion con
+`debug_odds_vs_hitrate.py` (n=1133).
+
+### 13.6 Limitaciones que siguen existiendo
+
+- Igual que la curva de edge, esta se ajusta GLOBALMENTE (todas las
+  competiciones/mercados a la vez) -- no se ha probado si una curva por
+  mercado seria mejor o peor con mas muestra.
+- Las dos curvas (edge y probabilidad) son dimensiones RELACIONADAS
+  (edge grande normalmente implica probabilidad del modelo alejada de
+  la del mercado) pero no identicas -- no se ha medido su correlacion
+  real ni si aplicar ambos techos a la vez sobre-corrige en algun
+  segmento; el minimo de ambas es deliberadamente conservador por
+  diseño, pero "conservador" puede volverse "casi todo anulado" si
+  ambas curvas son simultaneamente severas sobre el mismo conjunto de
+  señales -- esto debe vigilarse con `compare-ranking-strategies` tras
+  desplegar, no darse por bueno de antemano.
+- No se ha medido el impacto agregado de las DOS correcciones juntas
+  (seccion 12 + seccion 13) en `compare-ranking-strategies`
+  (ROI/win-rate real), por la misma limitacion de acceso continuo a la
+  BD real desde este entorno. Mismo patron que la seccion 12.6: hace
+  falta seguir verificando esto con datos reales periodicamente, no
+  darlo por cerrado.
+- Si tras desplegar este fix el usuario reporta OTRO patron relacionado
+  (p.ej. un mercado concreto, o una combinacion especifica de
+  bookmakers_used/cuota), la misma disciplina aplica: pedir evidencia
+  real con un diagnostico reutilizando `performance_by_*_bucket` antes
+  de anhadir una tercera cota, nunca inventar un umbral mas.

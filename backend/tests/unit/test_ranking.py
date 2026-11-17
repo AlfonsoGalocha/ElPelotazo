@@ -443,21 +443,44 @@ def _decreasing_curve():
     return curve
 
 
-def test_reality_capped_expected_value_is_neutral_without_curve_edge_or_odds():
+def _increasing_probability_curve():
+    """`IsotonicRegression` real (no un stub), ajustada sobre los BUCKETS
+    reales que devolvio `scripts/debug_odds_vs_hitrate.py` cuando el
+    usuario lo corrio contra sus 1133 predicciones liquidadas (seccion 13
+    de docs/architecture_audit.md): cuota 1-2 (model_prob 66.0% / hit
+    68.2%), 2-3 (41.0%/38.7%), 3-4 (28.4%/28.4%, bien calibrado), 4-6
+    (21.7%/13.9%, ROI -34.3%), 6+ (15.8%/3.6%, ROI -77.9%) -- el modelo
+    SOBRESTIMA su propia probabilidad en la cola de poca probabilidad
+    ("favorite-longshot bias")."""
+    from sklearn.isotonic import IsotonicRegression
+
+    model_probability = [0.158, 0.217, 0.284, 0.410, 0.660]
+    outcome = [0.036, 0.139, 0.284, 0.387, 0.682]
+    curve = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=True, out_of_bounds="clip")
+    curve.fit(model_probability, outcome)
+    return curve
+
+
+def test_reality_capped_expected_value_is_neutral_without_any_curve():
+    assert (
+        reality_capped_expected_value(0.70, 0.396, 2.37, 0.819, None, None) == 0.70
+    )
+
+
+def test_reality_capped_expected_value_is_neutral_without_edge_or_odds():
     curve = _decreasing_curve()
-    assert reality_capped_expected_value(0.70, None, 2.37, curve) == 0.70
-    assert reality_capped_expected_value(0.70, 0.396, None, curve) == 0.70
-    assert reality_capped_expected_value(0.70, 0.396, 2.37, None) == 0.70
+    assert reality_capped_expected_value(0.70, None, 2.37, 0.819, curve) == 0.70
+    assert reality_capped_expected_value(0.70, 0.396, None, 0.819, curve) == 0.70
 
 
 def test_reality_capped_expected_value_caps_an_optimistic_ev_for_a_getafe_style_edge():
-    """Con el caso real (edge +39.6pp, cuota 2.37): la curva predice un
-    hit rate real de ~15% para ese tamanho de edge (clip al extremo mas
-    alto observado, 35pp) -- eso implica un EV real de
+    """Con el caso real (edge +39.6pp, cuota 2.37): la curva de edge
+    predice un hit rate real de ~15% para ese tamanho de edge (clip al
+    extremo mas alto observado, 35pp) -- eso implica un EV real de
     0.15*2.37-1 ~= -0.64, MUY lejos del +0.70 optimista que daba
     `uncertainty_low` por si solo."""
     curve = _decreasing_curve()
-    capped = reality_capped_expected_value(0.70, 0.396, 2.37, curve)
+    capped = reality_capped_expected_value(0.70, 0.396, 2.37, 0.819, curve)
     assert capped == pytest.approx(0.15 * 2.37 - 1.0, abs=1e-6)
     assert capped < 0.70
 
@@ -467,7 +490,7 @@ def test_reality_capped_expected_value_never_raises_ev_above_the_raw_estimate():
     que implica la curva, se queda como esta -- nunca se "mejora"
     artificialmente."""
     curve = _decreasing_curve()
-    assert reality_capped_expected_value(-0.90, 0.396, 2.37, curve) == -0.90
+    assert reality_capped_expected_value(-0.90, 0.396, 2.37, 0.819, curve) == -0.90
 
 
 def test_reality_capped_expected_value_barely_touches_a_modest_well_supported_edge():
@@ -477,10 +500,63 @@ def test_reality_capped_expected_value_barely_touches_a_modest_well_supported_ed
     edge."""
     curve = _decreasing_curve()
     raw_ev = 0.04
-    capped = reality_capped_expected_value(raw_ev, 0.02, 2.0, curve)
+    capped = reality_capped_expected_value(raw_ev, 0.02, 2.0, 0.55, curve)
     real_ev = 0.52 * 2.0 - 1.0  # curva real a edge=2pp: hit rate 0.52
     assert capped == pytest.approx(min(raw_ev, real_ev), abs=1e-6)
     assert capped > -0.10  # lejos del colapso del caso Getafe
+
+
+# Segunda cota real: favorite-longshot bias (seccion 13 de
+# docs/architecture_audit.md). Tras corregir el edge grande, el usuario
+# reporto "victoria local" a cuota 5.50/6.00 (model_probability
+# 33.5%/28.3%) seguia destacada: "una cuota 5 o una cuota 6 no es una
+# buena prediccion". `scripts/debug_odds_vs_hitrate.py` confirmo que el
+# modelo sobrestima su propia probabilidad en esa cola.
+
+
+def test_reality_capped_expected_value_is_neutral_without_probability_curve():
+    assert reality_capped_expected_value(0.30, None, 5.5, 0.18, None, None) == 0.30
+
+
+def test_reality_capped_expected_value_caps_an_optimistic_ev_for_a_longshot_probability():
+    """Favorite-longshot real: model_probability=0.18 (cuota 5.5, cerca
+    de la cola 4-6/6+ donde el modelo sobrestima mas). La curva de
+    probabilidad predice un hit rate real muy por debajo del 0.18 que
+    dice el modelo -- el EV real resultante es muy negativo frente a un
+    EV optimista calculado con `uncertainty_low`."""
+    curve = _increasing_probability_curve()
+    capped = reality_capped_expected_value(
+        0.30, None, 5.5, 0.18, None, probability_reliability_curve=curve
+    )
+    assert capped < 0.0
+    assert capped < 0.30
+
+
+def test_reality_capped_expected_value_barely_touches_a_well_calibrated_probability():
+    """En la zona donde el modelo SI esta bien calibrado (cuota 3-4,
+    model_probability ~28%, hit rate real identico), el techo de
+    probabilidad no debe colapsar un EV ya modesto."""
+    curve = _increasing_probability_curve()
+    raw_ev = 0.02
+    capped = reality_capped_expected_value(
+        raw_ev, None, 3.5, 0.284, None, probability_reliability_curve=curve
+    )
+    assert capped == pytest.approx(min(raw_ev, 0.284 * 3.5 - 1.0), abs=1e-6)
+    assert capped > -0.10
+
+
+def test_reality_capped_expected_value_takes_the_minimum_across_both_curves():
+    """Si una senhal es mala tanto por tamanho de edge COMO por
+    probabilidad baja, el techo final es el MINIMO de ambas cotas
+    independientes -- nunca un promedio, nunca solo una de las dos."""
+    edge_curve = _decreasing_curve()
+    probability_curve = _increasing_probability_curve()
+    capped = reality_capped_expected_value(
+        0.70, 0.396, 2.37, 0.18, edge_curve, probability_curve
+    )
+    real_ev_edge = 0.15 * 2.37 - 1.0
+    real_ev_probability = float(probability_curve.predict([0.18])[0]) * 2.37 - 1.0
+    assert capped == pytest.approx(min(real_ev_edge, real_ev_probability), abs=1e-6)
 
 
 def test_signal_score_v2_is_neutral_without_edge_reliability_curve():
@@ -565,3 +641,107 @@ def test_best_prediction_per_match_passes_edge_reliability_curve_through():
 
     assert without_curve is extreme_edge  # sin curva: su EV optimista (+0.70) gana
     assert with_curve is modest_edge  # con la curva real: el EV de Getafe se anula
+
+
+# probability_reliability_curve (favorite-longshot bias, seccion 13):
+# mismo mecanismo que edge_reliability_curve, pero sobre model_probability
+# en vez de edge -- "una cuota 5 o una cuota 6 no es una buena
+# prediccion" aunque el edge nominal parezca razonable.
+
+
+def test_signal_score_v2_is_neutral_without_probability_reliability_curve():
+    prediction = _prediction(risk_adjusted_expected_value=0.20, model_probability=0.18)
+    assert signal_score_v2(prediction, probability_reliability_curve=None) == pytest.approx(
+        signal_score_v2(prediction)
+    )
+
+
+def test_signal_score_v2_zeroes_out_a_favorite_longshot_once_capped():
+    """Caso real reportado tras el fix de edge: "victoria local" a cuota
+    alta con model_probability bajo (33.5%/28.3% en el caso real) seguia
+    destacada. Reproducido aqui con un caso mas extremo (probabilidad
+    0.18, cuota 5.5) para que el efecto del techo de probabilidad sea
+    inequivoco en la prueba: un EV optimista (`risk_adjusted_expected_value`
+    calculado con `uncertainty_low`) debe anularse por completo una vez
+    se conecta la curva real de probabilidad."""
+    curve = _increasing_probability_curve()
+    longshot = _prediction(
+        match_id=1,
+        model_probability=0.18,
+        risk_adjusted_expected_value=0.30,
+        edge=0.05,
+        market_odds=5.5,
+    )
+    without_curve = signal_score_v2(longshot)
+    assert without_curve > 0.0  # el bug real: un EV optimista seguia dando score positivo
+
+    with_curve = signal_score_v2(longshot, probability_reliability_curve=curve)
+    assert with_curve == 0.0  # el techo real deja el EV negativo -> score anulado
+
+
+def test_signal_score_v2_keeps_a_well_calibrated_favorite_positive():
+    """En la zona de favorito (cuota 1.7, probabilidad 66%, donde la
+    curva real respalda un hit rate incluso MEJOR que lo que dice el
+    modelo: 68.2%), el techo de probabilidad no debe anular un EV ya
+    modesto -- solo actua sobre el sesgo real de la cola poco probable,
+    nunca sobre cualquier senhal por igual."""
+    curve = _increasing_probability_curve()
+    favorite = _prediction(
+        match_id=2,
+        model_probability=0.66,
+        risk_adjusted_expected_value=0.05,
+        edge=0.05,
+        market_odds=1.7,
+    )
+    assert signal_score_v2(favorite, probability_reliability_curve=curve) > 0.0
+
+
+def test_rank_signals_v2_passes_probability_reliability_curve_through_to_every_prediction():
+    curve = _increasing_probability_curve()
+    longshot = _prediction(
+        match_id=1,
+        model_probability=0.18,
+        risk_adjusted_expected_value=0.30,
+        edge=0.05,
+        market_odds=5.5,
+    )
+    favorite = _prediction(
+        match_id=2,
+        model_probability=0.66,
+        risk_adjusted_expected_value=0.05,
+        edge=0.05,
+        market_odds=1.7,
+    )
+
+    included, _ = rank_signals_v2([longshot, favorite], probability_reliability_curve=curve)
+
+    assert [s.prediction.match_id for s in included] == [2, 1]
+
+
+def test_best_prediction_per_match_passes_probability_reliability_curve_through():
+    curve = _increasing_probability_curve()
+    # EV deliberadamente muy optimista (1.0): sin esto, model_probability^2
+    # ya favorece al favorito incluso sin curva (0.66^2 >> 0.18^2), lo que
+    # no aislaria el efecto del techo que esta prueba quiere comprobar.
+    longshot = _prediction(
+        match_id=1,
+        model_probability=0.18,
+        risk_adjusted_expected_value=1.0,
+        edge=0.05,
+        market_odds=5.5,
+    )
+    favorite = _prediction(
+        match_id=1,
+        model_probability=0.66,
+        risk_adjusted_expected_value=0.05,
+        edge=0.05,
+        market_odds=1.7,
+    )
+
+    without_curve = best_prediction_per_match({1: [longshot, favorite]})[1]
+    with_curve = best_prediction_per_match(
+        {1: [longshot, favorite]}, probability_reliability_curve=curve
+    )[1]
+
+    assert without_curve is longshot  # sin curva: su EV optimista (+0.30) gana
+    assert with_curve is favorite  # con la curva real: el EV del longshot se anula
