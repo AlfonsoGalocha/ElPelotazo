@@ -85,11 +85,25 @@ class Settings(BaseSettings):
     # sigue siendo mas probable que falle que que acierte, y el cuadrado
     # de la probabilidad en el scoring no basta para que quede fuera del
     # top-N si un dia hay pocas senhales candidatas (feedback real de
-    # usuario, 2026-09-18). 6.0 es un valor de partida razonable (cuotas
-    # por encima implican probabilidad implicita < ~17%), no un limite
-    # universal -- ajustalo segun tu propio criterio de riesgo. `None`
-    # desactiva el filtro por completo.
-    max_signal_odds: float | None = 6.0
+    # usuario, 2026-09-18).
+    #
+    # 4.0, no 6.0 (bajado 2026-11, seccion 16 de architecture_audit.md):
+    # 6.0 era un valor de partida SIN evidencia (solo "probabilidad
+    # implicita < ~17%"). La evidencia real reunida despues
+    # (`debug_odds_vs_hitrate.py`, n=1133, por bucket de cuota) muestra
+    # que el ROI historico es ~vig normal hasta cuota 4 (1-2: -2.5%, 2-3:
+    # -10.3%, 3-4: -2.8%) y se DESPLOMA justo por encima (4-6: -34.3%,
+    # hit rate real 13.9% frente a ~21.7% que decia el modelo; 6+: -77.9%,
+    # hit rate real 3.6% frente a ~15.8%). Intentar corregir esto via
+    # scoring (techo de edge/cola, ver secciones 12-15) demostro en la
+    # practica NO ser suficiente: con datos reales, seguian apareciendo
+    # como "Destacados"/"Mejores oportunidades" victorias locales a cuota
+    # 5-6 (feedback real de usuario, 2026-11-17 -- "quiero que actue con
+    # sentido comun"). Mismo mecanismo `max_signal_odds` ya existente
+    # (nunca una formula nueva ni pesos inventados), simplemente alineado
+    # con donde la evidencia real muestra que el filtro hace falta. Sigue
+    # siendo ajustable; `None` desactiva el filtro por completo.
+    max_signal_odds: float | None = 4.0
 
     # --- Calidad de mercado (prediction/market_quality.py) ---
     # Clasificacion HIGH/MEDIUM/LOW basada en cuantas casas respaldan el

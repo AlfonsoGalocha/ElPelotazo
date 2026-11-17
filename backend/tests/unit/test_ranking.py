@@ -73,6 +73,27 @@ def test_max_signal_odds_is_configurable_and_can_be_disabled():
     assert evaluate_quality_gate(prediction, Settings(max_signal_odds=None)) is None
 
 
+def test_max_signal_odds_default_excludes_the_real_getafe_style_longshot():
+    """Regresion directa del caso real que motivo bajar `max_signal_odds`
+    de 6.0 a 4.0 (seccion 16 de docs/architecture_audit.md): Getafe-Atletico
+    "Victoria local" a cuota 5.50 (modelo 33.5%, edge 16.5pp) seguia
+    apareciendo como "Destacado"/"Mejor oportunidad" en produccion pese a
+    todos los techos de EV ya activos (secciones 12-15) -- la evidencia
+    real por bucket de cuota (`debug_odds_vs_hitrate.py`) muestra que el
+    ROI historico se desploma justo por encima de cuota 4, asi que el
+    filtro DURO (nunca solo el scoring) es el que tiene que excluirlo."""
+    getafe_style_longshot = _prediction(
+        model_probability=0.335, market_probability=0.17, market_odds=5.50, edge=0.165
+    )
+    assert evaluate_quality_gate(getafe_style_longshot) == ExclusionReason.ODDS_TOO_HIGH
+
+    # Justo por debajo del nuevo umbral: sigue pasando el filtro duro (el
+    # scoring, no este filtro, sigue siendo quien pondera cuotas 3-4,
+    # donde la evidencia real muestra un ROI mas cercano al vig normal).
+    below_threshold = _prediction(market_odds=3.90)
+    assert evaluate_quality_gate(below_threshold) is None
+
+
 def test_prediction_with_negative_edge_is_excluded():
     prediction = _prediction(edge=-0.05)
     assert evaluate_quality_gate(prediction) == ExclusionReason.INVALID_EDGE
@@ -705,7 +726,12 @@ def test_signal_score_v2_keeps_a_well_calibrated_favorite_positive():
 
 
 def test_rank_signals_v2_passes_odds_reliability_curve_through_to_every_prediction():
+    """`max_signal_odds` se baja a 4.0 (seccion 16): se pasa explicito
+    aqui mas alto para que el filtro DURO no se interponga -- lo que esta
+    prueba quiere comprobar es el SCORING (la curva pasada por el
+    llamador), no el filtro de calidad."""
     curve = _decreasing_odds_curve()
+    permissive_settings = Settings(max_signal_odds=10.0)
     longshot = _prediction(
         match_id=1,
         model_probability=0.18,
@@ -721,7 +747,9 @@ def test_rank_signals_v2_passes_odds_reliability_curve_through_to_every_predicti
         market_odds=1.7,
     )
 
-    included, _ = rank_signals_v2([longshot, favorite], odds_reliability_curve=curve)
+    included, _ = rank_signals_v2(
+        [longshot, favorite], settings=permissive_settings, odds_reliability_curve=curve
+    )
 
     assert [s.prediction.match_id for s in included] == [2, 1]
 
@@ -731,6 +759,10 @@ def test_best_prediction_per_match_passes_odds_reliability_curve_through():
     # EV deliberadamente muy optimista (1.0): sin esto, model_probability^2
     # ya favorece al favorito incluso sin curva (0.66^2 >> 0.18^2), lo que
     # no aislaria el efecto del techo que esta prueba quiere comprobar.
+    # `max_signal_odds` se baja a 4.0 (seccion 16): se pasa explicito mas
+    # alto para que el filtro DURO no excluya al longshot (cuota 5.5)
+    # antes de llegar al scoring que esta prueba quiere comprobar.
+    permissive_settings = Settings(max_signal_odds=10.0)
     longshot = _prediction(
         match_id=1,
         model_probability=0.18,
@@ -746,9 +778,11 @@ def test_best_prediction_per_match_passes_odds_reliability_curve_through():
         market_odds=1.7,
     )
 
-    without_curve = best_prediction_per_match({1: [longshot, favorite]})[1]
+    without_curve = best_prediction_per_match(
+        {1: [longshot, favorite]}, settings=permissive_settings
+    )[1]
     with_curve = best_prediction_per_match(
-        {1: [longshot, favorite]}, odds_reliability_curve=curve
+        {1: [longshot, favorite]}, settings=permissive_settings, odds_reliability_curve=curve
     )[1]
 
     assert without_curve is longshot  # sin curva: su EV optimista (+0.30) gana
@@ -878,7 +912,11 @@ def test_signal_score_v2_caps_an_overconfident_longshot_once_curve_connected():
 
 
 def test_rank_signals_v2_passes_longshot_calibration_curve_through_to_every_prediction():
+    """`max_signal_odds` se baja a 4.0 (seccion 16): se pasa explicito
+    aqui mas alto para que el filtro DURO no excluya al longshot (cuota
+    5.5) antes de llegar al scoring que esta prueba quiere comprobar."""
     curve = _increasing_longshot_calibration_curve()
+    permissive_settings = Settings(max_signal_odds=10.0)
     longshot = _prediction(
         match_id=1,
         model_probability=0.335,
@@ -894,6 +932,8 @@ def test_rank_signals_v2_passes_longshot_calibration_curve_through_to_every_pred
         market_odds=1.9,
     )
 
-    included, _ = rank_signals_v2([longshot, well_calibrated], longshot_calibration_curve=curve)
+    included, _ = rank_signals_v2(
+        [longshot, well_calibrated], settings=permissive_settings, longshot_calibration_curve=curve
+    )
 
     assert [s.prediction.match_id for s in included] == [2, 1]
