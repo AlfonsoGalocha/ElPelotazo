@@ -603,3 +603,165 @@ prioridad que se dejaria hoy:
 4. Extender `GradientBoostingMarketModel` a una variante conjunta por
    grupo (como `MultinomialGroupClassifier` pero con arboles) si el
    binario independiente demuestra ser el cuello de botella.
+
+## 11. Fase 10 (sesion 2026-11, continuacion): "motor profesional 2.0" — revision del ranking
+
+El usuario reporto el problema real de raiz de todo este bloque, con un
+caso concreto (Getafe vs Atletico Madrid, doble oportunidad 1X: modelo
+81.9% frente a mercado 41.9%, edge +40pp) y pidio una revision completa
+del motor de ranking/edge/EV, auditando primero, implementando y
+validando despues, sin pedir confirmacion fase a fase.
+
+### 11.1 Problemas encontrados (auditoria con codigo real, no supuestos)
+
+1. **`signal_score` (produccion) usa `model_probability` CRUDO, nunca
+   `calibrated_probability`** (`prediction/ranking.py`) — documentado ya
+   como decision diferida, pero nunca resuelta: una probabilidad extrema
+   sin calibrar domina el ranking via `model_probability**2`.
+2. **`signal_score` NUNCA usa el intervalo de incertidumbre**
+   (`uncertainty_low`/`uncertainty_high`, ya calculado y persistido desde
+   la Fase 9) — una predicción con intervalo [0.40, 0.95] puntuaba
+   EXACTAMENTE igual que otra con [0.78, 0.85] al mismo punto estimado.
+   Esta es la causa mecanica mas directa del caso reportado.
+3. **El EV (`compute_expected_value`) tambien usa `model_probability`
+   crudo**, nunca una version conservadora — contradice la propia
+   formula de EV que pide rigor estadistico.
+4. **La calibracion de produccion SI existe y SI se ajusta sobre el
+   ENSEMBLE real** (`model_service.py`, `IsotonicCalibrator` sobre la
+   probabilidad del ensemble ya renormalizada, en un holdout real) —
+   correccion a una suposicion propia de esta misma sesion horas antes.
+   Pero: (a) usa un UNICO split train/holdout, nunca walk-forward: mucho
+   menos riguroso que el motor de backtest que existe para otras cosas;
+   (b) solo usa isotonic — `PlattCalibrator` existe en el codigo
+   (`models/calibration/calibrators.py`) desde la Fase 9 pero nunca se
+   habia usado en el entrenamiento real; (c) el comando
+   `calibration-report` de la CLI (el unico que se habia corrido contra
+   datos reales hasta ahora) NO evalua esto: evalua calibracion sobre
+   `DixonColesModel` AISLADO via walk-forward
+   (`backtesting/engine.py::run_walk_forward_backtest`, que solo sabe
+   entrenar un `GoalsModel` suelto, nunca el ensemble con el clasificador
+   ML) — la herramienta de validacion rigurosa probaba el modelo
+   EQUIVOCADO. Nunca se habia podido responder con confianza si calibrar
+   el ensemble real (con Platt o con isotonic) mejora algo.
+5. **Vig removal**: solo normalizacion proporcional (`market/vig.py`) —
+   Shin's method sigue deliberadamente sin implementar (ver seccion 10,
+   punto 7), sin cambios en esta fase.
+6. **`market_track_record` SI esta conectado de verdad**
+   (`evaluation_service.py::market_track_records`, 1 − ECE historico real
+   por competicion/mercado, >= 30 liquidaciones) — otra correccion a una
+   suposicion propia: esto ya funcionaba bien desde la Fase 9.
+7. **No existia ningun motor de backtest que supiera evaluar el ENSEMBLE
+   completo (DC + ML + pesos aprendidos) fold a fold** — solo para un
+   `GoalsModel` aislado. Sin esto, era imposible validar sin leakage
+   ninguna mejora de calibracion/ranking contra lo que realmente se sirve
+   en produccion.
+
+### 11.2 Que se ha cambiado
+
+- **`backtesting/ensemble_engine.py`** (nuevo): walk-forward real del
+  ENSEMBLE completo (DC + 3 candidatos ML + seleccion de ganador por
+  grupo + pesos aprendidos + calibradores isotonic/platt), con un holdout
+  de seleccion/calibracion separado del fold de test en cada iteracion —
+  nunca leakage. Comando CLI `ensemble-calibration-report`.
+- **`Prediction.risk_adjusted_expected_value`**: EV calculado con
+  `uncertainty_low` (extremo conservador del intervalo) en vez de
+  `model_probability` — nunca mas optimista que `expected_value`.
+  (`prediction/predictor.py`, `services/prediction_service.py`, API,
+  frontend).
+- **`prediction/anomaly.py::HIGH_UNCERTAINTY` ("ALTA_INCERTIDUMBRE")**:
+  nueva flag que SI excluye de "mejor prediccion"/"señal fuerte"
+  (`is_strong_signal`), igual que `CONTRADICCION` — antes solo habia
+  flags informativas. Umbral (ancho de intervalo >= 0.60) derivado
+  EMPIRICAMENTE de la distribucion real de anchos en un backtest
+  sintetico (mediana ~0.32, p90 ~0.59) — un primer intento con 0.30
+  resulto demasiado agresivo (regresion real: 12 tests rompieron, todos
+  corregidos antes de continuar).
+- **`prediction/ranking.py::signal_score_v2`/`rank_signals_v2`** (nuevo,
+  NUNCA sustituye a v1 en produccion por si solo): usa
+  `calibrated_probability` cuando existe, `risk_adjusted_expected_value`
+  en vez de `edge` bruto, y un factor CONTINUO de penalizacion por ancho
+  de intervalo (ademas del corte binario de `HIGH_UNCERTAINTY`).
+- **`backtesting/ranking_comparison.py`** (nuevo): compara v1 vs v2 sobre
+  predicciones YA LIQUIDADAS, por TOP-N de cada estrategia (ROI, win
+  rate, PnL, drawdown, Brier, log loss). Sin riesgo de leakage: ambos
+  scores usan solo campos ya congelados antes del resultado real.
+  Comando CLI `compare-ranking-strategies`.
+- **Dashboard**: `AnomalyBadges` cableado en `MatchCard`/`top-signals`
+  (antes solo en detalle de partido/historico); filtro nuevo "EV minimo"
+  en `/predictions/top-signals` (`min_ev`, fraccion, filtro SQL sobre
+  `Prediction.expected_value`).
+
+### 11.3 Metricas usadas ahora (todas ya existian o se añaden aqui, ninguna inventada)
+
+Brier score, log loss, Expected Calibration Error (`models/calibration/metrics.py`,
+ya existian), ROI/yield/win-rate/max-drawdown/PnL
+(`backtesting/metrics.py`, `ranking_comparison.py`, ya existian para
+backtest sintetico, reusadas aqui sobre liquidaciones reales), e
+intervalo de Wilson para incertidumbre (`prediction/uncertainty.py`, Fase
+9). Reliability diagrams: `reliability_curve` ya existe en
+`models/calibration/metrics.py` desde antes de esta fase.
+
+### 11.4 Como funciona el ranking nuevo (signal_score_v2)
+
+```
+p_usada = calibrated_probability si existe, si no model_probability
+score_v2 = p_usada^2 * max(risk_adjusted_expected_value, 0) * confidence
+           * data_quality * market_quality_multiplier * market_track_record
+           * factor_incertidumbre(ancho_intervalo)
+```
+
+`factor_incertidumbre` decae linealmente de 1.0 (ancho=0) a un suelo de
+0.30 (ancho=1.0, el maximo teorico) — nunca colapsa a cero por si solo
+(eso ya lo hace la exclusion binaria `HIGH_UNCERTAINTY` aparte). Un EV
+ajustado al riesgo negativo anula el score entero (igual que v1 anula con
+edge negativo). **v2 NO esta activo en produccion**: solo
+`rank_signals`/`signal_score` (v1) generan y congelan lo que ve el
+usuario hoy. v2 es la candidata que se backtestea contra v1.
+
+### 11.5 Resultados comparativos del backtesting
+
+**No inventados.** Esta sesion no tiene acceso al historico real de
+predicciones liquidadas (vive solo en el Docker Compose del usuario) ni
+puede reentrenar el ensemble contra datos de produccion — todo el motor
+de validacion (`ensemble_engine.py`, `ranking_comparison.py`) esta
+construido y probado con datos sinteticos, pero los NUMEROS REALES que
+decidirian si v2 sustituye a v1 requieren ejecutar, contra la base de
+datos real:
+
+```
+docker compose exec backend football-edge ensemble-calibration-report laliga --market home_win
+docker compose exec backend football-edge ensemble-calibration-report laliga --market double_chance_1x
+docker compose exec backend football-edge compare-ranking-strategies
+```
+
+El primer par de comandos responde "¿calibrar el ENSEMBLE real (no solo
+Dixon-Coles) mejora algo, y con que metodo?" — la pregunta que
+`calibration-report` nunca pudo responder de verdad. El tercero responde
+"¿v2 habria dado mejor ROI/win-rate que v1 en el TOP-N real?". Hasta que
+estos comandos se corran contra datos reales y se interpreten, **v1
+sigue siendo el default de produccion** — cambiar eso sin esa evidencia
+seria exactamente el tipo de "mezcla arbitraria sin validar" que esta
+revision pidio evitar.
+
+### 11.6 Limitaciones que siguen existiendo
+
+- Shin's method sigue sin implementar (sin fuente verificable, ver
+  seccion 10 punto 7) — solo normalizacion proporcional.
+- `signal_score_v2` no esta activo en produccion hasta que el backtest
+  real (11.5) lo justifique.
+- El umbral de `HIGH_UNCERTAINTY` (0.60) y la pendiente/suelo de
+  `factor_incertidumbre` en v2 (0.70/0.30) se derivaron de un dataset
+  SINTETICO (Poisson simple) por falta de acceso a datos reales desde
+  este entorno — deberian remedirse contra predicciones reales ya
+  liquidadas una vez haya suficiente historico, no asumirse validos para
+  siempre.
+- `ensemble_calibration_report`/`compare_ranking_strategies` son
+  herramientas de diagnostico nuevas, verificadas solo con datos
+  sinteticos en esta sesion (10 + 6 tests respectivamente) — su
+  comportamiento con el volumen y la distribucion reales de las 5 ligas
+  del MVP todavia no se ha observado.
+- El "indicador de fiabilidad" pedido explicitamente ya existe repartido
+  en varios campos (`signal_tier`, `market_quality`, `anomaly_flags`,
+  `confidence`, `data_quality`) en vez de un unico numero compuesto
+  nuevo — evita inventar una metrica adicional no validada, pero exige
+  mirar mas de un campo para "fiabilidad" en vez de uno solo.
