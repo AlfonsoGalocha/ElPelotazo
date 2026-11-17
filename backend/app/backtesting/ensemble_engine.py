@@ -47,6 +47,7 @@ suficientes, ese fold se SALTA (nunca se rellena con un numero inventado)
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -138,12 +139,21 @@ def run_ensemble_walk_forward_backtest(
     market_key: str,
     min_train_seasons: int = 2,
     market_odds_col: str | None = None,
+    on_fold_start: Callable[[int, int, str], None] | None = None,
 ) -> list[EnsembleBacktestFoldResult]:
+    """`on_fold_start(indice_1_based, total_folds, test_season)`: callback
+    opcional, llamado ANTES de entrenar cada fold -- cada fold reentrena
+    Dixon-Coles + 3 candidatos ML sobre datos reales, que puede tardar
+    bastante mas que en el dataset sintetico de los tests; sin esta señal
+    de progreso, el comando CLI parece colgado (bug real reportado por el
+    usuario: Ctrl+C antes de que terminara)."""
     group = _group_for_market(market_key)
     folds = expanding_window_splits(table, min_train_seasons=min_train_seasons)
     results: list[EnsembleBacktestFoldResult] = []
 
-    for fold in folds:
+    for fold_idx, fold in enumerate(folds, start=1):
+        if on_fold_start is not None:
+            on_fold_start(fold_idx, len(folds), fold.test_season)
         if len(fold.train_seasons) < 2:
             continue  # sin temporada de sobra para separar un holdout de seleccion/calibracion
 

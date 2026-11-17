@@ -75,6 +75,26 @@ def test_run_ensemble_backtest_raw_probabilities_are_valid_probabilities():
             assert len(p_calibrated) == len(result.y_true)
 
 
+def test_run_ensemble_backtest_calls_on_fold_start_for_every_fold():
+    """Bug real reportado por el usuario: sin señal de progreso, el
+    comando CLI parecia colgado contra datos reales (reentrena el
+    ensemble entero por fold) y lo cancelo con Ctrl+C antes de terminar."""
+    table = _synthetic_table(n_seasons=5)
+    calls: list[tuple[int, int, str]] = []
+
+    run_ensemble_walk_forward_backtest(
+        table,
+        "home_win",
+        min_train_seasons=2,
+        on_fold_start=lambda idx, total, season: calls.append((idx, total, season)),
+    )
+
+    assert len(calls) == 3  # mismos 3 folds que produce resultados (ver test de arriba)
+    assert [c[0] for c in calls] == [1, 2, 3]
+    assert all(c[1] == 3 for c in calls)
+    assert [c[2] for c in calls] == sorted(c[2] for c in calls)  # orden cronologico
+
+
 def test_run_ensemble_backtest_skips_folds_without_enough_data():
     table = _synthetic_table(n_seasons=1)
     results = run_ensemble_walk_forward_backtest(table, "home_win", min_train_seasons=2)
