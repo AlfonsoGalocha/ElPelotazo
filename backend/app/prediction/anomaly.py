@@ -16,10 +16,15 @@ todavia en la BD), esa senhal se excluye de "mejor prediccion" y de
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from backend.app.config.settings import Settings, get_settings
 from backend.app.db.models.modeling import Prediction
 from backend.app.prediction.market_labels import MUTUALLY_EXCLUSIVE_GROUPS
 from backend.app.prediction.market_quality import market_quality_tier
+
+if TYPE_CHECKING:
+    from sklearn.isotonic import IsotonicRegression
 
 CONTRADICTION = "CONTRADICCION"
 LOW_RELIABILITY = "SENAL_BAJA_FIABILIDAD"
@@ -146,6 +151,7 @@ def is_strong_signal(flags: list[str]) -> bool:
 def best_prediction_per_match(
     predictions_by_match: dict[int, list[Prediction]],
     settings: Settings | None = None,
+    edge_reliability_curve: IsotonicRegression | None = None,
 ) -> dict[int, Prediction | None]:
     """Para cada `match_id`, la `Prediction` con mayor `signal_score_v2`
     entre las que pasan `evaluate_quality_gate` Y no tienen CONTRADICCION
@@ -153,13 +159,21 @@ def best_prediction_per_match(
     contradictoria). `signal_score_v2` es la formula de PRODUCCION desde
     la revision "motor 2.0" (ver prediction/ranking.py) -- usa EV ajustado
     al riesgo en vez de edge bruto, para no premiar un edge enorme cuando
-    la propia probabilidad esta poco respaldada."""
+    la propia probabilidad esta poco respaldada.
+
+    `edge_reliability_curve`: opcional, pasado por el llamador (que SI
+    tiene acceso a BD) via
+    `services/evaluation_service.py::fit_edge_reliability_curve` -- esta
+    funcion se mantiene PURA (sin BD), igual que `rank_signals_v2`.
+    `None` (por defecto) es neutro: nunca penaliza por falta de dato."""
     from backend.app.prediction.ranking import rank_signals_v2
 
     settings = settings or get_settings()
     result: dict[int, Prediction | None] = {}
     for match_id, predictions in predictions_by_match.items():
-        included, _ = rank_signals_v2(predictions, settings)
+        included, _ = rank_signals_v2(
+            predictions, settings, edge_reliability_curve=edge_reliability_curve
+        )
         best = None
         for ranked in included:
             flags = compute_anomaly_flags(ranked.prediction, predictions, settings)

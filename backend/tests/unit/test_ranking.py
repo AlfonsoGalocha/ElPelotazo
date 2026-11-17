@@ -6,8 +6,10 @@ import pytest
 
 from backend.app.config.settings import Settings
 from backend.app.db.models.modeling import Prediction
+from backend.app.prediction.anomaly import best_prediction_per_match
 from backend.app.prediction.ranking import (
     ExclusionReason,
+    edge_reliability_factor,
     evaluate_quality_gate,
     odds_age_minutes,
     rank_signals,
@@ -414,3 +416,123 @@ def test_rank_signals_v2_uses_the_same_hard_quality_gate_as_v1():
     assert len(included) == 1
     assert included[0].prediction is good
     assert excluded[0].reason == ExclusionReason.INVALID_ODDS
+
+
+# edge_reliability_factor (fix real tras activar v2: el caso Getafe-Atletico
+# -- match_id=61, edge +39.6pp -- seguia arriba del ranking porque su
+# `uncertainty_low` era ESTRECHO: `uncertainty_factor` mide ruido de MUESTRA,
+# nunca desacuerdo con el mercado. `scripts/debug_edge_vs_hitrate.py`, corrido
+# por el usuario sobre 1133 predicciones liquidadas reales, confirmo que el
+# hit rate cae de forma practicamente monotona con el tamanho del edge.)
+
+
+def _decreasing_curve():
+    """`IsotonicRegression` real (no un stub), ajustada sobre datos
+    sinteticos que reproducen la FORMA de la evidencia real: hit rate alto
+    con edge pequenho, cayendo con edge grande -- nunca al reves."""
+    from sklearn.isotonic import IsotonicRegression
+
+    edge_pp = [0.0, 2.0, 5.0, 8.0, 12.0, 20.0, 35.0]
+    outcome = [0.55, 0.52, 0.45, 0.40, 0.35, 0.25, 0.15]
+    curve = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=False, out_of_bounds="clip")
+    curve.fit(edge_pp, outcome)
+    return curve
+
+
+def test_edge_reliability_factor_is_neutral_without_edge_or_curve():
+    curve = _decreasing_curve()
+    assert edge_reliability_factor(None, curve) == 1.0
+    assert edge_reliability_factor(0.40, None) == 1.0
+    assert edge_reliability_factor(None, None) == 1.0
+
+
+def test_edge_reliability_factor_is_one_at_the_baseline_edge():
+    """Un edge minimo (~0pp) acierta igual que el baseline con el que se
+    normaliza -- nunca se penaliza por debajo de 1.0."""
+    curve = _decreasing_curve()
+    assert edge_reliability_factor(0.0, curve) == pytest.approx(1.0)
+
+
+def test_edge_reliability_factor_decreases_for_larger_edges():
+    curve = _decreasing_curve()
+    small_edge = edge_reliability_factor(0.02, curve)  # 2pp
+    getafe_style_edge = edge_reliability_factor(0.396, curve)  # +39.6pp real
+    assert small_edge > getafe_style_edge
+    assert 0.0 <= getafe_style_edge < small_edge <= 1.0
+
+
+def test_edge_reliability_factor_never_exceeds_one():
+    """Si el edge TAN PEQUENHO acertase mejor que el baseline (ruido en la
+    cola de la curva), nunca se premia por encima de 1.0 -- solo penaliza,
+    nunca bonifica."""
+    curve = _decreasing_curve()
+    assert edge_reliability_factor(-0.05, curve) <= 1.0
+
+
+def test_signal_score_v2_is_neutral_without_edge_reliability_curve():
+    """Sin curva (p.ej. menos de MIN_SETTLED_FOR_EDGE_RELIABILITY
+    liquidaciones todavia): comportamiento IDENTICO al de antes de este
+    fix -- nunca penaliza por falta de dato."""
+    prediction = _prediction(risk_adjusted_expected_value=0.20, edge=0.396)
+    assert signal_score_v2(prediction, edge_reliability_curve=None) == pytest.approx(
+        signal_score_v2(prediction)
+    )
+
+
+def test_signal_score_v2_penalizes_a_getafe_style_extreme_edge_via_reliability_curve():
+    """La correccion real: incluso con EV ajustado al riesgo POSITIVO (el
+    caso real en produccion: uncertainty_low=0.718, cuota de mercado bien
+    pagada), un edge enorme debe puntuar PEOR que uno modesto una vez se
+    conecta `edge_reliability_curve`, porque la evidencia real dice que ese
+    tamanho de edge acierta menos, no mas."""
+    curve = _decreasing_curve()
+    extreme_edge = _prediction(
+        match_id=1,
+        model_probability=0.819,
+        risk_adjusted_expected_value=0.70,
+        edge=0.396,
+        uncertainty_low=0.718,
+        uncertainty_high=0.911,
+    )
+    modest_edge = _prediction(
+        match_id=2,
+        model_probability=0.65,
+        risk_adjusted_expected_value=0.70,
+        edge=0.02,
+        uncertainty_low=0.718,
+        uncertainty_high=0.911,
+    )
+    without_curve = signal_score_v2(extreme_edge) > 0.0  # el bug real: seguia arriba
+    assert without_curve
+
+    with_curve_extreme = signal_score_v2(extreme_edge, edge_reliability_curve=curve)
+    with_curve_modest = signal_score_v2(modest_edge, edge_reliability_curve=curve)
+    assert with_curve_extreme < signal_score_v2(extreme_edge)  # el factor SI penaliza
+    assert with_curve_modest > with_curve_extreme  # y el modesto ya no pierde por el edge
+
+
+def test_rank_signals_v2_passes_edge_reliability_curve_through_to_every_prediction():
+    curve = _decreasing_curve()
+    extreme_edge = _prediction(match_id=1, risk_adjusted_expected_value=0.70, edge=0.396)
+    modest_edge = _prediction(match_id=2, risk_adjusted_expected_value=0.70, edge=0.02)
+
+    included, _ = rank_signals_v2([extreme_edge, modest_edge], edge_reliability_curve=curve)
+
+    assert [s.prediction.match_id for s in included] == [2, 1]
+
+
+def test_best_prediction_per_match_passes_edge_reliability_curve_through():
+    """`best_prediction_per_match` (prediction/anomaly.py) delega en
+    `rank_signals_v2` -- la curva pasada debe decidir cual de las dos
+    predicciones del MISMO partido es la mejor."""
+    curve = _decreasing_curve()
+    extreme_edge = _prediction(match_id=1, risk_adjusted_expected_value=0.70, edge=0.396)
+    modest_edge = _prediction(match_id=1, risk_adjusted_expected_value=0.70, edge=0.02)
+
+    without_curve = best_prediction_per_match({1: [extreme_edge, modest_edge]})[1]
+    with_curve = best_prediction_per_match(
+        {1: [extreme_edge, modest_edge]}, edge_reliability_curve=curve
+    )[1]
+
+    assert without_curve is extreme_edge  # sin curva: empatan en todo salvo edge, gana el primero evaluado con mayor score bruto
+    assert with_curve is modest_edge  # con curva real: el edge enorme ya no gana

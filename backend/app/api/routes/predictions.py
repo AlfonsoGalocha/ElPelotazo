@@ -24,7 +24,7 @@ from backend.app.schemas.prediction import (
     SignalDetailOut,
     SummaryOut,
 )
-from backend.app.services.evaluation_service import market_track_records
+from backend.app.services.evaluation_service import fit_edge_reliability_curve, market_track_records
 from backend.app.services.round_service import get_current_round, get_next_round
 from backend.app.utils.logging import get_logger
 
@@ -155,7 +155,10 @@ def predictions_summary(db: Session = Depends(get_db)) -> dict:
 
     candidates = _base_signal_query(db, None, True, scope="current_round").all()
     by_match = _group_by_match(candidates)
-    included, _ = rank_signals_v2(candidates, settings)
+    edge_reliability_curve = fit_edge_reliability_curve(db)
+    included, _ = rank_signals_v2(
+        candidates, settings, edge_reliability_curve=edge_reliability_curve
+    )
     opportunities = [
         s
         for s in included
@@ -213,7 +216,9 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
     # mostrar, igual que ya hace /matches/{id}/predictions. Mismo calculo,
     # reutilizado aqui.
     by_match = _group_by_match(predictions)
-    best_by_match = best_prediction_per_match(by_match)
+    best_by_match = best_prediction_per_match(
+        by_match, edge_reliability_curve=fit_edge_reliability_curve(db)
+    )
     return {
         "round": {
             "competition_code": competition_code,
@@ -474,7 +479,10 @@ def top_signals(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
-    included, excluded = rank_signals_v2(candidates, settings, track_records)
+    edge_reliability_curve = fit_edge_reliability_curve(db)
+    included, excluded = rank_signals_v2(
+        candidates, settings, track_records, edge_reliability_curve=edge_reliability_curve
+    )
     if excluded:
         logger.info(
             "ranking.top_signals.excluded: total=%d reasons=%s",
@@ -548,7 +556,10 @@ def best_predictions(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
-    included, _ = rank_signals_v2(candidates, settings, track_records)
+    edge_reliability_curve = fit_edge_reliability_curve(db)
+    included, _ = rank_signals_v2(
+        candidates, settings, track_records, edge_reliability_curve=edge_reliability_curve
+    )
     included = _filter_by_quality(included, quality, settings)
     included = [
         s
@@ -596,7 +607,10 @@ def best_of_day(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
-    included, _ = rank_signals_v2(candidates, settings, track_records)
+    edge_reliability_curve = fit_edge_reliability_curve(db)
+    included, _ = rank_signals_v2(
+        candidates, settings, track_records, edge_reliability_curve=edge_reliability_curve
+    )
 
     strict_min_edge = settings.min_edge_pp * 2
     checked: list[dict] = []
@@ -658,7 +672,8 @@ def best_predictions_debug(
     candidates = _base_signal_query(
         db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
     ).all()
-    included, excluded = rank_signals_v2(candidates)
+    edge_reliability_curve = fit_edge_reliability_curve(db)
+    included, excluded = rank_signals_v2(candidates, edge_reliability_curve=edge_reliability_curve)
     return {
         "included": [
             {

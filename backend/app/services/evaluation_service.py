@@ -37,6 +37,8 @@ from backend.app.backtesting.metrics import (
     performance_by_edge_bucket,
     performance_by_probability_bucket,
 )
+from sklearn.isotonic import IsotonicRegression
+
 from backend.app.models.calibration.metrics import expected_calibration_error
 from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match, MatchOddsHistory
@@ -382,3 +384,51 @@ def market_track_records(
         ece = expected_calibration_error(y_true, y_prob)
         records[key] = float(np.clip(1.0 - ece, 0.0, 1.0))
     return records
+
+
+MIN_SETTLED_FOR_EDGE_RELIABILITY = 30  # mismo criterio que MIN_SETTLED_FOR_TRACK_RECORD
+
+
+def fit_edge_reliability_curve(db: Session) -> IsotonicRegression | None:
+    """Evidencia real (pedido del usuario, "revision motor 2.0" -- caso
+    Getafe-Atletico: un edge de +39.6pp seguia arriba del ranking porque
+    `uncertainty_low` mide ruido de MUESTRA, no desacuerdo con el
+    MERCADO): `scripts/debug_edge_vs_hitrate.py`, corrido por el usuario
+    sobre 1133 predicciones liquidadas reales, mostro que el hit rate cae
+    de forma practicamente monotona con el tamanho del edge (53.4% en
+    0-5pp -> 41.4% en 5-10pp -> 31.8% en 10-15pp; ROI real NEGATIVO a
+    partir de 5pp). Un edge mas grande, en este sistema, es señal de que
+    el modelo probablemente se equivoco, no de mejor oportunidad.
+
+    Se ajusta una `IsotonicRegression` (misma herramienta que
+    `models/calibration/calibrators.py`, aqui con `increasing=False`
+    porque la relacion real observada es DECRECIENTE) sobre
+    (edge_en_puntos_porcentuales -> resultado real), agregado sobre TODAS
+    las competiciones/mercados a la vez (asi se midio la evidencia: el
+    patron se mantiene igual o mas fuerte con mercado bien respaldado) --
+    nunca una curva por mercado, que fragmentaria la muestra. Isotonic
+    (a diferencia de un corte por buckets a mano) agrupa los tramos con
+    poca muestra dentro de la tendencia monotona general en vez de
+    tratarlos como independientes, y extrapola de forma plana (nunca
+    "mejora" artificialmente) mas alla del edge mas extremo observado.
+
+    `None` si hay menos de `MIN_SETTLED_FOR_EDGE_RELIABILITY` liquidaciones
+    con cuota real en total -- se prefiere "sin correccion" (neutro) a
+    ajustar sobre ruido.
+    """
+    rows = (
+        db.query(Prediction, PredictionResult)
+        .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
+        .filter(Prediction.market_odds.isnot(None))
+        .filter(Prediction.edge.isnot(None))
+        .all()
+    )
+    if len(rows) < MIN_SETTLED_FOR_EDGE_RELIABILITY:
+        return None
+
+    edge_pp = np.array([p.edge * 100.0 for p, _r in rows])
+    outcome = np.array([float(r.outcome) for _p, r in rows])
+
+    model = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=False, out_of_bounds="clip")
+    model.fit(edge_pp, outcome)
+    return model

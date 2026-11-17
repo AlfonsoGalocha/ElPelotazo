@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import datetime as dt
+from contextlib import contextmanager
 
-from backend.app.db.database import session_scope
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from backend.app.db.database import Base, session_scope
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match, MatchOdds
 from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionResult
@@ -10,8 +14,10 @@ from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsReco
 from backend.app.normalization.competitions import COMPETITIONS
 from backend.app.services.data_service import ingest_matches
 from backend.app.services.evaluation_service import (
+    MIN_SETTLED_FOR_EDGE_RELIABILITY,
     MIN_SETTLED_FOR_TRACK_RECORD,
     evaluate_settled_predictions,
+    fit_edge_reliability_curve,
     market_track_records,
     settle_finished_predictions,
 )
@@ -406,3 +412,130 @@ def test_evaluate_settled_predictions_empty_db_returns_no_competitions():
             db, competition_code="a_competition_that_does_not_exist"
         )
     assert report == {"competitions": {}}
+
+
+# fit_edge_reliability_curve (fix real tras activar signal_score_v2: ver
+# prediction/ranking.py::edge_reliability_factor para el contexto completo
+# -- un edge grande en produccion acierta MENOS, no mas, evidencia real en
+# scripts/debug_edge_vs_hitrate.py).
+
+
+def _seed_settled_predictions_with_edge(
+    db, competition_code: str, rows: list[tuple[float, float, bool]]
+) -> None:
+    """Igual que `_seed_settled_predictions`, pero con `market_odds`/`edge`
+    reales (requeridos por `fit_edge_reliability_curve`, que los exige con
+    `.isnot(None)`) -- cada fila es (model_probability, edge, outcome)."""
+    COMPETITIONS.setdefault(competition_code, (competition_code, "Testland"))
+    comp = Competition(code=competition_code, name=competition_code, country="Testland")
+    db.add(comp)
+    db.flush()
+    season = Season(competition_id=comp.id, label="2024-2025")
+    db.add(season)
+    model_version = ModelVersion(
+        name="edge-reliability-test",
+        version="v1",
+        market_family="goals",
+        features=[],
+        hyperparameters={},
+        metrics={},
+        dataset_version="test",
+    )
+    db.add(model_version)
+    db.flush()
+
+    for i, (probability, edge, outcome) in enumerate(rows):
+        market_probability = probability - edge
+        market_odds = 1.0 / market_probability
+        match = Match(
+            provider="edge_reliability_test",
+            provider_id=f"edge-reliability-{competition_code}-{i}",
+            competition_id=comp.id,
+            season_id=season.id,
+            kickoff_utc=dt.datetime.utcnow() - dt.timedelta(days=1),
+            home_team_id=1,
+            away_team_id=2,
+            status="finished",
+            home_goals=1,
+            away_goals=0,
+        )
+        db.add(match)
+        db.flush()
+        prediction = Prediction(
+            match_id=match.id,
+            market="over_2_5",
+            line=2.5,
+            selection="over",
+            model_version_id=model_version.id,
+            model_probability=probability,
+            market_probability=market_probability,
+            market_odds=market_odds,
+            fair_odds=1 / probability,
+            edge=edge,
+            confidence=0.8,
+            data_quality=0.8,
+            explanation={},
+            features_used={},
+            created_at=dt.datetime.utcnow(),
+        )
+        db.add(prediction)
+        db.flush()
+        db.add(
+            PredictionResult(
+                prediction_id=prediction.id, outcome=outcome, settled_at=dt.datetime.utcnow()
+            )
+        )
+    db.flush()
+
+
+@contextmanager
+def _isolated_db_session():
+    """`fit_edge_reliability_curve` pool TODAS las predicciones liquidadas
+    con cuota SIN filtrar por competicion (a proposito, ver su docstring:
+    la evidencia real se mantiene igual o mas fuerte agregada). Eso hace
+    que probar su umbral minimo contra el fichero SQLite COMPARTIDO de
+    toda la sesion de pytest (`session_scope`, ver conftest.py) sea
+    fragil -- otros tests de este mismo fichero YA generan predicciones
+    reales con cuota/edge via `generate_predictions_for_competition`, que
+    se suman al conteo global. Un motor en memoria, aislado y descartado
+    al salir del bloque, evita esa contaminacion cruzada sin tocar el
+    codigo de produccion (que deliberadamente no filtra por competicion)."""
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(bind=engine)
+    IsolatedSession = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    db = IsolatedSession()
+    try:
+        yield db
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_fit_edge_reliability_curve_is_none_below_minimum_sample():
+    with _isolated_db_session() as db:
+        rows = [(0.55, 0.02, True)] * (MIN_SETTLED_FOR_EDGE_RELIABILITY - 1)
+        _seed_settled_predictions_with_edge(db, "edge-reliability-too-few", rows)
+        db.commit()
+        curve = fit_edge_reliability_curve(db)
+    assert curve is None
+
+
+def test_fit_edge_reliability_curve_decreases_hit_rate_prediction_with_edge_size():
+    """Mismo patron que la evidencia real (`debug_edge_vs_hitrate.py`):
+    edge pequenho acierta mucho, edge grande acierta poco -- la curva
+    ajustada debe reflejarlo (nunca al reves, por construccion
+    `increasing=False`)."""
+    with _isolated_db_session() as db:
+        rows = (
+            [(0.55, 0.02, True)] * 25
+            + [(0.55, 0.02, False)] * 15  # edge pequenho: ~63% acierto
+            + [(0.90, 0.35, True)] * 6
+            + [(0.90, 0.35, False)] * 24  # edge enorme: ~20% acierto
+        )
+        _seed_settled_predictions_with_edge(db, "edge-reliability-decreasing", rows)
+        db.commit()
+        curve = fit_edge_reliability_curve(db)
+    assert curve is not None
+    small_edge_hit_rate = curve.predict([2.0])[0]
+    large_edge_hit_rate = curve.predict([35.0])[0]
+    assert small_edge_hit_rate > large_edge_hit_rate

@@ -820,3 +820,148 @@ indefinidamente, independientemente de cual sea el default activo.
   `confidence`, `data_quality`) en vez de un unico numero compuesto
   nuevo — evita inventar una metrica adicional no validada, pero exige
   mirar mas de un campo para "fiabilidad" en vez de uno solo.
+
+## 12. Fase 11 (sesion 2026-11, continuacion): factor de fiabilidad del edge
+
+### 12.1 Problema real encontrado tras activar v2
+
+El usuario reporto, tras regenerar predicciones con `signal_score_v2` ya
+activo en produccion: "sigo viendo lo mismo eh". Se diagnostico en vivo
+contra la BD real: el caso original que motivo toda la revision
+(match_id=61, Getafe-Atletico, mercado `double_chance_1x`, edge +39.6pp)
+seguia siendo la #1 del ranking.
+
+Causa raiz real (no supuesta): `uncertainty_low`/`uncertainty_high` de
+ese partido eran **0.718/0.911** — un intervalo de Wilson ESTRECHO
+(ancho 0.193, muy por debajo del umbral de `HIGH_UNCERTAINTY`, 0.60),
+porque el modelo tiene mucha muestra historica para ese tipo de
+prediccion. `factor_incertidumbre` (seccion 11.4) mide ruido de
+MUESTRA — "cuanto puede fiarse el modelo de su propia estimacion dado
+el tamanho de la muestra" — nunca "cuanto discrepa esa estimacion de una
+fuente independiente fuerte (el mercado)". Son dos tipos de
+incertidumbre DISTINTOS, y el sistema solo tenia el primero. Por eso el
+EV ajustado al riesgo de ese partido seguia siendo alto
+(`risk_adjusted_expected_value=0.700`) y el caso seguia dominando el
+ranking: v2 corrigio el sintoma sintetico que se habia probado, pero no
+el mecanismo real que lo producia.
+
+### 12.2 Evidencia real antes de corregir (nunca un umbral inventado)
+
+Antes de anhadir cualquier penalizacion por tamanho de edge, se pidio
+evidencia real de que un edge mas grande REALMENTE acierta peor en este
+sistema. Se construyo `scripts/debug_edge_vs_hitrate.py` (reutiliza
+`backtesting/metrics.py::performance_by_edge_bucket`, ya existente,
+ninguna metrica nueva) y el usuario lo corrio contra las 1133
+predicciones liquidadas reales:
+
+| edge (pp) | n   | hit rate | ROI    |
+|-----------|-----|----------|--------|
+| 0-5       | —   | 53.4%    | +3.2%  |
+| 5-10      | —   | 41.4%    | negativo |
+| 10-15     | —   | 31.8%    | -46.4% |
+
+La caida es practicamente monotona, y se mantiene igual o se acentua
+restringiendo a mercado bien respaldado (>=4 casas). Conclusion real:
+en este sistema, un edge mas grande es señal de que el modelo
+probablemente se equivoco (sesgo del ensemble frente a un mercado bien
+informado), no de mejor oportunidad — exactamente la intuicion original
+del usuario ("a veces la mejor [señal] es la que mas probabilidad dan
+tanto el modelo y las casas y que se pague mejor").
+
+### 12.3 La correccion: `edge_reliability_factor`
+
+Con esa evidencia (y solo con ella) se anhadio:
+
+- **`services/evaluation_service.py::fit_edge_reliability_curve(db)`**
+  (nuevo): ajusta una `IsotonicRegression` (misma herramienta que
+  `models/calibration/calibrators.py`, aqui con `increasing=False`
+  porque la relacion real observada es DECRECIENTE) sobre
+  `(edge_en_puntos_porcentuales -> resultado real)`, agregada sobre
+  TODAS las competiciones/mercados a la vez (asi se midio la evidencia).
+  Isotonic agrupa los tramos con poca muestra dentro de la tendencia
+  general en vez de tratarlos como independientes, y extrapola de forma
+  plana mas alla del edge mas extremo observado (nunca "mejora"
+  artificialmente). `None` con menos de `MIN_SETTLED_FOR_EDGE_RELIABILITY`
+  (30, mismo criterio que `MIN_SETTLED_FOR_TRACK_RECORD`) liquidaciones
+  con cuota real — se prefiere "sin correccion" (neutro) a ajustar sobre
+  ruido.
+- **`prediction/ranking.py::edge_reliability_factor(edge, curve)`**
+  (nuevo, funcion PURA): normaliza el hit-rate empirico de ese tamanho
+  de edge contra el de un edge minimo (~0pp, el "baseline"): `factor =
+  clip(curva.predict(edge*100) / curva.predict(0), 0, 1)`. Un edge que
+  historicamente acierta igual que uno minimo no se penaliza
+  (factor=1.0); nunca se premia por encima de 1.0. `1.0` (neutro) sin
+  `edge` o sin curva — nunca penaliza por falta de dato.
+- `signal_score_v2`/`rank_signals_v2` ganan un parametro opcional
+  `edge_reliability_curve`; cuando se pasa, el factor se multiplica en
+  la formula:
+
+```
+score_v2 = model_probability^2 * max(risk_adjusted_expected_value, 0) * confidence
+           * data_quality * market_quality_multiplier * market_track_record
+           * factor_incertidumbre(ancho_intervalo) * factor_fiabilidad_del_edge(edge)
+```
+
+- Cableado en TODOS los puntos de produccion que generan o leen
+  `signal_score_v2`/`rank_signals_v2`/`best_prediction_per_match`:
+  `services/prediction_service.py` (snapshot congelado), los 5 endpoints
+  de `/predictions/*`, `/matches/{id}/predictions`,
+  `/matches/head-to-head`, `/history/*`, y las tools de Jarvis
+  (`agent/tools.py`, `agent/alerts.py`) — cada uno calcula la curva UNA
+  VEZ por request/generacion (mismo patron que `market_track_records`)
+  y la pasa como parametro; `prediction/anomaly.py` sigue sin tocar la
+  BD directamente (se mantiene pura).
+
+### 12.4 Tests anhadidos
+
+- `test_ranking.py`: 7 tests nuevos para `edge_reliability_factor`
+  (neutro sin dato, neutro en el baseline, decrece con el edge, nunca
+  premia por encima de 1.0), `signal_score_v2` con/sin curva
+  (reproduccion explicita del caso Getafe real: edge enorme con EV
+  ajustado positivo, antes dominaba — con la curva conectada, deja de
+  hacerlo), `rank_signals_v2` y `best_prediction_per_match` pasando la
+  curva de extremo a extremo.
+- `test_evaluation_service.py`: 2 tests para `fit_edge_reliability_curve`
+  (`None` por debajo del minimo; la curva ajustada predice menor hit
+  rate para edge grande que para edge pequenho). Corridos contra un
+  motor SQLite EN MEMORIA aislado (no el fichero compartido de toda la
+  sesion de pytest, via `session_scope()`) — `fit_edge_reliability_curve`
+  pool TODAS las liquidaciones sin filtrar por competicion a proposito
+  (seccion 12.3), y otros tests de ese mismo fichero ya generan
+  predicciones reales con cuota/edge via el pipeline completo; aislar el
+  motor evita que ese volumen cambie el resultado de "por debajo del
+  minimo" segun el orden de ejecucion.
+- Suite completa: 400 tests, todos en verde. `ruff check backend`: cero
+  errores nuevos frente al baseline antes de este cambio (comparado
+  explicitamente con `git stash`).
+
+### 12.5 Como verificarlo tras desplegar
+
+`git pull` + `docker compose up -d --build` (el fix vive solo en
+codigo Python, no requiere migracion de esquema ni regenerar
+predicciones: `edge_reliability_curve` se calcula EN VIVO en cada
+request a partir de las liquidaciones ya existentes, nunca se persiste
+por prediccion). El caso match_id=61 (Getafe-Atletico,
+`double_chance_1x`) deberia dejar de aparecer como #1 en
+"Oportunidades"/"Las 5 mejores" en cuanto haya al menos 30 predicciones
+liquidadas con cuota real en la BD (si todavia hay menos, el factor es
+neutro y el comportamiento es identico al de la seccion 11 sin este
+fix — esperado, no un bug).
+
+### 12.6 Limitaciones que siguen existiendo
+
+- La curva se ajusta GLOBALMENTE (todas las competiciones/mercados a la
+  vez) porque asi se midio la evidencia real — no se ha probado si una
+  curva por mercado seria mejor o peor con mas muestra; medirlo exige
+  mas liquidaciones de las que hay hoy.
+- Igual que `market_track_records`, la curva se recalcula en cada
+  request desde la BD (coste de una query + un fit de `IsotonicRegression`,
+  ambos baratos en la escala actual de datos) en vez de cachearse — si
+  el volumen de liquidaciones crece mucho, valdria la pena revisar el
+  coste.
+- No se ha medido todavia el impacto de esta correccion en
+  `compare-ranking-strategies` (ROI/win-rate real de v2 CON la curva
+  frente a v2 SIN ella) por falta de acceso a la BD real desde este
+  entorno — se recomienda correr ese comando de nuevo tras desplegar
+  para confirmar que la correccion tambien mejora el backtest, no solo
+  el caso puntual que la motivo.
