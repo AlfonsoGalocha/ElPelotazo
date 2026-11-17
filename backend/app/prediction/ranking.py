@@ -215,3 +215,112 @@ def rank_signals(
 
     included.sort(key=lambda s: s.score, reverse=True)
     return included, excluded
+
+
+# ---------------------------------------------------------------------------
+# signal_score v2 (revision "motor profesional 2.0", 2026-11): formula
+# ALTERNATIVA a la de arriba, pensada para no premiar un edge enorme cuando
+# la propia probabilidad del modelo esta poco respaldada. NUNCA sustituye a
+# `signal_score`/`rank_signals` en produccion por si sola (eso seria
+# "aplicar una mezcla sin validar", justo lo que el usuario pidio evitar) --
+# es la candidata que `scripts/compare_ranking_strategies.py` (ver ahi)
+# backtestea contra la v1 sobre predicciones YA LIQUIDADAS, con ROI/yield/
+# win rate reales. Si demuestra mejores resultados ajustados al riesgo de
+# forma consistente, esa evidencia es la que justificaria cambiar el
+# default -- nunca se asume de entrada.
+#
+# Diferencias deliberadas frente a v1:
+#   1. Usa `calibrated_probability` cuando existe (requiere holdout real de
+#      >= MIN_CALIBRATION_MATCHES, ver model_service.py -- nunca se inventa
+#      cuando falta, cae a `model_probability`), en vez de SIEMPRE la cruda.
+#   2. Usa `risk_adjusted_expected_value` (EV con el extremo conservador del
+#      intervalo de incertidumbre, ver prediction/edge.py y
+#      prediction/uncertainty.py) en vez de `edge` en bruto: mide
+#      rentabilidad esperada, no solo diferencia de probabilidad, y ya
+#      incorpora la incertidumbre en el propio numero.
+#   3. Anhade un factor CONTINUO de incertidumbre (nunca solo el corte
+#      binario de `prediction/anomaly.py::HIGH_UNCERTAINTY`): un intervalo
+#      mas ancho reduce el score de forma gradual, no solo en el extremo.
+#      Escala elegida (0.70 de penalizacion maxima a ancho=1.0, suelo en
+#      0.30) para que incluso el peor caso observado nunca colapse el score
+#      a practicamente cero (eso equivaldria a una exclusion dura, que ya
+#      cubre la flag binaria) -- es una preferencia suave, no un filtro.
+UNCERTAINTY_PENALTY_SLOPE = 0.70  # cuanto cae el factor por cada punto de ancho de intervalo
+UNCERTAINTY_PENALTY_FLOOR = 0.30  # el factor nunca baja de aqui (ancho=1.0 => factor=0.30)
+
+
+def uncertainty_factor(uncertainty_low: float | None, uncertainty_high: float | None) -> float:
+    """1.0 sin informacion de incertidumbre (nunca penaliza por falta de
+    dato -- el filtro duro/la flag binaria ya cubren ese caso aparte)."""
+    if uncertainty_low is None or uncertainty_high is None:
+        return 1.0
+    width = max(0.0, uncertainty_high - uncertainty_low)
+    return max(UNCERTAINTY_PENALTY_FLOOR, 1.0 - UNCERTAINTY_PENALTY_SLOPE * width)
+
+
+def signal_score_v2(
+    prediction: Prediction,
+    settings: Settings | None = None,
+    market_track_record: float | None = None,
+) -> float:
+    """score_v2 = p_usada^2 * max(EV_ajustado_al_riesgo, 0) * confidence
+                  * data_quality * market_quality_multiplier * market_track_record
+                  * factor_incertidumbre
+
+    `p_usada` = `calibrated_probability` si existe, si no `model_probability`
+    (nunca al reves: calibrar solo tiene sentido si hay evidencia real detras).
+    """
+    settings = settings or get_settings()
+    quality_tier = market_quality_tier(
+        prediction.bookmakers_used,
+        prediction.market_odds_min,
+        prediction.market_odds_max,
+        prediction.market_odds_median,
+        settings,
+    )
+    quality_multiplier = MARKET_QUALITY_MULTIPLIER[quality_tier]
+    track_record = market_track_record if market_track_record is not None else 1.0
+    p_used = (
+        prediction.calibrated_probability
+        if prediction.calibrated_probability is not None
+        else prediction.model_probability
+    )
+    risk_adjusted_ev = max(prediction.risk_adjusted_expected_value or 0.0, 0.0)
+
+    return (
+        (p_used**2)
+        * risk_adjusted_ev
+        * prediction.confidence
+        * prediction.data_quality
+        * quality_multiplier
+        * track_record
+        * uncertainty_factor(prediction.uncertainty_low, prediction.uncertainty_high)
+    )
+
+
+def rank_signals_v2(
+    predictions: list[Prediction],
+    settings: Settings | None = None,
+    market_track_records: dict[tuple[str, str], float] | None = None,
+) -> tuple[list[RankedSignal], list[ExcludedSignal]]:
+    """Igual que `rank_signals`, pero puntuando con `signal_score_v2`. Usa
+    el MISMO filtro duro (`evaluate_quality_gate`) -- la diferencia es solo
+    el ORDEN entre las que ya pasaron, nunca cuales pasan."""
+    settings = settings or get_settings()
+    included: list[RankedSignal] = []
+    excluded: list[ExcludedSignal] = []
+
+    for prediction in predictions:
+        reason = evaluate_quality_gate(prediction, settings)
+        if reason is not None:
+            excluded.append(ExcludedSignal(prediction=prediction, reason=reason))
+            continue
+        track_record = None
+        if market_track_records and prediction.match is not None:
+            key = (prediction.match.competition.code, prediction.market)
+            track_record = market_track_records.get(key)
+        score = signal_score_v2(prediction, market_track_record=track_record)
+        included.append(RankedSignal(prediction=prediction, score=score))
+
+    included.sort(key=lambda s: s.score, reverse=True)
+    return included, excluded
