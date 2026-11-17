@@ -1558,3 +1558,64 @@ docker compose exec backend python scripts/debug_walk_forward_cap_binding.py
 
 y pegue el resultado, antes de proponer ningun cambio de codigo (sigue
 vigente "no modifiques codigo hasta haber identificado la causa").
+
+### 15.9 Causa real confirmada: `risk_adjusted_expected_value` NULL en el 100% del historico liquidado
+
+El usuario corrio el diagnostico de la seccion 15.8. Resultado: de las
+1103 predicciones liquidadas evaluadas, el 100% tiene
+`risk_adjusted_expected_value` crudo <= 0 -- y de esas, el 100% es
+literalmente NULL (0 son `0.0` explicito, 0 son negativas). `max(capped_ev,
+0.0)` en `signal_score_v2` ya da cero para TODAS sin necesidad de ningun
+techo, asi que el techo de edge/cola no puede diferenciar nada: no hay
+nada por encima de cero que recortar. El puzle original ("por que v2 /
+v2_edge_cap / v2_edge_cap_longshot salen identicos") queda resuelto, pero
+revela algo mas serio: `v2` en si misma nunca ha tenido un termino de EV
+ajustado al riesgo real para evaluar su ranking contra el historico
+liquidado.
+
+Causa raiz (confirmada con `git log`, nunca una suposicion):
+`uncertainty_low`/`uncertainty_high` se desplegaron en el commit
+`72b21fe` (2026-11-11); `risk_adjusted_expected_value` se desplego en el
+commit `226d467` (**2026-11-17**, el mismo dia de esta sesion). Como este
+campo queda CONGELADO en el momento de crear cada prediccion (nunca se
+recalcula solo, ver docstring de `backtesting/ranking_comparison.py`),
+toda prediccion liquidada hasta hoy quedo con `uncertainty_low` correcto
+pero `risk_adjusted_expected_value` sencillamente inexistente en ese
+momento -- no es un bug de calculo, es que el campo es mas nuevo que
+absolutamente todo el historico liquidado real.
+
+Dos caminos posibles, puestos al usuario explicitamente (nunca decidido
+unilateralmente, por la instruccion "no modifiques codigo hasta haber
+identificado la causa" Y por tocar datos liquidados, ambas sensibles):
+esperar a que se acumule historial nuevo (semanas/meses), o rellenar
+(`backfill`) el hueco con la MISMA formula determinista que ya usa
+produccion. El usuario elige el backfill.
+
+**`scripts/backfill_risk_adjusted_expected_value.py`** (nuevo, sigue el
+patron ya existente de `purge_excluded_bookmaker_odds.py` para mutaciones
+puntuales explicitamente pedidas): para cada `Prediction` con
+`risk_adjusted_expected_value IS NULL` y `uncertainty_low`/`market_odds`
+disponibles, calcula `compute_expected_value(uncertainty_low,
+market_odds)` -- la misma funcion pura que usa `predictor.py` para cada
+prediccion nueva -- y rellena SOLO esa columna. Garantias, verificadas con
+4 tests reales contra BD (`test_backfill_risk_adjusted_expected_value_script.py`):
+
+- nunca toca `model_probability`/`market_probability`/`edge`/el resultado
+  liquidado -- SOLO la columna derivada que faltaba;
+- nunca sobreescribe una fila que YA tiene `risk_adjusted_expected_value`
+  poblado (nunca "corrige" lo que el pipeline en vivo ya calculo, aunque
+  recalcularlo diera un numero distinto);
+- nunca inventa un valor para una fila sin `uncertainty_low` o sin
+  `market_odds` (coherente con "no inventes datos si el registro ya no
+  esta disponible", seccion 9 del pedido original);
+- idempotente: una segunda pasada no cambia ninguna fila ya rellenada.
+
+**Pendiente**: pedir al usuario que ejecute
+
+```
+docker compose exec backend python scripts/backfill_risk_adjusted_expected_value.py
+```
+
+y despues repita `compare-ranking-strategies-walk-forward` -- esa es la
+primera vez que esa comparacion tendra datos reales con los que
+diferenciar `v1`/`v2`/`v2_edge_cap`/`v2_edge_cap_longshot`.
