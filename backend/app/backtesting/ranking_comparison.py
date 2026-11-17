@@ -183,12 +183,21 @@ def load_settled_predictions(
 
 
 def load_settled_predictions_with_kickoff(
-    db: Session, competition_code: str | None = None, market: str | None = None
+    db: Session,
+    competition_code: str | None = None,
+    market: str | None = None,
+    min_kickoff: dt.datetime | None = None,
+    max_kickoff: dt.datetime | None = None,
 ) -> list[tuple[Prediction, PredictionResult, dt.datetime]]:
     """Igual que `load_settled_predictions`, pero con `Match.kickoff_utc`
     incluido -- necesario para `compare_ranking_strategies_walk_forward`,
     que debe ordenar cronologicamente antes de poder ajustar cada curva
-    SOLO con lo anterior a cada punto evaluado."""
+    SOLO con lo anterior a cada punto evaluado.
+
+    `min_kickoff`/`max_kickoff` (seccion 15.10): partir el historico por
+    fecha -- p.ej. para comprobar si una diferencia entre estrategias es
+    estable en el tiempo o es un artefacto de un tramo concreto (un
+    modelo mas viejo, una liga con menos partidos liquidados todavia)."""
     query = (
         db.query(Prediction, PredictionResult, Match.kickoff_utc)
         .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
@@ -199,6 +208,10 @@ def load_settled_predictions_with_kickoff(
         query = query.filter(Competition.code == competition_code)
     if market:
         query = query.filter(Prediction.market == market)
+    if min_kickoff is not None:
+        query = query.filter(Match.kickoff_utc >= min_kickoff)
+    if max_kickoff is not None:
+        query = query.filter(Match.kickoff_utc < max_kickoff)
     return query.all()
 
 
