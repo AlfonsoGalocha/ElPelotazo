@@ -272,16 +272,17 @@ def uncertainty_factor(uncertainty_low: float | None, uncertainty_high: float | 
     return max(UNCERTAINTY_PENALTY_FLOOR, 1.0 - UNCERTAINTY_PENALTY_SLOPE * width)
 
 
-# Hueco real detectado DESPUES de activar v2 en produccion (ver seccion 11
-# de docs/architecture_audit.md): el caso Getafe-Atletico (match_id=61,
-# edge +39.6pp) seguia arriba del ranking con v2. Motivo real, verificado
-# con datos: `uncertainty_low` mide ruido de MUESTRA (Wilson sobre
-# partidos previos conocidos) -- con mucha muestra historica, el
-# intervalo es ESTRECHO aunque la estimacion este muy alejada del
-# mercado, asi que `risk_adjusted_expected_value` (que usa
-# `uncertainty_low`) seguia siendo grande. Esa incertidumbre nunca media
-# "cuanto discrepa el modelo de una fuente independiente fuerte (el
-# mercado)" -- es un tipo de incertidumbre DISTINTO.
+# Hueco real detectado DESPUES de activar v2 en produccion (ver secciones
+# 11/12 de docs/architecture_audit.md): el caso Getafe-Atletico
+# (match_id=61, edge +39.6pp) seguia arriba del ranking con v2. Motivo
+# real, verificado con datos: `uncertainty_low` mide ruido de MUESTRA
+# (Wilson sobre partidos previos conocidos) -- con mucha muestra
+# historica, el intervalo es ESTRECHO aunque la estimacion este muy
+# alejada del mercado, asi que `risk_adjusted_expected_value` (que usa
+# `uncertainty_low`) seguia siendo grande (+0.70 en el caso real). Esa
+# incertidumbre nunca mide "cuanto discrepa el modelo de una fuente
+# independiente fuerte (el mercado)" -- es un tipo de incertidumbre
+# DISTINTO.
 #
 # Evidencia real que lo confirma (`scripts/debug_edge_vs_hitrate.py`,
 # corrido por el usuario sobre 1133 predicciones liquidadas reales): el
@@ -291,24 +292,42 @@ def uncertainty_factor(uncertainty_low: float | None, uncertainty_high: float | 
 # Un edge mas grande, en este sistema, es señal de que el modelo
 # probablemente se equivoco, no de mejor oportunidad -- justo el
 # diagnostico original del usuario.
-def edge_reliability_factor(edge: float | None, curve: IsotonicRegression | None) -> float:
-    """1.0 (neutro) sin `edge` o sin curva ajustada
-    (`services/evaluation_service.py::fit_edge_reliability_curve`, una
-    `IsotonicRegression` DECRECIENTE edge_pp -> P(acierto), ajustada sobre
-    TODAS las liquidaciones reales) -- nunca penaliza por falta de dato.
-
-    Normaliza el hit-rate empirico de ESTE tamanho de edge contra el de
-    un edge minimo (~0pp): un edge que historicamente acierta igual que
-    uno minimo no se penaliza (factor=1.0, nunca se premia por encima);
-    uno que acierta claramente menos se reduce proporcionalmente.
-    """
-    if edge is None or curve is None:
-        return 1.0
-    baseline = float(curve.predict([0.0])[0])
-    if baseline <= 0.0:
-        return 1.0
-    observed = float(curve.predict([edge * 100.0])[0])
-    return max(0.0, min(1.0, observed / baseline))
+#
+# PRIMER INTENTO (insuficiente, verificado en vivo contra la BD real del
+# usuario tras desplegarlo): un factor MULTIPLICATIVO sobre el score
+# final (`observed_hit_rate / baseline_hit_rate`) descontaba el score de
+# Getafe un 72% (de 0.2015 a 0.0561) -- pero seguia siendo el #1, porque
+# `risk_adjusted_expected_value` (+0.70) nunca se corrigio: seguia
+# calculado con `uncertainty_low=0.718`, un numero que la propia
+# evidencia (hit rate real ~14% a ese tamanho de edge) dice que es
+# irrealmente optimista. Descontar el score despues de calcularlo con un
+# EV ya inflado no es suficiente correccion.
+#
+# CORRECCION REAL: en vez de un factor aparte, la curva se usa para
+# poner un TECHO al EV mismo. `uncertainty_low` es una cota conservadora
+# sobre el ruido de MUESTRA de este partido; `real_hit_rate` (via la
+# curva) es una cota conservadora sobre el sesgo SISTEMATICO del
+# ensemble para este TAMANO de edge -- dos fuentes de error
+# independientes, el minimo de los dos EV que implican es la estimacion
+# conservadora real (nunca un blend arbitrario: es un techo, igual
+# principio que ya usa `uncertainty_low` frente a `model_probability`).
+def reality_capped_expected_value(
+    risk_adjusted_ev: float,
+    edge: float | None,
+    market_odds: float | None,
+    curve: IsotonicRegression | None,
+) -> float:
+    """Nunca deja que el EV ajustado al riesgo supere lo que la evidencia
+    empirica (`fit_edge_reliability_curve`, ajustada sobre TODAS las
+    liquidaciones reales) dice que realmente paga un edge de este
+    tamanho -- sin curva, sin `edge` o sin `market_odds`: neutro, se
+    devuelve `risk_adjusted_ev` sin tocar (nunca penaliza por falta de
+    dato)."""
+    if curve is None or edge is None or market_odds is None:
+        return risk_adjusted_ev
+    real_hit_rate = float(curve.predict([edge * 100.0])[0])
+    real_ev = real_hit_rate * market_odds - 1.0
+    return min(risk_adjusted_ev, real_ev)
 
 
 def signal_score_v2(
@@ -317,9 +336,9 @@ def signal_score_v2(
     market_track_record: float | None = None,
     edge_reliability_curve: IsotonicRegression | None = None,
 ) -> float:
-    """score_v2 = model_probability^2 * max(EV_ajustado_al_riesgo, 0) * confidence
-                  * data_quality * market_quality_multiplier * market_track_record
-                  * factor_incertidumbre * factor_fiabilidad_del_edge
+    """score_v2 = model_probability^2 * max(EV_ajustado_al_riesgo_y_a_la_realidad, 0)
+                  * confidence * data_quality * market_quality_multiplier
+                  * market_track_record * factor_incertidumbre
 
     Usa `model_probability` (CRUDA), nunca `calibrated_probability` --
     ver el bloque de comentarios justo arriba de este modulo para la
@@ -337,7 +356,11 @@ def signal_score_v2(
     )
     quality_multiplier = MARKET_QUALITY_MULTIPLIER[quality_tier]
     track_record = market_track_record if market_track_record is not None else 1.0
-    risk_adjusted_ev = max(prediction.risk_adjusted_expected_value or 0.0, 0.0)
+    raw_risk_adjusted_ev = prediction.risk_adjusted_expected_value or 0.0
+    capped_ev = reality_capped_expected_value(
+        raw_risk_adjusted_ev, prediction.edge, prediction.market_odds, edge_reliability_curve
+    )
+    risk_adjusted_ev = max(capped_ev, 0.0)
 
     return (
         (prediction.model_probability**2)
@@ -347,7 +370,6 @@ def signal_score_v2(
         * quality_multiplier
         * track_record
         * uncertainty_factor(prediction.uncertainty_low, prediction.uncertainty_high)
-        * edge_reliability_factor(prediction.edge, edge_reliability_curve)
     )
 
 

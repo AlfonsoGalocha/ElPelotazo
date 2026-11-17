@@ -868,87 +868,121 @@ informado), no de mejor oportunidad — exactamente la intuicion original
 del usuario ("a veces la mejor [señal] es la que mas probabilidad dan
 tanto el modelo y las casas y que se pague mejor").
 
-### 12.3 La correccion: `edge_reliability_factor`
+### 12.3 Primer intento (INSUFICIENTE, descartado tras verificarlo en vivo)
 
-Con esa evidencia (y solo con ella) se anhadio:
+Con esa evidencia (y solo con ella) se anhadio un primer mecanismo:
 
-- **`services/evaluation_service.py::fit_edge_reliability_curve(db)`**
-  (nuevo): ajusta una `IsotonicRegression` (misma herramienta que
+- `services/evaluation_service.py::fit_edge_reliability_curve(db)`: ajusta
+  una `IsotonicRegression` (misma herramienta que
   `models/calibration/calibrators.py`, aqui con `increasing=False`
   porque la relacion real observada es DECRECIENTE) sobre
   `(edge_en_puntos_porcentuales -> resultado real)`, agregada sobre
   TODAS las competiciones/mercados a la vez (asi se midio la evidencia).
-  Isotonic agrupa los tramos con poca muestra dentro de la tendencia
-  general en vez de tratarlos como independientes, y extrapola de forma
-  plana mas alla del edge mas extremo observado (nunca "mejora"
-  artificialmente). `None` con menos de `MIN_SETTLED_FOR_EDGE_RELIABILITY`
-  (30, mismo criterio que `MIN_SETTLED_FOR_TRACK_RECORD`) liquidaciones
-  con cuota real — se prefiere "sin correccion" (neutro) a ajustar sobre
-  ruido.
-- **`prediction/ranking.py::edge_reliability_factor(edge, curve)`**
-  (nuevo, funcion PURA): normaliza el hit-rate empirico de ese tamanho
-  de edge contra el de un edge minimo (~0pp, el "baseline"): `factor =
-  clip(curva.predict(edge*100) / curva.predict(0), 0, 1)`. Un edge que
-  historicamente acierta igual que uno minimo no se penaliza
-  (factor=1.0); nunca se premia por encima de 1.0. `1.0` (neutro) sin
-  `edge` o sin curva — nunca penaliza por falta de dato.
-- `signal_score_v2`/`rank_signals_v2` ganan un parametro opcional
-  `edge_reliability_curve`; cuando se pasa, el factor se multiplica en
-  la formula:
+- Un factor `edge_reliability_factor(edge, curve)` que normalizaba el
+  hit-rate empirico de ese tamanho de edge contra el de un edge minimo
+  (~0pp) y se MULTIPLICABA al final de `signal_score_v2`.
+
+**Esto se desplego y se verifico EN VIVO contra la BD real del
+usuario (no se dio por valido sin comprobarlo)**: el factor SI se
+aplicaba (redujo el score de Getafe de 0.2015 a 0.0561, un recorte real
+del 72%), pero el caso **seguia siendo el #1** del ranking
+(`docker compose exec backend python -c "..."` contra `rank_signals_v2`
+sobre la jornada actual real, ver el historial de este chat). Causa:
+un descuento multiplicativo APLICADO DESPUES no corrige la causa de
+fondo -- `risk_adjusted_expected_value` (+0.70) seguia calculado con
+`uncertainty_low=0.718`, un numero que la propia evidencia (hit rate
+real ~14% a un edge de este tamanho) dice que es irrealmente optimista.
+Descontar el score final de un EV ya inflado no basta: el EV mismo
+tenia que corregirse. Esta seccion se deja escrita (en vez de borrarse)
+porque documenta honestamente un intento real que no funcionaba
+numericamente, no solo en teoria.
+
+### 12.4 La correccion real: `reality_capped_expected_value`
+
+En vez de un factor aparte, la misma curva se usa para poner un TECHO
+al EV mismo, antes de que entre en la formula:
+
+- **`prediction/ranking.py::reality_capped_expected_value(risk_adjusted_ev,
+  edge, market_odds, curve)`** (funcion PURA, sustituye a
+  `edge_reliability_factor`): calcula `real_hit_rate = curva.predict(edge*100)`
+  y `real_ev = real_hit_rate * market_odds - 1`, y devuelve
+  `min(risk_adjusted_ev, real_ev)`. Nunca un blend arbitrario (la
+  seccion 9 del brief original lo pide explicitamente): es un TECHO,
+  mismo principio que ya usa `uncertainty_low` como cota conservadora
+  sobre `model_probability` -- aqui se anhade una segunda cota
+  conservadora, independiente, sobre el sesgo SISTEMATICO del ensemble
+  para ESTE TAMANO de edge (en vez de sobre el ruido de muestra de
+  este partido en concreto), y se toma el minimo de las dos. Neutro
+  (`risk_adjusted_ev` sin tocar) sin curva, `edge` o `market_odds`.
+- `signal_score_v2` pasa el EV por este techo antes de recortarlo a 0:
 
 ```
-score_v2 = model_probability^2 * max(risk_adjusted_expected_value, 0) * confidence
+ev_techo   = reality_capped_expected_value(risk_adjusted_expected_value, edge, market_odds, curva)
+score_v2 = model_probability^2 * max(ev_techo, 0) * confidence
            * data_quality * market_quality_multiplier * market_track_record
-           * factor_incertidumbre(ancho_intervalo) * factor_fiabilidad_del_edge(edge)
+           * factor_incertidumbre(ancho_intervalo)
 ```
 
-- Cableado en TODOS los puntos de produccion que generan o leen
-  `signal_score_v2`/`rank_signals_v2`/`best_prediction_per_match`:
-  `services/prediction_service.py` (snapshot congelado), los 5 endpoints
-  de `/predictions/*`, `/matches/{id}/predictions`,
-  `/matches/head-to-head`, `/history/*`, y las tools de Jarvis
-  (`agent/tools.py`, `agent/alerts.py`) — cada uno calcula la curva UNA
-  VEZ por request/generacion (mismo patron que `market_track_records`)
-  y la pasa como parametro; `prediction/anomaly.py` sigue sin tocar la
-  BD directamente (se mantiene pura).
+- `fit_edge_reliability_curve(db)` (sin cambios) sigue calculando la
+  curva; el parametro `edge_reliability_curve` de
+  `signal_score_v2`/`rank_signals_v2`/`best_prediction_per_match` (sin
+  cambios de firma ni de cableado en produccion -- solo cambio lo que
+  pasa POR DENTRO con ese parametro) se sigue pasando igual en todos
+  los puntos ya cableados en la seccion 12 original:
+  `services/prediction_service.py`, los 5 endpoints de
+  `/predictions/*`, `/matches/*`, `/history/*`, `agent/tools.py`,
+  `agent/alerts.py`.
 
-### 12.4 Tests anhadidos
+**Verificado con los numeros reales del caso Getafe**: edge=39.6pp,
+cuota=2.37, `uncertainty_low`=0.718 (EV optimista = +0.70). La curva
+real predice un hit rate de ~15% para ese tamanho de edge (clip al
+extremo mas alto observado en la muestra real). `real_ev = 0.15*2.37-1
+≈ -0.64`. `min(+0.70, -0.64) = -0.64` -> `max(-0.64, 0) = 0` -> el
+score se anula por completo (en vez de solo reducirse un 72%). Un edge
+modesto y bien respaldado por la curva (hit rate real cercano al
+break-even de su propia cuota) no se ve afectado -- el techo solo actua
+sobre el optimismo EXCESIVO de edges grandes, nunca sobre cualquier
+edge por igual.
 
-- `test_ranking.py`: 7 tests nuevos para `edge_reliability_factor`
-  (neutro sin dato, neutro en el baseline, decrece con el edge, nunca
-  premia por encima de 1.0), `signal_score_v2` con/sin curva
-  (reproduccion explicita del caso Getafe real: edge enorme con EV
-  ajustado positivo, antes dominaba — con la curva conectada, deja de
-  hacerlo), `rank_signals_v2` y `best_prediction_per_match` pasando la
-  curva de extremo a extremo.
+### 12.5 Tests anhadidos
+
+- `test_ranking.py`: tests para `reality_capped_expected_value` (neutro
+  sin curva/edge/cuota, recorta un EV optimista al valor real implicado
+  por la curva para un edge tipo Getafe, nunca SUBE un EV ya peor que
+  el techo, apenas toca un edge modesto bien respaldado);
+  `signal_score_v2` con/sin curva (reproduccion explicita del caso
+  Getafe real: antes de conectar la curva, el EV optimista seguia dando
+  score positivo; con la curva, el score se anula por completo);
+  `rank_signals_v2` y `best_prediction_per_match` pasando la curva de
+  extremo a extremo.
 - `test_evaluation_service.py`: 2 tests para `fit_edge_reliability_curve`
   (`None` por debajo del minimo; la curva ajustada predice menor hit
   rate para edge grande que para edge pequenho). Corridos contra un
   motor SQLite EN MEMORIA aislado (no el fichero compartido de toda la
   sesion de pytest, via `session_scope()`) — `fit_edge_reliability_curve`
-  pool TODAS las liquidaciones sin filtrar por competicion a proposito
-  (seccion 12.3), y otros tests de ese mismo fichero ya generan
-  predicciones reales con cuota/edge via el pipeline completo; aislar el
-  motor evita que ese volumen cambie el resultado de "por debajo del
-  minimo" segun el orden de ejecucion.
-- Suite completa: 400 tests, todos en verde. `ruff check backend`: cero
+  pool TODAS las liquidaciones sin filtrar por competicion a proposito,
+  y otros tests de ese mismo fichero ya generan predicciones reales con
+  cuota/edge via el pipeline completo; aislar el motor evita que ese
+  volumen cambie el resultado de "por debajo del minimo" segun el orden
+  de ejecucion.
+- Suite completa: 401 tests, todos en verde. `ruff check backend`: cero
   errores nuevos frente al baseline antes de este cambio (comparado
   explicitamente con `git stash`).
 
-### 12.5 Como verificarlo tras desplegar
+### 12.6 Como verificarlo tras desplegar
 
 `git pull` + `docker compose up -d --build` (el fix vive solo en
 codigo Python, no requiere migracion de esquema ni regenerar
 predicciones: `edge_reliability_curve` se calcula EN VIVO en cada
 request a partir de las liquidaciones ya existentes, nunca se persiste
 por prediccion). El caso match_id=61 (Getafe-Atletico,
-`double_chance_1x`) deberia dejar de aparecer como #1 en
-"Oportunidades"/"Las 5 mejores" en cuanto haya al menos 30 predicciones
-liquidadas con cuota real en la BD (si todavia hay menos, el factor es
-neutro y el comportamiento es identico al de la seccion 11 sin este
-fix — esperado, no un bug).
+`double_chance_1x`) deberia desaparecer del todo de "Oportunidades"
+(score=0, no solo bajar de posicion) en cuanto haya al menos 30
+predicciones liquidadas con cuota real en la BD -- que ya las hay,
+confirmado en vivo durante esta misma sesion (`fit_edge_reliability_curve`
+devolvio una curva ajustada real contra la BD de produccion).
 
-### 12.6 Limitaciones que siguen existiendo
+### 12.7 Limitaciones que siguen existiendo
 
 - La curva se ajusta GLOBALMENTE (todas las competiciones/mercados a la
   vez) porque asi se midio la evidencia real — no se ha probado si una
@@ -959,9 +993,17 @@ fix — esperado, no un bug).
   ambos baratos en la escala actual de datos) en vez de cachearse — si
   el volumen de liquidaciones crece mucho, valdria la pena revisar el
   coste.
+- `real_hit_rate` es un promedio agregado de TODOS los mercados a ese
+  tamanho de edge -- usarlo para poner techo al EV de un mercado
+  concreto asume que el sesgo del ensemble a ese tamanho de edge es
+  parecido entre mercados; no se ha medido si algun mercado especifico
+  se desvia mucho de esa media.
 - No se ha medido todavia el impacto de esta correccion en
-  `compare-ranking-strategies` (ROI/win-rate real de v2 CON la curva
-  frente a v2 SIN ella) por falta de acceso a la BD real desde este
-  entorno — se recomienda correr ese comando de nuevo tras desplegar
-  para confirmar que la correccion tambien mejora el backtest, no solo
-  el caso puntual que la motivo.
+  `compare-ranking-strategies` (ROI/win-rate real de v2 CON el techo de
+  EV frente a v2 sin el) por falta de acceso continuo a la BD real
+  desde este entorno — se recomienda correr ese comando de nuevo
+  periodicamente para confirmar que la correccion tambien mejora el
+  backtest agregado, no solo el caso puntual que la motivo. La leccion
+  de la seccion 12.3 (un primer intento parecia razonable en tests
+  sinteticos pero no bastaba en produccion real) es la razon de fondo
+  para seguir verificando esto con datos reales, no darlo por cerrado.
