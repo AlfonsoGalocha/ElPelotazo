@@ -30,10 +30,7 @@ from backend.app.prediction.anomaly import (
     is_strong_signal,
 )
 from backend.app.prediction.confidence import signal_tier
-from backend.app.services.evaluation_service import (
-    fit_edge_reliability_curve,
-    fit_odds_reliability_curve,
-)
+from backend.app.services.evaluation_service import fit_edge_reliability_curve
 from backend.app.services.round_service import get_current_round
 
 VALUE_SIGNAL = "SENAL_DE_VALOR"
@@ -107,7 +104,6 @@ def generate_alerts_for_current_round(db: Session, settings: Settings | None = N
     existing_keys = {(a.match_id, a.alert_type) for a in db.query(AgentAlert).all()}
     created = 0
     edge_reliability_curve = fit_edge_reliability_curve(db)
-    odds_reliability_curve = fit_odds_reliability_curve(db)
 
     competitions = db.query(Competition).order_by(Competition.code).all()
     for competition in competitions:
@@ -127,7 +123,6 @@ def generate_alerts_for_current_round(db: Session, settings: Settings | None = N
             by_match,
             settings,
             edge_reliability_curve=edge_reliability_curve,
-            odds_reliability_curve=odds_reliability_curve,
         )
 
         for match_id, match_predictions in by_match.items():

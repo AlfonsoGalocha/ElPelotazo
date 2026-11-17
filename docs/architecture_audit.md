@@ -1199,3 +1199,107 @@ desplegar la correccion de 13.3bis.
   bookmakers_used/cuota), la misma disciplina aplica: pedir evidencia
   real con un diagnostico reutilizando `performance_by_*_bucket` antes
   de anhadir una tercera cota, nunca inventar un umbral mas.
+
+## 14. Fase 13 (sesion 2026-11, continuacion): auditoria completa y rollback del techo de cuota
+
+### 14.1 El usuario pidio una auditoria completa antes de seguir parcheando
+
+Tras dos correcciones de la seccion 13 desplegadas y corregidas en vivo
+(13.3 -> 13.3bis), el usuario pidio explicitamente PARAR de parchear
+reactivamente y auditar el flujo completo con datos reales antes de
+cambiar mas codigo (ranking.py, prediction_service.py, edge.py,
+uncertainty.py, anomaly.py, evaluation_service.py, backtesting/,
+scripts de diagnostico). Se construyo
+`scripts/debug_full_ranking_audit.py` (reutiliza
+`performance_by_edge_bucket`, `performance_by_odds_bucket`,
+`market_quality_tier`, `fit_edge_reliability_curve`,
+`fit_odds_reliability_curve`, `rank_signals_v2` -- ninguna metrica
+nueva) para reunir en un solo informe: hit rate/ROI por edge, por
+cuota, por mercado, por competicion, por rango de probabilidad, por
+numero de bookmakers, por calidad de mercado; el desglose paso a paso
+de un `match_id` concreto; y la comparacion score ALMACENADO vs score
+EN VIVO del top-10 de la jornada actual.
+
+### 14.2 Hallazgo critico: el techo de cuota (seccion 13) anulaba PRACTICAMENTE TODO
+
+El usuario corrio el script contra la BD de produccion real (n=1133).
+El top-10 de la jornada actual, SIN excepcion, salio con `score=0.0000`
+tanto almacenado como en vivo. No era un problema de orden: no habia
+ranking real, todo empataba en cero.
+
+Causa raiz (confirmada con la propia tabla de hit rate/ROI por cuota
+que el script genero):
+
+| cuota   | hit rate real | ROI    |
+|---------|----------------|--------|
+| 1.0-2.0 | 68.2%          | -2.5%  |
+| 2.0-3.0 | 38.7%          | -10.3% |
+| 3.0-4.0 | 28.4%          | -2.8%  |
+| 4.0-6.0 | 13.9%          | -34.3% |
+| 6.0+    | 3.6%           | -77.9% |
+
+**Las 5 cuotas, sin excepcion, tienen ROI real negativo** (el vig del
+mercado: ya documentado en la seccion 11.5, "apostar a TODO pierde
+dinero, ROI -8.3%"). `reality_capped_expected_value` (secciones 12/13)
+usa el hit rate PROMEDIO de ese nivel de cuota/edge como TECHO del EV
+de cada prediccion individual. Pero si el promedio de cada nivel de
+cuota es negativo, ese techo es negativo en practicamente todos los
+casos, independientemente de lo bueno que sea el modelo para esa
+apuesta en concreto -- el mecanismo asume implicitamente que el modelo
+tiene CERO habilidad por encima del mercado (el techo = lo que gana el
+apostante medio a esa cuota), que es precisamente lo contrario de lo
+que un detector de edge intenta medir. El techo de cuota (seccion 13)
+es el mas destructivo de los dos: NINGUN bucket de cuota observado
+tiene ROI positivo, asi que captura casi cualquier señal
+indiscriminadamente; el techo de edge (seccion 12) es menos severo
+porque el bucket 0-5pp SI tiene ROI real positivo (+3.2%, n=253, la
+mayoria de la muestra), pero aun asi el techo de cuota, aplicado
+despues via el `min()`, se come lo que sobreviva al primero.
+
+Esta es exactamente la situacion que la seccion 13.6 advertia como
+riesgo ("conservador puede volverse casi todo anulado") -- aqui se
+confirma con datos reales que SE MATERIALIZO.
+
+### 14.3 Accion tomada: rollback del techo de cuota (parche de emergencia, aprobado explicitamente)
+
+Se desconecta el techo de cuota (`odds_reliability_curve`) de TODOS los
+puntos de produccion (mismos 6 ficheros/16 sitios cableados en la
+seccion 13): `services/prediction_service.py`, los 5 endpoints de
+`/predictions/*`, `/matches/*`, `/history/*`, `agent/tools.py`,
+`agent/alerts.py`. **Nunca se borra el mecanismo**: `fit_odds_reliability_curve`,
+`reality_capped_expected_value` (con su parametro
+`odds_reliability_curve`), `signal_score_v2`/`rank_signals_v2`/
+`best_prediction_per_match` (con su parametro del mismo nombre) siguen
+existiendo, totalmente testeados -- solo se deja de LLAMAR a
+`fit_odds_reliability_curve(db)` y de pasar su resultado en produccion,
+igual principio que mantener `signal_score`/`rank_signals` (v1) vivos
+sin usarlos tras activar v2. El techo de edge (seccion 12) NO se toca:
+su bucket mayoritario (0-5pp) tiene ROI real positivo, asi que no
+produce el mismo colapso total.
+
+### 14.4 Lo que queda pendiente antes de reactivar CUALQUIER techo
+
+Hallazgo adicional de la auditoria: `backtesting/ranking_comparison.py::_score_v2`
+llama a `signal_score_v2(prediction)` SIN pasar ninguna curva -- la
+herramienta que deberia validar si estos techos mejoran el ROI/win-rate
+real (`compare-ranking-strategies`) es CIEGA a ambos desde que existen.
+Antes de reactivar el techo de cuota (o de ajustar el de edge), hace
+falta:
+
+1. Corregir `ranking_comparison.py` para que pueda evaluar variantes
+   CON cada curva, con disciplina walk-forward real (la curva de cada
+   variante debe ajustarse SOLO con liquidaciones anteriores al
+   periodo evaluado, nunca con el conjunto completo -- la version
+   actual de `fit_edge_reliability_curve`/`fit_odds_reliability_curve`
+   usa TODO el historico, lo cual vale para el ranking EN VIVO sobre
+   partidos futuros pero NO para validar out-of-sample).
+2. Comparar v1, v2 sin techos, v2+techo-edge, v2+techo-cuota, v2+ambos
+   sobre el MISMO conjunto de liquidaciones reales.
+3. Activar en produccion solo la variante que demuestre mejorar ROI/
+   win-rate/Brier out-of-sample con muestra suficiente y drawdown
+   estable -- nunca por intuicion, exactamente el criterio que ya pide
+   el usuario en esta seccion.
+
+Hasta que eso exista, el estado de produccion es: v2 + techo de edge
+unicamente (seccion 12), techo de cuota construido y testeado pero
+INACTIVO.
