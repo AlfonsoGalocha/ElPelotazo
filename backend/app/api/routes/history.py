@@ -20,7 +20,7 @@ from backend.app.prediction.anomaly import best_prediction_per_match
 from backend.app.schemas.prediction import HistoryPredictionOut, MatchHistoryOut
 from backend.app.services.evaluation_service import (
     fit_edge_reliability_curve,
-    fit_probability_reliability_curve,
+    fit_odds_reliability_curve,
 )
 
 router = APIRouter(prefix="/history", tags=["history"])
@@ -65,7 +65,7 @@ def list_history(
     best_by_match = best_prediction_per_match(
         by_match,
         edge_reliability_curve=fit_edge_reliability_curve(db),
-        probability_reliability_curve=fit_probability_reliability_curve(db),
+        odds_reliability_curve=fit_odds_reliability_curve(db),
     )
 
     out: list[dict] = []
@@ -99,7 +99,7 @@ def get_history_detail(match_id: int, db: Session = Depends(get_db)) -> dict:
     best = best_prediction_per_match(
         {match_id: predictions},
         edge_reliability_curve=fit_edge_reliability_curve(db),
-        probability_reliability_curve=fit_probability_reliability_curve(db),
+        odds_reliability_curve=fit_odds_reliability_curve(db),
     ).get(match_id)
     return {
         "match": match,

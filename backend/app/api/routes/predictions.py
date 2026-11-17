@@ -26,7 +26,7 @@ from backend.app.schemas.prediction import (
 )
 from backend.app.services.evaluation_service import (
     fit_edge_reliability_curve,
-    fit_probability_reliability_curve,
+    fit_odds_reliability_curve,
     market_track_records,
 )
 from backend.app.services.round_service import get_current_round, get_next_round
@@ -160,12 +160,12 @@ def predictions_summary(db: Session = Depends(get_db)) -> dict:
     candidates = _base_signal_query(db, None, True, scope="current_round").all()
     by_match = _group_by_match(candidates)
     edge_reliability_curve = fit_edge_reliability_curve(db)
-    probability_reliability_curve = fit_probability_reliability_curve(db)
+    odds_reliability_curve = fit_odds_reliability_curve(db)
     included, _ = rank_signals_v2(
         candidates,
         settings,
         edge_reliability_curve=edge_reliability_curve,
-        probability_reliability_curve=probability_reliability_curve,
+        odds_reliability_curve=odds_reliability_curve,
     )
     opportunities = [
         s
@@ -227,7 +227,7 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
     best_by_match = best_prediction_per_match(
         by_match,
         edge_reliability_curve=fit_edge_reliability_curve(db),
-        probability_reliability_curve=fit_probability_reliability_curve(db),
+        odds_reliability_curve=fit_odds_reliability_curve(db),
     )
     return {
         "round": {
@@ -490,13 +490,13 @@ def top_signals(
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
     edge_reliability_curve = fit_edge_reliability_curve(db)
-    probability_reliability_curve = fit_probability_reliability_curve(db)
+    odds_reliability_curve = fit_odds_reliability_curve(db)
     included, excluded = rank_signals_v2(
         candidates,
         settings,
         track_records,
         edge_reliability_curve=edge_reliability_curve,
-        probability_reliability_curve=probability_reliability_curve,
+        odds_reliability_curve=odds_reliability_curve,
     )
     if excluded:
         logger.info(
@@ -572,13 +572,13 @@ def best_predictions(
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
     edge_reliability_curve = fit_edge_reliability_curve(db)
-    probability_reliability_curve = fit_probability_reliability_curve(db)
+    odds_reliability_curve = fit_odds_reliability_curve(db)
     included, _ = rank_signals_v2(
         candidates,
         settings,
         track_records,
         edge_reliability_curve=edge_reliability_curve,
-        probability_reliability_curve=probability_reliability_curve,
+        odds_reliability_curve=odds_reliability_curve,
     )
     included = _filter_by_quality(included, quality, settings)
     included = [
@@ -628,13 +628,13 @@ def best_of_day(
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
     edge_reliability_curve = fit_edge_reliability_curve(db)
-    probability_reliability_curve = fit_probability_reliability_curve(db)
+    odds_reliability_curve = fit_odds_reliability_curve(db)
     included, _ = rank_signals_v2(
         candidates,
         settings,
         track_records,
         edge_reliability_curve=edge_reliability_curve,
-        probability_reliability_curve=probability_reliability_curve,
+        odds_reliability_curve=odds_reliability_curve,
     )
 
     strict_min_edge = settings.min_edge_pp * 2
@@ -698,11 +698,11 @@ def best_predictions_debug(
         db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
     ).all()
     edge_reliability_curve = fit_edge_reliability_curve(db)
-    probability_reliability_curve = fit_probability_reliability_curve(db)
+    odds_reliability_curve = fit_odds_reliability_curve(db)
     included, excluded = rank_signals_v2(
         candidates,
         edge_reliability_curve=edge_reliability_curve,
-        probability_reliability_curve=probability_reliability_curve,
+        odds_reliability_curve=odds_reliability_curve,
     )
     return {
         "included": [

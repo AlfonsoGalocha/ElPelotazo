@@ -319,40 +319,46 @@ def uncertainty_factor(uncertainty_low: float | None, uncertainty_high: float | 
 # una cuota 6 no es una buena prediccion". `scripts/debug_odds_vs_hitrate.py`,
 # corrido por el usuario sobre las mismas 1133 liquidaciones reales,
 # confirma un "favorite-longshot bias" claro: el modelo SOBRESTIMA su
-# propia probabilidad en la cola de cuota alta/probabilidad baja (cuota
-# 4-6: dice 21.7%, acierta 13.9%, ROI -34.3%; cuota 6+: dice 15.8%,
-# acierta 3.6%, ROI -77.9%) -- incluso con edge MODESTO, es un problema
-# de la propia probabilidad, no solo de discrepancia con el mercado.
+# propia probabilidad en la cola de cuota alta (cuota 4-6: dice 21.7%,
+# acierta 13.9%, ROI -34.3%; cuota 6+: dice 15.8%, acierta 3.6%, ROI
+# -77.9%) -- incluso con edge MODESTO, es un problema de la propia
+# CUOTA, no solo de discrepancia con el mercado.
+#
+# IMPORTANTE -- bug real corregido antes de desplegar esto (verificado
+# EN VIVO: el caso Getafe match_id=61, model_probability=0.335, cuota
+# 5.50, seguia arriba del ranking casi sin penalizar): la PRIMERA
+# version ajustaba/consultaba la curva por `model_probability`, pero la
+# evidencia de arriba esta medida por CUOTA -- un `model_probability` de
+# 33.5% aparece tanto en apuestas bien calibradas (cuota ~3) como mal
+# calibradas (cuota ~5.5); agrupar/consultar por probabilidad MEZCLA
+# ambos casos y diluye la correccion justo donde mas hace falta. Se usa
+# `market_odds` como clave, la MISMA variable que agrupa
+# `scripts/debug_odds_vs_hitrate.py`.
+#
 # Misma correccion, misma disciplina: una segunda curva independiente
-# (`fit_probability_reliability_curve`, `model_probability -> hit rate
-# real`) pone OTRO techo al EV, y se toma el minimo de TODAS las cotas
-# disponibles -- nunca un blend, cualquier evidencia real que diga "este
-# EV es mas optimista de lo que deberia" puede bajarlo, ninguna puede
-# subirlo.
+# (`fit_odds_reliability_curve`, `market_odds -> hit rate real`) pone
+# OTRO techo al EV, y se toma el minimo de TODAS las cotas disponibles
+# -- nunca un blend, cualquier evidencia real que diga "este EV es mas
+# optimista de lo que deberia" puede bajarlo, ninguna puede subirlo.
 def reality_capped_expected_value(
     risk_adjusted_ev: float,
     edge: float | None,
     market_odds: float | None,
-    model_probability: float | None,
     edge_reliability_curve: IsotonicRegression | None,
-    probability_reliability_curve: IsotonicRegression | None = None,
+    odds_reliability_curve: IsotonicRegression | None = None,
 ) -> float:
     """Nunca deja que el EV ajustado al riesgo supere lo que la evidencia
-    empirica (`fit_edge_reliability_curve`/`fit_probability_reliability_curve`,
+    empirica (`fit_edge_reliability_curve`/`fit_odds_reliability_curve`,
     ambas ajustadas sobre TODAS las liquidaciones reales) dice que
-    realmente paga una senhal con este edge/esta probabilidad -- sin
-    ninguna curva, o sin `market_odds`, cada techo concreto queda
-    neutro (nunca penaliza por falta de dato)."""
+    realmente paga una senhal con este edge/esta cuota -- sin ninguna
+    curva, o sin `market_odds`, cada techo concreto queda neutro (nunca
+    penaliza por falta de dato)."""
     capped = risk_adjusted_ev
     if edge_reliability_curve is not None and edge is not None and market_odds is not None:
         real_hit_rate = float(edge_reliability_curve.predict([edge * 100.0])[0])
         capped = min(capped, real_hit_rate * market_odds - 1.0)
-    if (
-        probability_reliability_curve is not None
-        and model_probability is not None
-        and market_odds is not None
-    ):
-        real_hit_rate = float(probability_reliability_curve.predict([model_probability])[0])
+    if odds_reliability_curve is not None and market_odds is not None:
+        real_hit_rate = float(odds_reliability_curve.predict([market_odds])[0])
         capped = min(capped, real_hit_rate * market_odds - 1.0)
     return capped
 
@@ -362,7 +368,7 @@ def signal_score_v2(
     settings: Settings | None = None,
     market_track_record: float | None = None,
     edge_reliability_curve: IsotonicRegression | None = None,
-    probability_reliability_curve: IsotonicRegression | None = None,
+    odds_reliability_curve: IsotonicRegression | None = None,
 ) -> float:
     """score_v2 = model_probability^2 * max(EV_ajustado_al_riesgo_y_a_la_realidad, 0)
                   * confidence * data_quality * market_quality_multiplier
@@ -372,7 +378,7 @@ def signal_score_v2(
     `calibrated_probability` -- ver el bloque de comentarios justo arriba
     de este modulo para la evidencia real (isotonic y Platt empeoran
     Brier/log-loss/ECE en los 4 mercados centrales de LaLiga, medido con
-    `ensemble_calibration_report`). `probability_reliability_curve` es
+    `ensemble_calibration_report`). `odds_reliability_curve` es
     DISTINTO: no reemplaza `model_probability` en ningun sitio, solo
     pone un techo adicional al EV (ver `reality_capped_expected_value`).
     """
@@ -391,9 +397,8 @@ def signal_score_v2(
         raw_risk_adjusted_ev,
         prediction.edge,
         prediction.market_odds,
-        prediction.model_probability,
         edge_reliability_curve,
-        probability_reliability_curve,
+        odds_reliability_curve,
     )
     risk_adjusted_ev = max(capped_ev, 0.0)
 
@@ -413,7 +418,7 @@ def rank_signals_v2(
     settings: Settings | None = None,
     market_track_records: dict[tuple[str, str], float] | None = None,
     edge_reliability_curve: IsotonicRegression | None = None,
-    probability_reliability_curve: IsotonicRegression | None = None,
+    odds_reliability_curve: IsotonicRegression | None = None,
 ) -> tuple[list[RankedSignal], list[ExcludedSignal]]:
     """Igual que `rank_signals`, pero puntuando con `signal_score_v2`. Usa
     el MISMO filtro duro (`evaluate_quality_gate`) -- la diferencia es solo
@@ -435,7 +440,7 @@ def rank_signals_v2(
             prediction,
             market_track_record=track_record,
             edge_reliability_curve=edge_reliability_curve,
-            probability_reliability_curve=probability_reliability_curve,
+            odds_reliability_curve=odds_reliability_curve,
         )
         included.append(RankedSignal(prediction=prediction, score=score))
 

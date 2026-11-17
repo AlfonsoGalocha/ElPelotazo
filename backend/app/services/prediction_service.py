@@ -20,7 +20,7 @@ from backend.app.prediction.ranking import signal_score_v2
 from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
 from backend.app.services.evaluation_service import (
     fit_edge_reliability_curve,
-    fit_probability_reliability_curve,
+    fit_odds_reliability_curve,
     market_track_records,
 )
 from backend.app.services.match_service import load_matches_dataframe
@@ -225,7 +225,7 @@ def generate_predictions_for_competition(
     # el valor neutro por defecto.
     track_records = market_track_records(db, competition_code)
     edge_reliability_curve = fit_edge_reliability_curve(db)
-    probability_reliability_curve = fit_probability_reliability_curve(db)
+    odds_reliability_curve = fit_odds_reliability_curve(db)
 
     predictions = []
     for output in outputs:
@@ -278,7 +278,7 @@ def generate_predictions_for_competition(
             prediction,
             market_track_record=track_record,
             edge_reliability_curve=edge_reliability_curve,
-            probability_reliability_curve=probability_reliability_curve,
+            odds_reliability_curve=odds_reliability_curve,
         )
         db.add(prediction)
         predictions.append(prediction)

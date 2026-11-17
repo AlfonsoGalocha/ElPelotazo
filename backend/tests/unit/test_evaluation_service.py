@@ -15,11 +15,11 @@ from backend.app.normalization.competitions import COMPETITIONS
 from backend.app.services.data_service import ingest_matches
 from backend.app.services.evaluation_service import (
     MIN_SETTLED_FOR_EDGE_RELIABILITY,
-    MIN_SETTLED_FOR_PROBABILITY_RELIABILITY,
+    MIN_SETTLED_FOR_ODDS_RELIABILITY,
     MIN_SETTLED_FOR_TRACK_RECORD,
     evaluate_settled_predictions,
     fit_edge_reliability_curve,
-    fit_probability_reliability_curve,
+    fit_odds_reliability_curve,
     market_track_records,
     settle_finished_predictions,
 )
@@ -543,39 +543,53 @@ def test_fit_edge_reliability_curve_decreases_hit_rate_prediction_with_edge_size
     assert small_edge_hit_rate > large_edge_hit_rate
 
 
-# fit_probability_reliability_curve (favorite-longshot bias, seccion 13
+# fit_odds_reliability_curve (favorite-longshot bias, seccion 13
 # de docs/architecture_audit.md -- ver prediction/ranking.py::reality_capped_expected_value
 # para el contexto completo: tras el fix de edge, el usuario reporto
 # "victoria local" a cuota 5.50/6.00 seguia destacada pese a
 # model_probability bajo. `scripts/debug_odds_vs_hitrate.py` confirmo que
-# el modelo sobrestima su propia probabilidad en esa cola.)
+# el modelo sobrestima su propia probabilidad en esa cola.
+#
+# IMPORTANTE (bug real corregido antes de desplegar): la curva se ajusta
+# sobre `market_odds`, NUNCA sobre `model_probability` -- un
+# `model_probability` identico aparece tanto en cuotas bajas bien
+# calibradas como en cuotas altas mal calibradas; agrupar por
+# probabilidad diluiria la correccion justo donde mas hace falta (visto
+# EN VIVO: el caso real, model_probability=0.335/cuota 5.50, seguia casi
+# sin penalizar con la primera version que si agrupaba por
+# probabilidad).)
 
 
-def test_fit_probability_reliability_curve_is_none_below_minimum_sample():
+def test_fit_odds_reliability_curve_is_none_below_minimum_sample():
     with _isolated_db_session() as db:
-        rows = [(0.55, 0.02, True)] * (MIN_SETTLED_FOR_PROBABILITY_RELIABILITY - 1)
-        _seed_settled_predictions_with_edge(db, "probability-reliability-too-few", rows)
+        rows = [(0.55, 0.02, True)] * (MIN_SETTLED_FOR_ODDS_RELIABILITY - 1)
+        _seed_settled_predictions_with_edge(db, "odds-reliability-too-few", rows)
         db.commit()
-        curve = fit_probability_reliability_curve(db)
+        curve = fit_odds_reliability_curve(db)
     assert curve is None
 
 
-def test_fit_probability_reliability_curve_increases_hit_rate_prediction_with_probability():
+def test_fit_odds_reliability_curve_decreases_hit_rate_prediction_with_odds():
     """Mismo patron que la evidencia real (`debug_odds_vs_hitrate.py`):
-    probabilidad baja (cuota alta, "longshot") acierta mucho menos que
-    probabilidad alta (favorito) -- la curva ajustada debe reflejarlo
-    (nunca al reves, por construccion `increasing=True`)."""
+    cuota alta ("longshot") acierta mucho menos que cuota baja
+    (favorito) -- la curva ajustada debe reflejarlo (nunca al reves, por
+    construccion `increasing=False`). `_seed_settled_predictions_with_edge`
+    deriva `market_odds` de `(model_probability, edge)`
+    (`market_odds = 1/(model_probability - edge)`): favorito ->
+    `market_odds` ~1.67; longshot -> `market_odds` ~7.69."""
     with _isolated_db_session() as db:
         rows = (
             [(0.65, 0.05, True)] * 22
-            + [(0.65, 0.05, False)] * 8  # favorito: ~73% acierto
+            + [(0.65, 0.05, False)] * 8  # favorito (cuota ~1.67): ~73% acierto
             + [(0.18, 0.05, True)] * 2
-            + [(0.18, 0.05, False)] * 28  # longshot: ~7% acierto
+            + [(0.18, 0.05, False)] * 28  # longshot (cuota ~7.69): ~7% acierto
         )
-        _seed_settled_predictions_with_edge(db, "probability-reliability-increasing", rows)
+        _seed_settled_predictions_with_edge(db, "odds-reliability-decreasing", rows)
         db.commit()
-        curve = fit_probability_reliability_curve(db)
+        curve = fit_odds_reliability_curve(db)
     assert curve is not None
-    low_probability_hit_rate = curve.predict([0.18])[0]
-    high_probability_hit_rate = curve.predict([0.65])[0]
-    assert low_probability_hit_rate < high_probability_hit_rate
+    favorite_odds = 1.0 / (0.65 - 0.05)
+    longshot_odds = 1.0 / (0.18 - 0.05)
+    favorite_hit_rate = curve.predict([favorite_odds])[0]
+    longshot_hit_rate = curve.predict([longshot_odds])[0]
+    assert longshot_hit_rate < favorite_hit_rate

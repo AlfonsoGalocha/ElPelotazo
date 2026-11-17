@@ -152,7 +152,7 @@ def best_prediction_per_match(
     predictions_by_match: dict[int, list[Prediction]],
     settings: Settings | None = None,
     edge_reliability_curve: IsotonicRegression | None = None,
-    probability_reliability_curve: IsotonicRegression | None = None,
+    odds_reliability_curve: IsotonicRegression | None = None,
 ) -> dict[int, Prediction | None]:
     """Para cada `match_id`, la `Prediction` con mayor `signal_score_v2`
     entre las que pasan `evaluate_quality_gate` Y no tienen CONTRADICCION
@@ -162,10 +162,10 @@ def best_prediction_per_match(
     al riesgo en vez de edge bruto, para no premiar un edge enorme cuando
     la propia probabilidad esta poco respaldada.
 
-    `edge_reliability_curve`/`probability_reliability_curve`: opcionales,
+    `edge_reliability_curve`/`odds_reliability_curve`: opcionales,
     pasados por el llamador (que SI tiene acceso a BD) via
     `services/evaluation_service.py::fit_edge_reliability_curve`/
-    `fit_probability_reliability_curve` -- esta funcion se mantiene PURA
+    `fit_odds_reliability_curve` -- esta funcion se mantiene PURA
     (sin BD), igual que `rank_signals_v2`. `None` (por defecto) es
     neutro: nunca penaliza por falta de dato."""
     from backend.app.prediction.ranking import rank_signals_v2
@@ -177,7 +177,7 @@ def best_prediction_per_match(
             predictions,
             settings,
             edge_reliability_curve=edge_reliability_curve,
-            probability_reliability_curve=probability_reliability_curve,
+            odds_reliability_curve=odds_reliability_curve,
         )
         best = None
         for ranked in included:
