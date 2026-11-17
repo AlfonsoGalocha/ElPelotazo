@@ -432,3 +432,65 @@ def fit_edge_reliability_curve(db: Session) -> IsotonicRegression | None:
     model = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=False, out_of_bounds="clip")
     model.fit(edge_pp, outcome)
     return model
+
+
+MIN_SETTLED_FOR_PROBABILITY_RELIABILITY = 30  # mismo criterio que los otros MIN_SETTLED_FOR_*
+
+
+def fit_probability_reliability_curve(db: Session) -> IsotonicRegression | None:
+    """Evidencia real (pedido del usuario, tras el fix de edge de la
+    seccion 12: "victoria local" a cuota 5.50/6.00, con
+    `model_probability` de 33.5%/28.3%, seguia siendo "mejor oportunidad"
+    -- "una cuota 5 o una cuota 6 no es una buena prediccion"):
+    `scripts/debug_odds_vs_hitrate.py`, corrido por el usuario sobre las
+    mismas 1133 predicciones liquidadas reales, confirma un
+    "favorite-longshot bias" claro en el propio sistema -- el modelo
+    SOBRESTIMA sistematicamente su propia probabilidad en el extremo de
+    cuota alta/probabilidad baja:
+
+        cuota 1-2:  model_prob 66.0% vs hit rate real 68.2% (bien calibrado)
+        cuota 2-3:  model_prob 41.0% vs hit rate real 38.7%
+        cuota 3-4:  model_prob 28.4% vs hit rate real 28.4% (bien calibrado)
+        cuota 4-6:  model_prob 21.7% vs hit rate real 13.9%  (ROI -34.3%)
+        cuota 6+:   model_prob 15.8% vs hit rate real  3.6%  (ROI -77.9%)
+
+    Es DISTINTO del problema de edge grande (seccion 12): esto ocurre
+    incluso con edge MODESTO, es un problema de la propia probabilidad
+    del modelo en la cola de "poco probable", no de cuanto discrepa del
+    mercado.
+
+    Se ajusta una `IsotonicRegression` (misma herramienta que
+    `fit_edge_reliability_curve`/`models/calibration/calibrators.py`,
+    aqui con `increasing=True` porque la relacion esperada es CRECIENTE:
+    a mayor `model_probability`, mayor hit rate real) sobre
+    (model_probability -> resultado real), agregada sobre TODAS las
+    competiciones/mercados a la vez (mismo motivo que
+    `fit_edge_reliability_curve`: asi se midio la evidencia).
+
+    OJO: esto NO sustituye a `model_probability` para mostrar ni para
+    rankear directamente (la seccion 11.5 ya mostro con
+    `ensemble_calibration_report`, walk-forward y sin fuga de datos, que
+    calibrar la probabilidad del ensemble per-mercado EMPEORA Brier/ECE
+    en los 4 mercados centrales de LaLiga) -- se usa UNICAMENTE como una
+    cota conservadora adicional sobre el EV, igual principio que
+    `fit_edge_reliability_curve`, nunca para reemplazar la probabilidad
+    que ve el usuario.
+
+    `None` si hay menos de `MIN_SETTLED_FOR_PROBABILITY_RELIABILITY`
+    liquidaciones con cuota real en total.
+    """
+    rows = (
+        db.query(Prediction, PredictionResult)
+        .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
+        .filter(Prediction.market_odds.isnot(None))
+        .all()
+    )
+    if len(rows) < MIN_SETTLED_FOR_PROBABILITY_RELIABILITY:
+        return None
+
+    model_probability = np.array([p.model_probability for p, _r in rows])
+    outcome = np.array([float(r.outcome) for _p, r in rows])
+
+    model = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=True, out_of_bounds="clip")
+    model.fit(model_probability, outcome)
+    return model
