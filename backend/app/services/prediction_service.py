@@ -18,7 +18,7 @@ from backend.app.prediction.predictor import (
 )
 from backend.app.prediction.ranking import signal_score_v2
 from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
-from backend.app.services.evaluation_service import market_track_records
+from backend.app.services.evaluation_service import fit_edge_reliability_curve, market_track_records
 from backend.app.services.match_service import load_matches_dataframe
 from backend.app.services.model_service import load_model_artifact
 from backend.app.utils.logging import get_logger
@@ -220,6 +220,7 @@ def generate_predictions_for_competition(
     # historico refleje lo mismo que el ranking en vivo habria usado -- no
     # el valor neutro por defecto.
     track_records = market_track_records(db, competition_code)
+    edge_reliability_curve = fit_edge_reliability_curve(db)
 
     predictions = []
     for output in outputs:
@@ -268,7 +269,11 @@ def generate_predictions_for_competition(
         # borrada, para seguir pudiendo comparar contra ella si en el
         # futuro hace falta.
         track_record = track_records.get((competition_code, output.market))
-        prediction.signal_score = signal_score_v2(prediction, market_track_record=track_record)
+        prediction.signal_score = signal_score_v2(
+            prediction,
+            market_track_record=track_record,
+            edge_reliability_curve=edge_reliability_curve,
+        )
         db.add(prediction)
         predictions.append(prediction)
 

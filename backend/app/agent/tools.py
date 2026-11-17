@@ -29,7 +29,10 @@ from backend.app.db.models.modeling import AgentAlert, Prediction
 from backend.app.prediction.anomaly import best_prediction_per_match, compute_anomaly_flags
 from backend.app.prediction.confidence import signal_tier
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS
-from backend.app.services.evaluation_service import real_performance_report
+from backend.app.services.evaluation_service import (
+    fit_edge_reliability_curve,
+    real_performance_report,
+)
 from backend.app.services.round_service import get_current_round
 
 
@@ -84,6 +87,7 @@ def get_matches_today(db: Session, _params: dict[str, Any]) -> dict[str, Any]:
     settings = get_settings()
     competitions = db.query(Competition).order_by(Competition.name).all()
     matches_out: list[dict[str, Any]] = []
+    edge_reliability_curve = fit_edge_reliability_curve(db)
 
     for competition in competitions:
         round_info = get_current_round(db, competition.code)
@@ -96,7 +100,9 @@ def get_matches_today(db: Session, _params: dict[str, Any]) -> dict[str, Any]:
         by_match: dict[int, list[Prediction]] = {}
         for p in predictions:
             by_match.setdefault(p.match_id, []).append(p)
-        best_by_match = best_prediction_per_match(by_match, settings)
+        best_by_match = best_prediction_per_match(
+            by_match, settings, edge_reliability_curve=edge_reliability_curve
+        )
 
         for match_id in round_info.match_ids:
             match_predictions = by_match.get(match_id, [])
@@ -318,7 +324,11 @@ def analyze_match(db: Session, params: dict[str, Any]) -> dict[str, Any]:
         }
 
     predictions = db.query(Prediction).filter(Prediction.match_id == match.id).all()
-    best = best_prediction_per_match({match.id: predictions}, get_settings()).get(match.id)
+    best = best_prediction_per_match(
+        {match.id: predictions},
+        get_settings(),
+        edge_reliability_curve=fit_edge_reliability_curve(db),
+    ).get(match.id)
 
     return {
         "match_id": match.id,

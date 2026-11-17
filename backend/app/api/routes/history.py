@@ -18,6 +18,7 @@ from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.prediction.anomaly import best_prediction_per_match
 from backend.app.schemas.prediction import HistoryPredictionOut, MatchHistoryOut
+from backend.app.services.evaluation_service import fit_edge_reliability_curve
 
 router = APIRouter(prefix="/history", tags=["history"])
 
@@ -58,7 +59,9 @@ def list_history(
     by_match: dict[int, list[Prediction]] = {}
     for p in all_predictions:
         by_match.setdefault(p.match_id, []).append(p)
-    best_by_match = best_prediction_per_match(by_match)
+    best_by_match = best_prediction_per_match(
+        by_match, edge_reliability_curve=fit_edge_reliability_curve(db)
+    )
 
     out: list[dict] = []
     for match in matches:
@@ -88,7 +91,9 @@ def get_history_detail(match_id: int, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=404, detail="Partido finalizado no encontrado")
 
     predictions = db.query(Prediction).filter(Prediction.match_id == match_id).all()
-    best = best_prediction_per_match({match_id: predictions}).get(match_id)
+    best = best_prediction_per_match(
+        {match_id: predictions}, edge_reliability_curve=fit_edge_reliability_curve(db)
+    ).get(match_id)
     return {
         "match": match,
         "predictions": [
