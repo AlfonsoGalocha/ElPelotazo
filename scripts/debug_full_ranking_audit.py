@@ -126,10 +126,16 @@ def main(target_match_id: int | None = None) -> None:
                 .filter(Prediction.match_id.in_(round_info.match_ids))
                 .all()
             )
+        # IMPORTANTE (seccion 14 de docs/architecture_audit.md): el techo
+        # de cuota (odds_reliability_curve) esta DESCONECTADO de produccion
+        # (rollback de emergencia -- colapsaba el ranking entero a score=0).
+        # Esta seccion debe reflejar EXACTAMENTE lo que produccion hace hoy,
+        # nunca lo que el mecanismo PODRIA hacer si se reactivara -- por
+        # eso solo se pasa `edge_curve` aqui, aunque `odds_curve` se siga
+        # ajustando arriba para informar si existe.
         included, _ = rank_signals_v2(
             current_round_predictions,
             edge_reliability_curve=edge_curve,
-            odds_reliability_curve=odds_curve,
         )
         top10_live = [
             {
@@ -146,7 +152,8 @@ def main(target_match_id: int | None = None) -> None:
 
     print(f"Total predicciones liquidadas con cuota real: {len(settled)}")
     print(f"Curva de edge ajustada: {edge_curve is not None}")
-    print(f"Curva de cuota ajustada: {odds_curve is not None}")
+    odds_curve_note = "NO usada en el ranking -- ver seccion 14"
+    print(f"Curva de cuota ajustada: {odds_curve is not None} ({odds_curve_note})")
 
     y_true = np.array([row["outcome"] for row in settled])
     y_prob = np.array([row["model_probability"] for row in settled])
