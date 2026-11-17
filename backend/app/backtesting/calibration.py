@@ -120,6 +120,7 @@ def ensemble_calibration_report(
         "n_folds": len(results),
         "n_test": int(len(y_true)),
         "raw": {
+            "n_test": int(len(y_true)),
             "brier_score": brier_score(y_true, y_prob_raw),
             "log_loss": log_loss_score(y_true, y_prob_raw),
             "expected_calibration_error": expected_calibration_error(y_true, y_prob_raw),
