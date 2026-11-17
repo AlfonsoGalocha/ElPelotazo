@@ -1965,3 +1965,37 @@ reconstruya/reinicie el backend (`docker compose up --build` o
 equivalente), `init_db()` ensancha la columna sola. Despues, repetir la
 secuencia de la seccion 17.5 tal cual -- esta vez debería completarse sin
 el error de truncamiento.
+
+### 17.8 Primera ejecucion real completa: 210 predicciones generadas
+
+El usuario corrio la secuencia completa de la seccion 17.5 tras el fix de
+la 17.7 (con `git pull` + `docker compose up -d --build` de por medio).
+Las 5 ediciones de Nations League se ingirieron, `update-fixtures`/
+`update-odds` trajeron el calendario y cuotas reales, `train` entreno sin
+reventar, y `predict-upcoming` genero **210 predicciones reales en 7
+fechas** -- el pipeline completo funciona de punta a punta para una
+competicion de selecciones, igual que para una de club.
+
+Limitacion real, esperada y no bloqueante, visible en los logs
+(`sklearn.impute... Skipping features without any observed values`,
+repetido por cada fold de entrenamiento): `ApiFootballMatchProvider`
+(`fixtures_provider.py`) solo extrae goles/goles al descanso del payload
+basico de `/fixtures` -- nunca tiros/corners/tarjetas (esos campos de
+`RawMatchRecord` existen porque el adapter de club
+`football-data.co.uk` SI los rellena desde su CSV). Para las 5 ligas de
+club esto solo afecta a la temporada EN CURSO cuando
+`API_FOOTBALL_ENABLED=true` (el resto del historico sigue viniendo del
+mirror con estadisticas completas); para Nations League, CUALQUIER
+partido (historico y actual) viene de API-Football, asi que el 100% de
+las filas tiene estas columnas vacias. `SimpleImputer` ya maneja esto con
+gracia (salta la columna en vez de reventar, mismo comportamiento que ya
+existia para cualquier columna sin ningun valor observado) -- el modelo
+entrena igual con las features de goles, simplemente sin el beneficio de
+las derivadas de tiros/corners/tarjetas para esta competicion. No se ha
+tocado nada aqui: documentado para que quede claro que es una limitacion
+REAL de la fuente de datos, no un bug nuevo.
+
+**Pendiente de verificar (siguiente paso)**: confirmar que "UEFA Nations
+League" aparece en el selector de competiciones de la app y que las 210
+predicciones se ven correctamente en Partidos/Oportunidades -- antes de
+construir la seccion de frontend dedicada "Selecciones".
