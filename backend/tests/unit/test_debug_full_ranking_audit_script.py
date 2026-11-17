@@ -141,3 +141,24 @@ def test_main_runs_without_a_target_match_id(capsys):
     output = capsys.readouterr().out
     assert "Total predicciones liquidadas con cuota real:" in output
     assert "8. CASO" not in output
+
+
+def test_section_9_ranking_call_matches_production_never_passes_odds_curve():
+    """Regresion real (seccion 14 de docs/architecture_audit.md): el
+    usuario corrio este script tras el rollback de emergencia del techo
+    de cuota y el top-10 seguia saliendo con score=0.0000 en TODOS los
+    casos -- no porque produccion siguiera rota, sino porque este MISMO
+    script seguia pasando `odds_reliability_curve` a `rank_signals_v2`
+    en la seccion 9, sin reflejar el rollback. Verificacion estatica
+    (nunca mas sutil que leer el texto fuente) de que la llamada de
+    ranking de la jornada actual nunca vuelve a incluir ese parametro
+    mientras el techo de cuota siga desconectado de produccion."""
+    import inspect
+
+    import scripts.debug_full_ranking_audit as module
+
+    source = inspect.getsource(module.main)
+    call_start = source.index("included, _ = rank_signals_v2(")
+    call_end = source.index(")", call_start)
+    call_text = source[call_start:call_end]
+    assert "odds_reliability_curve" not in call_text
