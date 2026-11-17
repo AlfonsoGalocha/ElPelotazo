@@ -22,6 +22,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING
 
+import numpy as np
+from sklearn.isotonic import IsotonicRegression as _IsotonicRegressionImpl
+
 from backend.app.config.settings import Settings, get_settings
 from backend.app.db.models.modeling import Prediction
 from backend.app.prediction.market_quality import market_quality_tier
@@ -340,19 +343,53 @@ def uncertainty_factor(uncertainty_low: float | None, uncertainty_high: float | 
 # OTRO techo al EV, y se toma el minimo de TODAS las cotas disponibles
 # -- nunca un blend, cualquier evidencia real que diga "este EV es mas
 # optimista de lo que deberia" puede bajarlo, ninguna puede subirlo.
+#
+# ROLLBACK DE EMERGENCIA (seccion 14 de docs/architecture_audit.md,
+# verificado EN VIVO contra produccion real): `odds_reliability_curve`
+# colapsaba el ranking ENTERO a score=0 -- las 5 cuotas observadas
+# tienen ROI real NEGATIVO (vig del mercado), asi que usar "el ROI
+# promedio de esa cuota" como techo castiga CUALQUIER senhal a esa
+# cuota, sin importar su calidad real (equivale a asumir que el modelo
+# nunca puede superar al apostante medio, justo lo contrario de lo que
+# un detector de edge intenta medir). `odds_reliability_curve` se deja
+# de pasar en produccion (ver seccion 14.3) pero el parametro y el
+# mecanismo NO se borran -- siguen aqui, disponibles para
+# `backtesting/ranking_comparison.py`, nunca reactivados sin validacion
+# walk-forward real.
+#
+# TERCERA cota, de tipo DISTINTO (seccion 15): en vez de un techo basado
+# en ROI/hit-rate AGREGADO de un bucket entero (que hereda el vig y por
+# eso colapsa todo), esta recalibra la PROBABILIDAD del modelo misma,
+# restringida a la cola donde la seccion 13 encontro sobreconfianza real
+# (cuota >= `LONGSHOT_ODDS_THRESHOLD`): `model_probability -> resultado
+# real`, ajustada SOLO con liquidaciones de esa cola (nunca con el rango
+# completo, que la seccion 11.5 ya mostro que empeora Brier/ECE). Una
+# curva de calibracion de probabilidad (acotada en [0,1], sin vig
+# mezclado) no hereda el sesgo negativo universal que colapsaba el techo
+# de cuota -- pedido explicito del usuario: "quiero que el modelo sea
+# realista tambien con las predicciones, no solo [que mida] mucha
+# diferencia de edge". NUNCA activada en produccion todavia: solo
+# construida y testeada, pendiente de validacion walk-forward real en
+# `backtesting/ranking_comparison.py` antes de conectarse.
+LONGSHOT_ODDS_THRESHOLD = 4.0  # seccion 13.2: cuota >=4 es donde la sobreconfianza se vuelve severa
+
+
 def reality_capped_expected_value(
     risk_adjusted_ev: float,
     edge: float | None,
     market_odds: float | None,
     edge_reliability_curve: IsotonicRegression | None,
     odds_reliability_curve: IsotonicRegression | None = None,
+    model_probability: float | None = None,
+    longshot_calibration_curve: IsotonicRegression | None = None,
 ) -> float:
     """Nunca deja que el EV ajustado al riesgo supere lo que la evidencia
-    empirica (`fit_edge_reliability_curve`/`fit_odds_reliability_curve`,
-    ambas ajustadas sobre TODAS las liquidaciones reales) dice que
-    realmente paga una senhal con este edge/esta cuota -- sin ninguna
-    curva, o sin `market_odds`, cada techo concreto queda neutro (nunca
-    penaliza por falta de dato)."""
+    empirica (`fit_edge_reliability_curve`/`fit_odds_reliability_curve`/
+    `fit_longshot_calibration_curve`, todas ajustadas sobre liquidaciones
+    reales) dice que realmente paga una senhal con este edge/esta
+    cuota/esta probabilidad -- sin ninguna curva, o sin `market_odds`,
+    cada techo concreto queda neutro (nunca penaliza por falta de
+    dato)."""
     capped = risk_adjusted_ev
     if edge_reliability_curve is not None and edge is not None and market_odds is not None:
         real_hit_rate = float(edge_reliability_curve.predict([edge * 100.0])[0])
@@ -360,7 +397,54 @@ def reality_capped_expected_value(
     if odds_reliability_curve is not None and market_odds is not None:
         real_hit_rate = float(odds_reliability_curve.predict([market_odds])[0])
         capped = min(capped, real_hit_rate * market_odds - 1.0)
+    if (
+        longshot_calibration_curve is not None
+        and model_probability is not None
+        and market_odds is not None
+        and market_odds >= LONGSHOT_ODDS_THRESHOLD
+    ):
+        realistic_probability = float(longshot_calibration_curve.predict([model_probability])[0])
+        capped = min(capped, realistic_probability * market_odds - 1.0)
     return capped
+
+
+def fit_edge_reliability_curve_from_observations(
+    edge_pp: np.ndarray, outcome: np.ndarray
+) -> IsotonicRegression:
+    """Ajuste puro (sin BD): el MISMO calculo que
+    `services/evaluation_service.py::fit_edge_reliability_curve` hace
+    tras consultar la BD -- extraido aqui para que
+    `backtesting/ranking_comparison.py` pueda reproducirlo exactamente
+    dentro de un walk-forward (ajustando solo con liquidaciones
+    anteriores a cada punto evaluado), sin duplicar la logica."""
+    model = _IsotonicRegressionImpl(y_min=0.0, y_max=1.0, increasing=False, out_of_bounds="clip")
+    model.fit(edge_pp, outcome)
+    return model
+
+
+def fit_odds_reliability_curve_from_observations(
+    market_odds: np.ndarray, outcome: np.ndarray
+) -> IsotonicRegression:
+    """Ajuste puro (sin BD), mismo motivo que
+    `fit_edge_reliability_curve_from_observations`. NUNCA activada en
+    produccion (seccion 14) -- se mantiene solo para que
+    `ranking_comparison.py` pueda seguir comparandola."""
+    model = _IsotonicRegressionImpl(y_min=0.0, y_max=1.0, increasing=False, out_of_bounds="clip")
+    model.fit(market_odds, outcome)
+    return model
+
+
+def fit_longshot_calibration_curve_from_observations(
+    model_probability: np.ndarray, outcome: np.ndarray
+) -> IsotonicRegression:
+    """Ajuste puro (sin BD), mismo motivo que las dos anteriores --
+    `increasing=True` porque es una calibracion de probabilidad real
+    (CRECIENTE: mas probabilidad dicha, mas aciertos reales), nunca un
+    techo de ROI. El llamador filtra las observaciones a la cola de
+    cuota alta (`LONGSHOT_ODDS_THRESHOLD`) ANTES de pasarlas aqui."""
+    model = _IsotonicRegressionImpl(y_min=0.0, y_max=1.0, increasing=True, out_of_bounds="clip")
+    model.fit(model_probability, outcome)
+    return model
 
 
 def signal_score_v2(
@@ -369,6 +453,7 @@ def signal_score_v2(
     market_track_record: float | None = None,
     edge_reliability_curve: IsotonicRegression | None = None,
     odds_reliability_curve: IsotonicRegression | None = None,
+    longshot_calibration_curve: IsotonicRegression | None = None,
 ) -> float:
     """score_v2 = model_probability^2 * max(EV_ajustado_al_riesgo_y_a_la_realidad, 0)
                   * confidence * data_quality * market_quality_multiplier
@@ -378,9 +463,10 @@ def signal_score_v2(
     `calibrated_probability` -- ver el bloque de comentarios justo arriba
     de este modulo para la evidencia real (isotonic y Platt empeoran
     Brier/log-loss/ECE en los 4 mercados centrales de LaLiga, medido con
-    `ensemble_calibration_report`). `odds_reliability_curve` es
-    DISTINTO: no reemplaza `model_probability` en ningun sitio, solo
-    pone un techo adicional al EV (ver `reality_capped_expected_value`).
+    `ensemble_calibration_report`). `odds_reliability_curve`/
+    `longshot_calibration_curve` son DISTINTOS: no reemplazan
+    `model_probability` para elevar al cuadrado, solo ponen un techo
+    adicional al EV (ver `reality_capped_expected_value`).
     """
     settings = settings or get_settings()
     quality_tier = market_quality_tier(
@@ -399,6 +485,8 @@ def signal_score_v2(
         prediction.market_odds,
         edge_reliability_curve,
         odds_reliability_curve,
+        prediction.model_probability,
+        longshot_calibration_curve,
     )
     risk_adjusted_ev = max(capped_ev, 0.0)
 
@@ -419,6 +507,7 @@ def rank_signals_v2(
     market_track_records: dict[tuple[str, str], float] | None = None,
     edge_reliability_curve: IsotonicRegression | None = None,
     odds_reliability_curve: IsotonicRegression | None = None,
+    longshot_calibration_curve: IsotonicRegression | None = None,
 ) -> tuple[list[RankedSignal], list[ExcludedSignal]]:
     """Igual que `rank_signals`, pero puntuando con `signal_score_v2`. Usa
     el MISMO filtro duro (`evaluate_quality_gate`) -- la diferencia es solo
@@ -441,6 +530,7 @@ def rank_signals_v2(
             market_track_record=track_record,
             edge_reliability_curve=edge_reliability_curve,
             odds_reliability_curve=odds_reliability_curve,
+            longshot_calibration_curve=longshot_calibration_curve,
         )
         included.append(RankedSignal(prediction=prediction, score=score))
 

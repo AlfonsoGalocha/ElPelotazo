@@ -24,7 +24,9 @@ from backend.app.backtesting.calibration import (
 from backend.app.backtesting.engine import run_walk_forward_backtest, summarize_backtest
 from backend.app.backtesting.ranking_comparison import (
     compare_ranking_strategies,
+    compare_ranking_strategies_walk_forward,
     load_settled_predictions,
+    load_settled_predictions_with_kickoff,
 )
 from backend.app.backtesting.reports import write_backtest_report
 from backend.app.config.settings import REPO_ROOT, get_settings
@@ -1003,6 +1005,88 @@ def compare_ranking_strategies_cmd(
         )
     )
     typer.echo(f"[compare-ranking-strategies] informe completo escrito en {output_path}")
+
+
+@app.command("compare-ranking-strategies-walk-forward")
+def compare_ranking_strategies_walk_forward_cmd(
+    competition: str = typer.Option(None),
+    market: str = typer.Option(None),
+    min_train_n: int = typer.Option(30),
+    output: str | None = None,
+) -> None:
+    """Seccion 15 de docs/architecture_audit.md -- pedido explicito del
+    usuario tras el rollback de emergencia del techo de cuota ("quiero
+    que el modelo sea realista tambien con las predicciones, no solo
+    [que mida] mucha diferencia de edge"): a diferencia de
+    `compare-ranking-strategies` (valido para v1/v2 porque esas formulas
+    no tienen ningun parametro ajustado), las estrategias con una curva
+    (`v2_edge_cap` = produccion actual; `v2_edge_cap_longshot` =
+    candidata que recalibra la probabilidad en la cola de cuota alta,
+    NUNCA activada todavia) necesitan walk-forward real: cada
+    liquidacion se puntua SOLO con una curva ajustada con liquidaciones
+    ANTERIORES cronologicamente, nunca con el conjunto completo (eso
+    seria leakage de validacion). Ver
+    backtesting/ranking_comparison.py::compare_ranking_strategies_walk_forward
+    para la metodologia completa.
+
+    Esta es la evidencia real que decide si `v2_edge_cap_longshot`
+    deberia activarse en produccion -- nunca una suposicion. Si no
+    mejora ROI/win-rate/Brier out-of-sample sobre `v2_edge_cap` (el
+    estado actual) con muestra suficiente y drawdown estable, NO se
+    activa.
+    """
+    init_db()
+    with session_scope() as db:
+        settled = load_settled_predictions_with_kickoff(
+            db, competition_code=competition, market=market
+        )
+        report_data = compare_ranking_strategies_walk_forward(settled, min_train_n=min_train_n)
+
+    scope = f"{competition or 'todas las competiciones'}/{market or 'todos los mercados'}"
+    if not report_data.slices:
+        typer.echo(
+            f"[compare-ranking-strategies-walk-forward] {scope}: menos de "
+            f"{min_train_n} liquidaciones con cuota de mercado -- nada que evaluar "
+            "out-of-sample todavia."
+        )
+        return
+
+    typer.echo(
+        f"[compare-ranking-strategies-walk-forward] {scope} "
+        f"(n_total_con_mercado={report_data.n_settled_with_market}, "
+        f"min_train_n={min_train_n}):"
+    )
+    for s in report_data.slices:
+        roi_str = f"{s.roi:+.3f}" if s.roi is not None else "—"
+        win_rate_str = f"{s.win_rate:.1%}" if s.win_rate is not None else "—"
+        typer.echo(
+            f"  {s.strategy:22s} top-{s.top_n:>4s}: n={s.n_bets:4d}  roi={roi_str}  "
+            f"win_rate={win_rate_str}  pnl={s.total_pnl:+.2f}  "
+            f"max_drawdown={s.max_drawdown:.2f}  brier={s.brier_score:.4f}"
+            if s.brier_score is not None
+            else f"  {s.strategy:22s} top-{s.top_n:>4s}: n=0"
+        )
+
+    output_path = (
+        Path(output)
+        if output
+        else REPO_ROOT
+        / "data"
+        / "processed"
+        / f"ranking_comparison_walk_forward_{competition or 'all'}.json"
+    )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(
+            {
+                "n_settled_with_market": report_data.n_settled_with_market,
+                "slices": [vars(s) for s in report_data.slices],
+            },
+            indent=2,
+            default=str,
+        )
+    )
+    typer.echo(f"[compare-ranking-strategies-walk-forward] informe escrito en {output_path}")
 
 
 if __name__ == "__main__":

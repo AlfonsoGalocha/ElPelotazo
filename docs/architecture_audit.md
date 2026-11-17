@@ -1303,3 +1303,181 @@ falta:
 Hasta que eso exista, el estado de produccion es: v2 + techo de edge
 unicamente (seccion 12), techo de cuota construido y testeado pero
 INACTIVO.
+
+## 15. Fase 14 (sesion 2026-11, continuacion): calibracion de la cola + comparador walk-forward
+
+### 15.1 Pedido del usuario
+
+Tras el rollback de emergencia del techo de cuota (seccion 14), el
+usuario confirmo el siguiente paso con una frase que resume el
+principio de fondo: "quiero que el modelo sea realista tambien con las
+predicciones, no solo porque haya mucha diferencia de edge entre el
+modelo y la cuota de mercado". Es decir: el problema de fondo no es (solo)
+"premiar diferencias grandes modelo-mercado" -- es que, en la cola de
+cuota alta, la PROBABILIDAD del modelo en si no es realista.
+
+### 15.2 Por que el techo de cuota (seccion 13) fallaba de raiz
+
+El techo de cuota usaba el ROI PROMEDIO historico de un bucket de cuota
+entero como limite del EV de cada prediccion individual. Como el ROI
+promedio es negativo en TODAS las cuotas observadas (vig del mercado --
+seccion 14.2), ese techo castigaba indiscriminadamente casi cualquier
+señal, sin distinguir una buena de una mala: asumia implicitamente que
+el modelo nunca puede superar al apostante medio, justo lo contrario de
+lo que un detector de edge intenta demostrar.
+
+### 15.3 La correccion: calibrar la PROBABILIDAD, no limitar el EV por ROI agregado
+
+- **`services/evaluation_service.py::fit_longshot_calibration_curve(db,
+  odds_threshold=4.0)`** (nuevo): ajusta una `IsotonicRegression`
+  (`increasing=True`, calibracion real: mas probabilidad dicha, mas
+  acierto real) sobre `model_probability -> resultado`, pero SOLO con
+  liquidaciones de la COLA (`market_odds >= LONGSHOT_ODDS_THRESHOLD`,
+  4.0 -- el punto donde la seccion 13.2 encontro sobreconfianza real:
+  cuota 4-6 dice 21.7% y acierta 13.9%; cuota 6+ dice 15.8% y acierta
+  3.6%; por debajo de cuota 4 el modelo esta razonablemente calibrado).
+  `None` con menos de `MIN_SETTLED_FOR_LONGSHOT_CALIBRATION` (30)
+  liquidaciones de cola.
+
+  **Por que esto NO repite el error de la seccion 13**: una curva de
+  calibracion de probabilidad esta acotada en [0,1] y nunca mezcla el
+  vig del mercado (el `market_odds` solo entra DESPUES, al multiplicar
+  `probabilidad_realista * market_odds - 1`, exactamente igual que con
+  `model_probability` cruda) -- no hereda el sesgo "el ROI medio es
+  negativo en todas partes" que colapsaba el ranking entero.
+
+  **Por que se restringe a la cola y no al rango completo**: la seccion
+  11.5 ya midio con `ensemble_calibration_report` (walk-forward, sin
+  fuga) que calibrar la probabilidad del ensemble en el rango COMPLETO
+  empeora Brier/ECE en los 4 mercados centrales de LaLiga. Esta curva es
+  deliberadamente mas estrecha (solo cuota >=4), ajustada unicamente
+  donde hay evidencia real de sobreconfianza, para no repetir ese
+  resultado negativo.
+
+- **`prediction/ranking.py::reality_capped_expected_value`** (extendida
+  de nuevo): gana `model_probability`/`longshot_calibration_curve`. Para
+  `market_odds >= LONGSHOT_ODDS_THRESHOLD`, calcula
+  `probabilidad_realista = longshot_calibration_curve.predict(model_probability)`
+  y toma el minimo entre el EV ya calculado y
+  `probabilidad_realista * market_odds - 1` -- mismo principio de TECHO
+  (nunca sube, solo puede bajar) que las dos cotas anteriores, pero
+  sobre una cantidad que nunca hereda el vig agregado.
+
+- **Refactor sin cambio de comportamiento**: la logica de ajuste de las
+  tres curvas (`fit_edge_reliability_curve`, `fit_odds_reliability_curve`,
+  `fit_longshot_calibration_curve`) se extrajo a funciones PURAS
+  (`prediction/ranking.py::fit_*_from_observations`, sin BD) para que
+  `backtesting/ranking_comparison.py` pudiera reutilizar EXACTAMENTE el
+  mismo calculo dentro de un walk-forward, sin duplicar logica ni
+  arriesgarse a que las dos versiones diverjan con el tiempo.
+
+- **NUNCA activada en produccion todavia**: `longshot_calibration_curve`
+  no se pasa en ningun endpoint -- solo existe en
+  `backtesting/ranking_comparison.py` (seccion 15.4), pendiente de la
+  validacion walk-forward real que decidira si se activa.
+
+### 15.4 El comparador que faltaba: `compare_ranking_strategies_walk_forward`
+
+Hallazgo de la seccion 14.4: `compare_ranking_strategies` (v1 vs v2) es
+valido SIN walk-forward porque ninguna de las dos formulas tiene ningun
+parametro ajustado -- pero las estrategias con curva (`v2_edge_cap`,
+produccion actual; `v2_edge_cap_longshot`, la candidata de esta seccion)
+SI lo tienen, y ajustarlas sobre el conjunto COMPLETO de liquidaciones
+seria leakage de validacion (la curva "veria" el resultado que esta
+puntuando).
+
+`backtesting/ranking_comparison.py::compare_ranking_strategies_walk_forward`
+(nuevo):
+
+1. Ordena TODAS las liquidaciones con cuota cronologicamente por
+   `Match.kickoff_utc` (nunca por id/orden de insercion).
+2. Las primeras `min_train_n` (30 por defecto, mismo criterio que los
+   `MIN_SETTLED_FOR_*`) nunca se evaluan -- no hay "antes" suficiente
+   todavia.
+3. Cada liquidacion evaluada se puntua con una curva ajustada SOLO con
+   liquidaciones estrictamente anteriores a ella (nunca la propia, nunca
+   el futuro) -- las curvas se reajustan cada `WALK_FORWARD_REFIT_EVERY`
+   (25) liquidaciones nuevas, no en cada fila, por eficiencia (imita
+   ademas como funciona produccion de verdad: la curva se reajusta por
+   REQUEST, no por prediccion individual).
+4. Compara 4 estrategias (`WALK_FORWARD_STRATEGIES`): `v1`, `v2` (sin
+   ningun techo), `v2_edge_cap` (produccion actual, seccion 12),
+   `v2_edge_cap_longshot` (candidata de esta seccion, con ambos techos
+   conectados).
+
+Verificado con dos tests de "espia" (nunca solo inferido de resultados
+agregados): se intercepta la funcion de ajuste real y se comprueba que
+el PRIMER ajuste de cada curva recibe EXACTAMENTE las observaciones
+anteriores al punto donde empieza la evaluacion (ni una mas, lo que
+incluiria la propia prediccion evaluada; ni una menos, lo que dejaria
+fuera historico valido), y que los reajustes posteriores ocurren
+exactamente cada `WALK_FORWARD_REFIT_EVERY` liquidaciones.
+
+Comando CLI nuevo: `compare-ranking-strategies-walk-forward` (mismas
+opciones que `compare-ranking-strategies`: `--competition`, `--market`,
+mas `--min-train-n`).
+
+### 15.5 Tests anhadidos
+
+- `test_ranking.py`: `fit_longshot_calibration_curve_from_observations`
+  (creciente, pura); `reality_capped_expected_value` con la curva de
+  cola (neutro sin ella, neutro por debajo de `LONGSHOT_ODDS_THRESHOLD`,
+  capa un longshot sobreconfiado, nunca sube un EV ya peor, combina con
+  el techo de edge tomando el minimo); `signal_score_v2`/`rank_signals_v2`
+  con la curva de cola conectada de extremo a extremo (reproduce el caso
+  real: match_id=61, home_win, 33.5%, cuota 5.5).
+- `test_evaluation_service.py`: `fit_longshot_calibration_curve` (`None`
+  por debajo del minimo; ignora liquidaciones por debajo de
+  `LONGSHOT_ODDS_THRESHOLD` aunque haya muchisima muestra; la curva
+  ajustada predice menor hit rate para probabilidad dicha baja que para
+  probabilidad dicha alta), mismo motor SQLite en memoria aislado que ya
+  protegia las otras curvas.
+- `test_ranking_comparison.py`: forma del informe walk-forward (4
+  estrategias, solo se evaluan liquidaciones despues de `min_train_n`);
+  **dos pruebas de espia** que verifican DIRECTAMENTE (no solo infieren)
+  que ni la curva de edge ni la de cola reciben jamas datos propios o
+  futuros; la curva de cola ignora liquidaciones de favoritos (cuota
+  baja) aunque haya muchas.
+- Suite completa: 437 tests, todos en verde. `ruff check backend
+  scripts`: cero errores nuevos frente al baseline antes de este cambio
+  (comparado explicitamente con `git stash`).
+
+### 15.6 Como validar esto (pendiente, pedido explicito al usuario)
+
+Este entorno no tiene acceso a la BD real de produccion. Para decidir
+con datos (nunca por intuicion, exactamente el criterio que el propio
+usuario puso como condicion) si `v2_edge_cap_longshot` deberia
+reemplazar a `v2_edge_cap` en produccion, hace falta correr:
+
+```
+docker compose exec backend football-edge compare-ranking-strategies-walk-forward
+```
+
+Y comparar, para cada top-N, `v2_edge_cap` (produccion actual) contra
+`v2_edge_cap_longshot` (candidata): ROI, win-rate, Brier, log-loss,
+max-drawdown y `n_bets` (tamanho de muestra -- un top-5/10 con muy poca
+muestra no es una base solida para decidir nada, por buen aspecto que
+tenga). Solo se activa en produccion si `v2_edge_cap_longshot` mejora de
+forma consistente y con muestra razonable -- si no, se queda construida
+y testeada pero inactiva, igual que ya paso con el techo de cuota.
+
+### 15.7 Limitaciones que siguen existiendo
+
+- `LONGSHOT_ODDS_THRESHOLD = 4.0` se eligio directamente de donde la
+  seccion 13.2 mostraba sobreconfianza clara en los datos agregados por
+  bucket -- no se ha explorado si un umbral distinto (3.5, 4.5...)
+  rendiria mejor; el comparador walk-forward puede usarse para probar
+  variantes si hace falta.
+- La curva de cola pool TODAS las competiciones/mercados juntas (mismo
+  motivo que las otras dos: asi se midio la evidencia) -- con mas
+  historico, valdria la pena probar si una curva por mercado mejora
+  sobre esta.
+- `WALK_FORWARD_REFIT_EVERY = 25` es una eleccion de eficiencia, no
+  validada por si misma -- un valor mas pequenho seria mas fiel
+  (recalibra mas a menudo) a costa de mas computo; no se ha medido si
+  esto cambia el resultado de forma importante a la escala actual de
+  datos (~1133 liquidaciones).
+- El comparador walk-forward, igual que `ensemble_calibration_report`,
+  esta verificado solo con datos SINTETICOS en esta sesion -- su
+  comportamiento con el volumen y la distribucion reales de las 5 ligas
+  del MVP todavia no se ha observado (seccion 15.6).

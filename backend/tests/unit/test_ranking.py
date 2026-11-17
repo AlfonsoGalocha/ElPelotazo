@@ -10,6 +10,7 @@ from backend.app.prediction.anomaly import best_prediction_per_match
 from backend.app.prediction.ranking import (
     ExclusionReason,
     evaluate_quality_gate,
+    fit_longshot_calibration_curve_from_observations,
     odds_age_minutes,
     rank_signals,
     rank_signals_v2,
@@ -752,3 +753,147 @@ def test_best_prediction_per_match_passes_odds_reliability_curve_through():
 
     assert without_curve is longshot  # sin curva: su EV optimista (+0.30) gana
     assert with_curve is favorite  # con la curva real: el EV del longshot se anula
+
+
+# longshot_calibration_curve (seccion 15 de docs/architecture_audit.md):
+# a diferencia de odds_reliability_curve (seccion 13, DESCONECTADA de
+# produccion -- colapsaba el ranking entero porque usaba ROI PROMEDIO,
+# negativo en TODAS las cuotas por el vig), esta recalibra la
+# PROBABILIDAD del modelo (acotada en [0,1], sin vig mezclado), y SOLO
+# en la cola de cuota alta (`LONGSHOT_ODDS_THRESHOLD`) donde la seccion
+# 13.2 encontro sobreconfianza real -- pedido explicito del usuario:
+# "quiero que el modelo sea realista tambien con las predicciones".
+# NUNCA activada en produccion todavia, pendiente de validacion
+# walk-forward real (`backtesting/ranking_comparison.py`).
+
+
+def _increasing_longshot_calibration_curve():
+    """`IsotonicRegression` real (no un stub), ajustada sobre un patron
+    que reproduce la FORMA de la evidencia real de la seccion 13.2
+    (restringida a la cola, cuota>=4): el modelo dice mas de lo que
+    realmente acierta, pero la relacion es creciente (mas probabilidad
+    dicha, mas acierto real) -- nunca al reves."""
+    from sklearn.isotonic import IsotonicRegression
+
+    model_probability = [0.15, 0.22, 0.28, 0.35]
+    outcome = [0.03, 0.08, 0.15, 0.20]
+    curve = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=True, out_of_bounds="clip")
+    curve.fit(model_probability, outcome)
+    return curve
+
+
+def test_fit_longshot_calibration_curve_from_observations_is_increasing():
+    import numpy as np
+
+    model_probability = np.array([0.15, 0.22, 0.28, 0.35])
+    outcome = np.array([0.0, 0.0, 1.0, 1.0])
+    curve = fit_longshot_calibration_curve_from_observations(model_probability, outcome)
+    assert curve.predict([0.15])[0] <= curve.predict([0.35])[0]
+
+
+def test_reality_capped_expected_value_is_neutral_without_longshot_curve():
+    assert (
+        reality_capped_expected_value(
+            0.70, None, 5.5, None, model_probability=0.335, longshot_calibration_curve=None
+        )
+        == 0.70
+    )
+
+
+def test_reality_capped_expected_value_is_neutral_below_longshot_odds_threshold():
+    """La cola solo se corrige a partir de `LONGSHOT_ODDS_THRESHOLD`
+    (cuota >=4) -- por debajo, la seccion 13.2 muestra calibracion
+    razonable, y tocarla ahi repetiria el resultado negativo de la
+    seccion 11.5 (calibrar el rango COMPLETO empeora Brier/ECE)."""
+    curve = _increasing_longshot_calibration_curve()
+    capped = reality_capped_expected_value(
+        0.70, None, 3.5, None, model_probability=0.335, longshot_calibration_curve=curve
+    )
+    assert capped == 0.70
+
+
+def test_reality_capped_expected_value_caps_an_overconfident_longshot():
+    curve = _increasing_longshot_calibration_curve()
+    capped = reality_capped_expected_value(
+        0.70, None, 5.5, None, model_probability=0.335, longshot_calibration_curve=curve
+    )
+    realistic_probability = float(curve.predict([0.335])[0])
+    assert capped == pytest.approx(realistic_probability * 5.5 - 1.0, abs=1e-6)
+    assert capped < 0.70
+
+
+def test_reality_capped_expected_value_never_raises_a_longshot_ev_above_the_raw_estimate():
+    curve = _increasing_longshot_calibration_curve()
+    capped = reality_capped_expected_value(
+        -0.90, None, 5.5, None, model_probability=0.335, longshot_calibration_curve=curve
+    )
+    assert capped == -0.90
+
+
+def test_reality_capped_expected_value_longshot_cap_combines_with_edge_cap():
+    """Si una senhal es mala tanto por tamanho de edge COMO por
+    sobreconfianza en la cola, el techo final es el MINIMO de ambas
+    cotas independientes -- nunca un promedio, nunca solo una de las
+    dos (mismo principio que la combinacion edge+cuota de la seccion
+    13)."""
+    edge_curve = _decreasing_curve()
+    longshot_curve = _increasing_longshot_calibration_curve()
+    capped = reality_capped_expected_value(
+        0.70,
+        0.05,
+        5.5,
+        edge_curve,
+        model_probability=0.335,
+        longshot_calibration_curve=longshot_curve,
+    )
+    real_ev_edge = float(edge_curve.predict([5.0])[0]) * 5.5 - 1.0
+    real_ev_longshot = float(longshot_curve.predict([0.335])[0]) * 5.5 - 1.0
+    assert capped == pytest.approx(min(real_ev_edge, real_ev_longshot), abs=1e-6)
+
+
+def test_signal_score_v2_is_neutral_without_longshot_calibration_curve():
+    prediction = _prediction(risk_adjusted_expected_value=0.20, model_probability=0.335)
+    assert signal_score_v2(prediction, longshot_calibration_curve=None) == pytest.approx(
+        signal_score_v2(prediction)
+    )
+
+
+def test_signal_score_v2_caps_an_overconfident_longshot_once_curve_connected():
+    """Reproduce el caso real (match_id=61, home_win, model_probability
+    33.5%, cuota 5.5) que seguia siendo #1 tras el rollback del techo de
+    cuota (seccion 14): una vez conectada la curva de calibracion de la
+    cola, su score debe bajar (nunca a cero por fuerza -- es una
+    recalibracion de probabilidad, no un corte duro)."""
+    curve = _increasing_longshot_calibration_curve()
+    longshot = _prediction(
+        match_id=1,
+        model_probability=0.335,
+        risk_adjusted_expected_value=0.70,
+        edge=0.165,
+        market_odds=5.5,
+    )
+    without_curve = signal_score_v2(longshot)
+    with_curve = signal_score_v2(longshot, longshot_calibration_curve=curve)
+    assert with_curve < without_curve
+
+
+def test_rank_signals_v2_passes_longshot_calibration_curve_through_to_every_prediction():
+    curve = _increasing_longshot_calibration_curve()
+    longshot = _prediction(
+        match_id=1,
+        model_probability=0.335,
+        risk_adjusted_expected_value=0.70,
+        edge=0.165,
+        market_odds=5.5,
+    )
+    well_calibrated = _prediction(
+        match_id=2,
+        model_probability=0.55,
+        risk_adjusted_expected_value=0.05,
+        edge=0.05,
+        market_odds=1.9,
+    )
+
+    included, _ = rank_signals_v2([longshot, well_calibrated], longshot_calibration_curve=curve)
+
+    assert [s.prediction.match_id for s in included] == [2, 1]
