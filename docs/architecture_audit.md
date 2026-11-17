@@ -1927,3 +1927,41 @@ no hizo falta tocar nada ahi).
 - Seccion de frontend "Selecciones" (nav, filtros, dashboard) todavia
   NO se ha construido -- pendiente de que haya datos reales fluyendo
   primero (seccion 17.5).
+
+### 17.7 Bug real al ejecutar 17.5: `Competition.code` desbordaba en Postgres
+
+El usuario corrio la secuencia de la seccion 17.5 contra su Postgres real
+y las 5 ediciones fallaron: `StringDataRightTruncation: value too long
+for type character varying(16)`. Causa: `Competition.code` se definio
+`String(16)` pensando solo en codigos cortos de club ("laliga",
+"premier_league", 15 caracteres como maximo); `"uefa_nations_league"`
+tiene 20. La suite de tests local NUNCA detecto esto porque corre contra
+SQLite (ver `conftest.py`), que no impone la longitud declarada de un
+`VARCHAR` -- la misma cadena de 20 caracteres se inserta sin queja ahi,
+solo Postgres la rechaza de verdad.
+
+Fix de dos partes:
+- `db/models/core.py`: `Competition.code` pasa de `String(16)` a
+  `String(64)` (margen real para codigos de selecciones mas largos
+  todavia, p.ej. clasificatorios).
+- `db/database.py::_widen_varchar_column_if_needed` (nuevo, llamado desde
+  `_sync_missing_columns`, que ya corre en cada `init_db()`): ensancha
+  SOLO en Postgres (SQLite nunca lo necesita) una columna `VARCHAR`
+  existente cuya longitud en la BD real sea menor que la que el modelo
+  ahora declara -- nunca la estrecha (perderia datos). Util no solo para
+  este bug: cualquier columna de texto que en el futuro necesite mas
+  espacio se autocorrige en el Postgres del usuario la proxima vez que
+  arranque el backend, sin migracion manual.
+
+6 tests nuevos (`test_database_widen_varchar_column.py`) con dialectos
+reales de SQLAlchemy (`sqlalchemy.dialects.postgresql`/`sqlite`, sin
+necesitar un Postgres real, no disponible en este entorno): ensancha
+cuando hace falta, nunca estrecha, no hace nada si la longitud ya
+coincide, no hace nada si la columna reflejada no tiene longitud (p.ej.
+`TEXT`), y nunca toca SQLite. Suite completa: 458/458.
+
+**El usuario no necesita hacer nada especial**: la proxima vez que
+reconstruya/reinicie el backend (`docker compose up --build` o
+equivalente), `init_db()` ensancha la columna sola. Despues, repetir la
+secuencia de la seccion 17.5 tal cual -- esta vez debería completarse sin
+el error de truncamiento.
