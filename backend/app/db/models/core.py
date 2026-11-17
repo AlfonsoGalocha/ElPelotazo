@@ -14,7 +14,15 @@ class Competition(Base):
     __tablename__ = "competitions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    code: Mapped[str] = mapped_column(String(16), unique=True)  # p.ej. "E0", "SP1"
+    # 64, no 16 (seccion 17 de architecture_audit.md -- bug real reportado
+    # por el usuario): 16 bastaba para codigos cortos de club
+    # ("laliga", "premier_league") pero desbordaba con codigos de
+    # selecciones mas largos ("uefa_nations_league", 20 caracteres) en el
+    # Postgres real del usuario -- nunca detectado por los tests locales
+    # porque SQLite no impone la longitud declarada de VARCHAR. Ver
+    # `_widen_varchar_column_if_needed` en db/database.py: ensancha esta
+    # columna sola en una BD Postgres ya existente (nunca la estrecha).
+    code: Mapped[str] = mapped_column(String(64), unique=True)  # p.ej. "E0", "SP1"
     name: Mapped[str] = mapped_column(String(120))  # p.ej. "Premier League"
     country: Mapped[str] = mapped_column(String(64))
     # CompetitionConfig centralizado (seccion 14/15 de la revision de
