@@ -107,5 +107,11 @@ def test_ensemble_calibration_report_compares_raw_isotonic_and_platt():
     for block_name in ("raw", "isotonic", "platt"):
         block = report[block_name]
         assert "error" not in block, f"{block_name}: {block.get('error')}"
+        # Bug real detectado al correr el comando CLI contra datos reales:
+        # el bloque "raw" no llevaba su propio "n_test" (solo el
+        # `report["n_test"]` de nivel superior), y `cli.py::_fmt` asume
+        # que CUALQUIER bloque sin "error" lo tiene -> KeyError en
+        # produccion. Los 3 bloques deben tener la MISMA forma.
+        assert "n_test" in block, f"{block_name}: falta n_test"
         for metric in ("brier_score", "log_loss", "expected_calibration_error"):
             assert block[metric] >= 0.0
