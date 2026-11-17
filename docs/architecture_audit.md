@@ -1798,3 +1798,132 @@ verde.
   produce el sintoma visible en el dashboard.
 - Ajustable (`max_signal_odds` sigue siendo un valor de `Settings`, no
   hardcodeado) si el usuario, con mas historico, quiere moverlo.
+
+## 17. Fase 16 (sesion 2026-11, continuacion): arranque de "Selecciones"
+
+### 17.1 Pedido del usuario
+
+Nueva seccion para partidos de SELECCIONES nacionales, "igual que con los
+clubes", empezando ya (con un ojo puesto en anhadir Segunda Division de
+las 5 ligas mas adelante si esto funciona bien). Pedido explicito: nunca
+adivinar que ofrece la API de memoria, comprobarlo con datos reales
+primero.
+
+### 17.2 Reconocimiento real contra API-Football (seccion 16 del script)
+
+`scripts/debug_api_football_national_teams.py` (ver commit anterior) se
+corrio de verdad contra `/leagues?country=World` (181 competiciones
+reales devueltas). Hallazgo clave: de TODAS las competiciones de
+selecciones, la UNICA con cobertura de cuotas real (`coverage.odds=True`)
+que corresponde a un combinado "top" bien conocido es **UEFA Nations
+League** (id=5) -- Mundial, Eurocopa y TODOS sus clasificatorios salieron
+con `coverage.odds=False`. `Friendlies` (id=10) tambien tiene
+`coverage.odds=True`, pero mezcla selecciones absolutas con sub-21/sub-17
+bajo el mismo `league.id` sin forma de separarlos por el nombre del
+equipo salvo heuristicas fragiles -- se deja fuera por ahora.
+
+UEFA Nations League, ademas: tiene liga/clasificacion propia (League
+A/B/C/D, estructura mucho mas parecida a una liga de club que un torneo
+de eliminatoria suelto), partidos reales en el momento exacto de
+comprobarlo (Denmark vs Norway, Wales vs Portugal, jornada 6 de "League
+A"/"League B"), y 4 ediciones completas desde 2018 (2018, 2020, 2022,
+2024, mas la 2026 en curso) de historial real para entrenar.
+
+### 17.3 Verificacion tecnica antes de prometer "igual que con los clubes"
+
+- **Jornada actual** (`services/round_service.py`): depende de
+  `Match.matchday` numerico. Las rondas de fase de grupos de Nations
+  League ("League A - 6", "League B - 6") SI terminan en un numero, asi
+  que `parse_matchday` (regex generica ya existente, `fixtures_provider.py`)
+  las reconoce sin cambios. Las rondas de eliminatoria final
+  ("Quarter-finals", "Play-In Final") NO tienen numero -> `matchday=None`
+  -> esos partidos concretos caen al fallback por fecha ya existente
+  (`is_fallback=True`, documentado en el propio modulo) en vez de romper
+  nada -- comportamiento ya preparado para esto, sin tocar codigo.
+- **Ingesta historica**: a diferencia de las 5 ligas de club (mirror
+  `football-data.co.uk`/`openfootball`, `cli.py::update`), NO existe un
+  mirror asi para selecciones -- la UNICA fuente real es API-Football
+  (`ApiFootballMatchProvider`, que ya implementa `DataProvider` de forma
+  generica). `data_service.ingest_matches` ya es agnostica al proveedor,
+  asi que no hizo falta tocarla.
+- **Cuotas/fixtures en vivo**: `update-fixtures`/`update-odds` ya reciben
+  `--competition` como string libre y usan `LEAGUE_IDS`/`COMPETITIONS`
+  por codigo -- funcionan para `uefa_nations_league` sin ningun cambio,
+  en cuanto el codigo este registrado.
+- **Etiquetado de temporada**: API-Football numera cada EDICION de
+  selecciones con un unico anho (nunca "YYYY/YY" como club). Para que la
+  edicion EN CURSO comparta la misma fila de `Season` que
+  `update-fixtures`/`update-odds` generarian en vivo (y no la duplique),
+  el nuevo comando historico convierte cada anho de edicion a traves de
+  la MISMA `season_label_from_date` que ya usa el resto del sistema
+  (`dt.date(year, 9, 1)` -> "2024/25"), nunca un anho suelto.
+
+### 17.4 Lo que se anhadio
+
+- `normalization/competitions.py`: `"uefa_nations_league": ("UEFA Nations
+  League", "Europe")`.
+- `ingestion/api_football/client.py`: `LEAGUE_IDS["uefa_nations_league"]
+  = 5` (ID real confirmado, nunca de memoria) y
+  `INTERNATIONAL_COMPETITION_EDITIONS = {"uefa_nations_league": [2018,
+  2020, 2022, 2024, 2026]}` (bienal desde 2018, nunca anual).
+- `cli.py::update-international` (nuevo comando): recorre TODAS las
+  ediciones conocidas de una competicion de selecciones en una sola
+  ejecucion (el volumen es pequenho, no hace falta la logica de "solo
+  reingerir la temporada en curso" de `update()`), reutilizando
+  `ingest_matches`/`ApiFootballMatchProvider` sin cambios. Mismo patron
+  de recuperacion ante fallo que `update()`/`update-fixtures`
+  (`db.rollback()` entre ediciones, un fallo no tumba las demas).
+- Tests reales (`test_cli_update_international.py`, 3 nuevos): las 5
+  ediciones se ingieren con el `Season.label` correcto, un codigo de
+  competicion desconocido falla limpio (`typer.Exit`), y un fallo en UNA
+  edicion no impide que las demas se ingieran. `test_league_ids_cover_all_five_mvp_leagues`
+  se corrigio para comprobar SUBCONJUNTO (no igualdad exacta): anhadir
+  una competicion nueva a `LEAGUE_IDS` ya no rompe esa prueba por
+  diseño. Suite completa: 452/452.
+- `TeamLogo.tsx`: el recorte circular del escudo (`rounded-full`) se
+  quito (`rounded-lg`) -- pedido aparte del usuario, pero relevante aqui:
+  las banderas/escudos de selecciones tienden a ser MAS rectangulares
+  que los de club, asi que el recorte circular las habria cortado aun
+  peor.
+
+### 17.5 Pendiente (siguiente paso real, pedido al usuario)
+
+Backend ya registrado, pero SIN datos reales todavia. Orden real para
+tener Nations League funcionando de punta a punta:
+
+```
+docker compose exec backend football-edge update-international --competition uefa_nations_league
+docker compose exec backend football-edge update-fixtures --competition uefa_nations_league
+docker compose exec backend football-edge update-odds --competition uefa_nations_league
+docker compose exec backend football-edge train --competition uefa_nations_league
+docker compose exec backend football-edge predict-upcoming --competition uefa_nations_league
+```
+
+Tras esto, `uefa_nations_league` deberia aparecer solo en el selector de
+competiciones de la app (`/competitions` lista lo que haya en BD con
+`enabled=True`, nunca una lista hardcodeada en el frontend -- verificado,
+no hizo falta tocar nada ahi).
+
+### 17.6 Limitaciones honestas que siguen pendientes
+
+- **Entrenar con pocos partidos por edicion** (League A tiene ~6
+  partidos de fase de grupos por equipo y edicion): el feature
+  engineering actual (medias moviles de "ultimos N partidos") esta
+  pensado para el ritmo semanal de una liga de club -- para selecciones,
+  "ultimos 5 partidos" de un equipo puede abarcar 2-3 anhos y varias
+  generaciones de plantilla/seleccionador. No se ha tocado todavia; a
+  vigilar con `ensemble_calibration_report` una vez haya predicciones
+  liquidadas reales.
+- **Friendlies** queda fuera por ahora (mezcla selecciones absolutas con
+  categorias inferiores bajo el mismo `league.id`) -- si mas adelante
+  interesa, habria que filtrar por nombre de equipo (heuristica fragil,
+  nunca garantizada) o buscar si API-Football separa esto de otra forma.
+- **Segunda Division de las 5 ligas** (mencionado por el usuario como
+  posible siguiente paso si esto va bien): mismo patron que esta fase
+  (confirmar IDs/cobertura real de la API antes de nada), pero esas SI
+  tendrian mirror historico tipo football-data.co.uk/openfootball
+  (verificar cobertura real antes de asumirlo) -- mas parecido al flujo
+  de las 5 ligas actuales que a esta seccion.
+- Seccion de frontend "Selecciones" (nav, filtros, dashboard) todavia
+  NO se ha construido -- pendiente de que haya datos reales fluyendo
+  primero (seccion 17.5).

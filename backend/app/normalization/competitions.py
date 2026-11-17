@@ -14,6 +14,14 @@ COMPETITIONS: dict[str, tuple[str, str]] = {
     "bundesliga": ("Bundesliga", "Germany"),
     "serie_a": ("Serie A", "Italy"),
     "ligue_1": ("Ligue 1", "France"),
+    # Seccion "Selecciones" (pedido real del usuario, 2026-11): a
+    # diferencia de las 5 de club, no hay mirror historico tipo
+    # football-data.co.uk -- TODO su historico viene de API-Football
+    # (ver ingestion/api_football/client.py::INTERNATIONAL_COMPETITION_EDITIONS
+    # y cli.py::update_international). "Europe" como pais es una
+    # simplificacion deliberada (compite entre selecciones de toda la
+    # UEFA, no de un unico pais) -- no se usa para logica, solo texto.
+    "uefa_nations_league": ("UEFA Nations League", "Europe"),
 }
 
 
