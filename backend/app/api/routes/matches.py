@@ -14,10 +14,7 @@ from backend.app.db.models.modeling import Prediction
 from backend.app.prediction.anomaly import best_prediction_per_match, compute_anomaly_flags
 from backend.app.schemas.match import MatchFormOut, MatchOut, TeamHeadToHeadOut
 from backend.app.schemas.prediction import PredictionOut
-from backend.app.services.evaluation_service import (
-    fit_edge_reliability_curve,
-    fit_odds_reliability_curve,
-)
+from backend.app.services.evaluation_service import fit_edge_reliability_curve
 
 router = APIRouter(prefix="/matches", tags=["matches"])
 
@@ -151,7 +148,6 @@ def get_head_to_head(
         best = best_prediction_per_match(
             {scheduled_match.id: predictions},
             edge_reliability_curve=fit_edge_reliability_curve(db),
-            odds_reliability_curve=fit_odds_reliability_curve(db),
         ).get(scheduled_match.id)
         scheduled_out = {
             "match_id": scheduled_match.id,
@@ -206,7 +202,6 @@ def get_match_predictions(match_id: int, db: Session = Depends(get_db)) -> list[
     best = best_prediction_per_match(
         {match_id: predictions},
         edge_reliability_curve=fit_edge_reliability_curve(db),
-        odds_reliability_curve=fit_odds_reliability_curve(db),
     ).get(match_id)
     return [
         serialize_prediction(
