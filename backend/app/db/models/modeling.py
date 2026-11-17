@@ -71,6 +71,15 @@ class Prediction(Base):
     fair_odds: Mapped[float] = mapped_column(Float)
     edge: Mapped[float | None] = mapped_column(Float, nullable=True)
     expected_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # EV con el extremo CONSERVADOR del intervalo de incertidumbre
+    # (`uncertainty_low`, nunca `model_probability`) -- pedido real del
+    # usuario ("revision motor 2.0", seccion 5): "si el modelo estima 70%
+    # pero hay mucha incertidumbre, no tratar ese 70% como cifra fiable
+    # para calcular el EV". Misma formula que `expected_value`
+    # (p*cuota-1), con `p=uncertainty_low` en vez de `model_probability` --
+    # NUNCA mas optimista que `expected_value` (uncertainty_low <=
+    # model_probability siempre). `None` solo cuando no hay cuota.
+    risk_adjusted_expected_value: Mapped[float | None] = mapped_column(Float, nullable=True)
     confidence: Mapped[float] = mapped_column(Float)
     data_quality: Mapped[float] = mapped_column(Float)
     explanation: Mapped[dict] = mapped_column(JSON)

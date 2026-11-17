@@ -34,6 +34,13 @@ class PredictionOut(BaseModel):
     fair_odds: float
     edge: float | None
     expected_value: float | None
+    # EV calculado con `uncertainty_low` (extremo conservador del
+    # intervalo, ver uncertainty_low/high mas abajo) en vez de
+    # `model_probability` -- pedido real del usuario ("revision motor
+    # 2.0"): nunca tratar la probabilidad puntual como cifra fiable al
+    # 100% para estimar rentabilidad esperada. `None` solo cuando no hay
+    # cuota de mercado (igual que `expected_value`).
+    risk_adjusted_expected_value: float | None = None
     confidence: float
     data_quality: float
     uncertainty_low: float | None = None

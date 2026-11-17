@@ -11,6 +11,7 @@ const STYLES: Record<AnomalyFlag, string> = {
   SENAL_BAJA_FIABILIDAD: "bg-amber-500/15 text-amber-400 border-amber-500/30",
   OUTLIER: "bg-amber-500/15 text-amber-400 border-amber-500/30",
   HIGH_PROBABILITY_LOW_VALUE: "bg-slate-500/15 text-slate-400 border-slate-500/30",
+  ALTA_INCERTIDUMBRE: "bg-amber-500/15 text-amber-400 border-amber-500/30",
 };
 
 const LABELS: Record<AnomalyFlag, string> = {
@@ -18,6 +19,7 @@ const LABELS: Record<AnomalyFlag, string> = {
   SENAL_BAJA_FIABILIDAD: "BAJA FIABILIDAD",
   OUTLIER: "CUOTA OUTLIER",
   HIGH_PROBABILITY_LOW_VALUE: "PROBABILIDAD ALTA, POCO VALOR",
+  ALTA_INCERTIDUMBRE: "ALTA INCERTIDUMBRE",
 };
 
 export default function AnomalyBadges({ flags }: { flags: AnomalyFlag[] }) {
@@ -35,7 +37,9 @@ export default function AnomalyBadges({ flags }: { flags: AnomalyFlag[] }) {
                 ? "Cuota respaldada por pocas casas o con mucha dispersion entre ellas."
                 : flag === "SENAL_BAJA_FIABILIDAD"
                   ? "Confianza o calidad de datos por debajo del umbral normal."
-                  : "Otra prediccion del mismo partido, en un mercado mutuamente excluyente, tambien supera el 50%."
+                  : flag === "ALTA_INCERTIDUMBRE"
+                    ? "El edge frente al mercado puede ser grande, pero la probabilidad del modelo tiene un margen de error amplio (poca muestra o submodelos en desacuerdo) -- no se trata como una oportunidad fiable."
+                    : "Otra prediccion del mismo partido, en un mercado mutuamente excluyente, tambien supera el 50%."
           }
         >
           {LABELS[flag]}

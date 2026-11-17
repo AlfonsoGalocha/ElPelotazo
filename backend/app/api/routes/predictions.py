@@ -53,6 +53,7 @@ def serialize_prediction(
         "fair_odds": prediction.fair_odds,
         "edge": prediction.edge,
         "expected_value": prediction.expected_value,
+        "risk_adjusted_expected_value": prediction.risk_adjusted_expected_value,
         "confidence": prediction.confidence,
         "data_quality": prediction.data_quality,
         "uncertainty_low": prediction.uncertainty_low,

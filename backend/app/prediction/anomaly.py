@@ -25,6 +25,17 @@ CONTRADICTION = "CONTRADICCION"
 LOW_RELIABILITY = "SENAL_BAJA_FIABILIDAD"
 OUTLIER = "OUTLIER"
 HIGH_PROBABILITY_LOW_VALUE = "HIGH_PROBABILITY_LOW_VALUE"
+# Pedido real del usuario ("revision motor 2.0", Fase 3/5/8): un edge
+# enorme (modelo 80% vs mercado 40%) NO es automaticamente una oportunidad
+# excelente -- puede ser el modelo sobreestimando. `HIGH_PROBABILITY_LOW_VALUE`
+# (arriba) cubre el caso contrario (probabilidad alta, edge CHICO); esta
+# flag cubre el caso que de verdad motivo la revision: la probabilidad en
+# si misma esta poco respaldada (intervalo de incertidumbre ancho, ver
+# prediction/uncertainty.py), independientemente de lo grande que sea el
+# edge resultante -- justo lo que Fase 8 pide mostrar como "Alta
+# incertidumbre" y Fase 6 pide que NUNCA entre en "mejores recomendaciones"
+# por mucho edge bruto que tenga (ver `is_strong_signal` mas abajo).
+HIGH_UNCERTAINTY = "ALTA_INCERTIDUMBRE"
 
 # Umbrales documentados aqui (no en el codigo de forma dispersa), pensados
 # para ser conservadores: senhalar de mas erosiona confianza en las
@@ -32,6 +43,27 @@ HIGH_PROBABILITY_LOW_VALUE = "HIGH_PROBABILITY_LOW_VALUE"
 LOW_RELIABILITY_CONFIDENCE_THRESHOLD = 0.4  # confidence/data_quality por debajo => "baja fiabilidad"
 HIGH_PROBABILITY_THRESHOLD = 0.75  # a partir de aqui se considera "alta probabilidad"
 LOW_VALUE_EDGE_THRESHOLD = 0.03  # edge < 3pp junto a alta probabilidad => "poco valor" (cuota ya refleja lo obvio)
+# Ancho del intervalo de incertidumbre (uncertainty_high - uncertainty_low)
+# a partir del cual se considera "poco respaldada". PRIMER INTENTO con un
+# razonamiento puramente teorico sobre la formula de Wilson (una cifra
+# "redonda" como 0.30) resulto ser demasiado agresivo: medido de verdad
+# sobre un dataset sintetico realista (5 temporadas, 10 equipos,
+# `predict_markets_for_table` end-to-end con ensemble DC+ML), la MEDIANA
+# del ancho de intervalo de TODAS las predicciones ya es ~0.32 -- un
+# umbral de 0.30 marcaria mas de la mitad de las predicciones como
+# "alta incertidumbre", vaciando de golpe "mejores senhales"/"mejor
+# prediccion" en la suite de tests (regresion real detectada: 12 tests
+# que antes pasaban empezaron a fallar). Percentiles reales medidos en ese
+# mismo dataset: p50=0.32, p75=0.43, p90=0.59, p95=0.68, p99=0.81.
+#
+# 0.60 se eligio para marcar solo la cola realmente ancha (~p90 de ese
+# dataset sintetico), no la mitad de las predicciones -- pero sigue siendo
+# una PRIMERA aproximacion: la distribucion real en produccion (datos
+# reales, no Poisson sintetico) puede ser distinta. Si en la app real esta
+# flag aparece demasiado poco o demasiado (nunca se ve, o se ve en casi
+# todo), hay que remedir sobre predicciones reales ya liquidadas y ajustar
+# este numero con esa evidencia, no a ojo otra vez.
+HIGH_UNCERTAINTY_WIDTH_THRESHOLD = 0.60
 
 
 def _group_for_market(market: str) -> tuple[str, ...] | None:
@@ -84,13 +116,31 @@ def compute_anomaly_flags(
     ) < LOW_VALUE_EDGE_THRESHOLD:
         flags.append(HIGH_PROBABILITY_LOW_VALUE)
 
+    # getattr defensivo (no `prediction.uncertainty_low` directo): algunos
+    # llamadores de este modulo pasan objetos duck-typed ligeros en vez de
+    # un `Prediction` real (ver tests), que no siempre definen estos dos
+    # atributos -- ausentes se trata igual que `None` (sin intervalo
+    # calculado), nunca como un error.
+    uncertainty_low = getattr(prediction, "uncertainty_low", None)
+    uncertainty_high = getattr(prediction, "uncertainty_high", None)
+    if (
+        uncertainty_low is not None
+        and uncertainty_high is not None
+        and (uncertainty_high - uncertainty_low) >= HIGH_UNCERTAINTY_WIDTH_THRESHOLD
+    ):
+        flags.append(HIGH_UNCERTAINTY)
+
     return flags
 
 
 def is_strong_signal(flags: list[str]) -> bool:
-    """Una senhal con CONTRADICCION nunca se muestra como "señal fuerte"
-    (seccion 2 del brief: nunca Over y Under como fuertes a la vez)."""
-    return CONTRADICTION not in flags
+    """Una senhal con CONTRADICCION o ALTA_INCERTIDUMBRE nunca se muestra
+    como "señal fuerte" (seccion 2 del brief: nunca Over y Under como
+    fuertes a la vez; seccion 6/8 de la revision "motor 2.0": un edge
+    bruto grande respaldado por una probabilidad de intervalo ancho tampoco
+    es una "mejor recomendacion", por mucho que destaque en el ranking
+    bruto)."""
+    return CONTRADICTION not in flags and HIGH_UNCERTAINTY not in flags
 
 
 def best_prediction_per_match(

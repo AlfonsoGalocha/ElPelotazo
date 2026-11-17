@@ -70,3 +70,47 @@ def test_predict_markets_for_table_populates_uncertainty_bounds_end_to_end():
         assert output.uncertainty_low is not None
         assert output.uncertainty_high is not None
         assert output.uncertainty_low <= output.model_probability <= output.uncertainty_high
+
+
+def test_risk_adjusted_expected_value_is_none_without_market_odds():
+    """Pedido real del usuario ("revision motor 2.0", Fase 4/5): nunca
+    tratar `model_probability` como cifra fiable al 100% para el EV --
+    `risk_adjusted_expected_value` usa `uncertainty_low` en su lugar. Sin
+    cuota de mercado, igual que `expected_value`, debe quedar `None`."""
+    matches = generate_synthetic_matches(n_teams=10, n_seasons=2, seed=99)
+    table = build_match_feature_table(matches)
+    model = DixonColesModel().fit(table)
+
+    outputs = predict_markets_for_table(table.head(10), model)
+    for output in outputs:
+        assert output.expected_value is None
+        assert output.risk_adjusted_expected_value is None
+
+
+def test_risk_adjusted_expected_value_never_more_optimistic_than_expected_value():
+    """`uncertainty_low <= model_probability` siempre -- con la misma
+    cuota, el EV ajustado al riesgo nunca puede ser mayor que el EV
+    normal."""
+    matches = generate_synthetic_matches(n_teams=10, n_seasons=2, seed=99)
+    table = build_match_feature_table(matches)
+    model = DixonColesModel().fit(table)
+
+    rows = table.head(10)
+    market_quotes = {
+        (int(row["match_id"]), market_key): {
+            "market_probability": 0.4,
+            "market_odds": 2.2,
+            "vig_removed": True,
+            "bookmakers_used": 5,
+        }
+        for _, row in rows.iterrows()
+        for market_key in ("home_win", "draw", "away_win")
+    }
+
+    outputs = predict_markets_for_table(rows, model, market_quotes=market_quotes)
+    assert any(o.expected_value is not None for o in outputs)
+    for output in outputs:
+        if output.expected_value is None:
+            continue
+        assert output.risk_adjusted_expected_value is not None
+        assert output.risk_adjusted_expected_value <= output.expected_value + 1e-9
