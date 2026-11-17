@@ -26,6 +26,7 @@ from backend.app.prediction.anomaly import (
     OUTLIER,
     best_prediction_per_match,
     compute_anomaly_flags,
+    is_strong_signal,
 )
 from backend.app.services.data_service import ingest_matches
 from backend.app.services.evaluation_service import settle_finished_predictions
@@ -245,8 +246,12 @@ def test_finished_match_disappears_from_home_and_appears_in_history():
 
 
 def test_best_prediction_per_match_selected_by_signal_score_not_raw_probability():
-    """Seccion 1: "mejor prediccion" es la de mayor `signal_score`, nunca
-    simplemente la de mayor `model_probability`/edge/cuota en bruto."""
+    """Seccion 1: "mejor prediccion" es la de mayor `signal_score` ENTRE
+    LAS QUE NO TIENEN ANOMALIAS (nunca simplemente la de mayor
+    `model_probability`/edge/cuota en bruto, y nunca la de mayor score a
+    secas si tiene una anomalia -- revision "motor 2.0", Fase 6: un edge
+    enorme con la probabilidad poco respaldada, `ALTA_INCERTIDUMBRE`, no
+    puede ser "mejor prediccion" por mucho que puntue alto)."""
     match_id = _setup_finished_match("settlement_test_league_f", home_goals=2, away_goals=0, seed=6)
     with session_scope() as db:
         predictions = db.query(Prediction).filter(Prediction.match_id == match_id).all()
@@ -254,8 +259,12 @@ def test_best_prediction_per_match_selected_by_signal_score_not_raw_probability(
         if not with_market:
             return  # sin cuotas de mercado en este seed, nada que comprobar
         best = best_prediction_per_match({match_id: predictions}).get(match_id)
+        strong = [p for p in with_market if is_strong_signal(compute_anomaly_flags(p, predictions))]
+        if not strong:
+            assert best is None
+            return
+        max_score = max(p.signal_score or 0.0 for p in strong)
         assert best is not None
-        max_score = max(p.signal_score or 0.0 for p in with_market)
         assert best.signal_score == max_score
 
 

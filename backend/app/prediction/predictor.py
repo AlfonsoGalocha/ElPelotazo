@@ -69,6 +69,7 @@ class MarketPredictionOutput:
     calibrated_probability: float | None = None
     uncertainty_low: float | None = None
     uncertainty_high: float | None = None
+    risk_adjusted_expected_value: float | None = None
 
 
 def predict_markets_for_table(
@@ -191,6 +192,9 @@ def predict_markets_for_table(
                     vig_removed=vig_removed,
                     edge=compute_edge(float(p_model[i]), market_probability),
                     expected_value=compute_expected_value(float(p_model[i]), market_odds),
+                    risk_adjusted_expected_value=compute_expected_value(
+                        uncertainty_low, market_odds
+                    ),
                     confidence=confidence,
                     data_quality=data_quality,
                     explanation=explanation,
@@ -277,6 +281,9 @@ def predict_secondary_markets_for_table(
                         ),
                         edge=compute_edge(float(probs[i]), market_probability),
                         expected_value=compute_expected_value(float(probs[i]), market_odds),
+                        risk_adjusted_expected_value=compute_expected_value(
+                            uncertainty_low, market_odds
+                        ),
                         confidence=confidence,
                         data_quality=data_quality,
                         explanation=explanation,

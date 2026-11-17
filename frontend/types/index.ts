@@ -111,6 +111,10 @@ export interface Prediction {
   fair_odds: number;
   edge: number | null;
   expected_value: number | null;
+  // EV calculado con el extremo conservador del intervalo de
+  // incertidumbre (uncertainty_low), no con model_probability -- nunca
+  // mas optimista que expected_value. Ver backend/app/prediction/anomaly.py.
+  risk_adjusted_expected_value: number | null;
   confidence: number;
   data_quality: number;
   uncertainty_low: number | null;
@@ -142,7 +146,11 @@ export type AnomalyFlag =
   | "CONTRADICCION"
   | "SENAL_BAJA_FIABILIDAD"
   | "OUTLIER"
-  | "HIGH_PROBABILITY_LOW_VALUE";
+  | "HIGH_PROBABILITY_LOW_VALUE"
+  // Revision "motor 2.0": edge bruto grande con la probabilidad del
+  // modelo poco respaldada (intervalo de incertidumbre ancho) -- nunca
+  // aparece entre "mejores recomendaciones" aunque el edge sea enorme.
+  | "ALTA_INCERTIDUMBRE";
 
 // Fase 4: prediccion de un partido YA FINALIZADO, con el resultado real
 // (liquidado por backend/app/services/evaluation_service.py, nunca

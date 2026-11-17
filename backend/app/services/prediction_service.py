@@ -250,6 +250,7 @@ def generate_predictions_for_competition(
             calibrated_probability=output.calibrated_probability,
             uncertainty_low=output.uncertainty_low,
             uncertainty_high=output.uncertainty_high,
+            risk_adjusted_expected_value=output.risk_adjusted_expected_value,
         )
         # `signal_score` se calcula y CONGELA aqui, con los datos de mercado
         # vigentes en este momento (seccion 9 del brief: snapshot inmutable).
