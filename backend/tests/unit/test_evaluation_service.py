@@ -15,10 +15,12 @@ from backend.app.normalization.competitions import COMPETITIONS
 from backend.app.services.data_service import ingest_matches
 from backend.app.services.evaluation_service import (
     MIN_SETTLED_FOR_EDGE_RELIABILITY,
+    MIN_SETTLED_FOR_LONGSHOT_CALIBRATION,
     MIN_SETTLED_FOR_ODDS_RELIABILITY,
     MIN_SETTLED_FOR_TRACK_RECORD,
     evaluate_settled_predictions,
     fit_edge_reliability_curve,
+    fit_longshot_calibration_curve,
     fit_odds_reliability_curve,
     market_track_records,
     settle_finished_predictions,
@@ -593,3 +595,56 @@ def test_fit_odds_reliability_curve_decreases_hit_rate_prediction_with_odds():
     favorite_hit_rate = curve.predict([favorite_odds])[0]
     longshot_hit_rate = curve.predict([longshot_odds])[0]
     assert longshot_hit_rate < favorite_hit_rate
+
+
+# fit_longshot_calibration_curve (seccion 15 de docs/architecture_audit.md
+# -- pedido explicito del usuario tras el rollback de emergencia del techo
+# de cuota: "quiero que el modelo sea realista tambien con las
+# predicciones". A diferencia de `fit_odds_reliability_curve` (que usaba
+# ROI promedio, negativo en TODAS las cuotas por el vig, y colapsaba el
+# ranking), esta recalibra la PROBABILIDAD misma -- acotada en [0,1],
+# nunca un ROI -- y SOLO en la cola de cuota alta.)
+
+
+def test_fit_longshot_calibration_curve_is_none_below_minimum_sample():
+    with _isolated_db_session() as db:
+        rows = [(0.30, 0.05, True)] * (MIN_SETTLED_FOR_LONGSHOT_CALIBRATION - 1)
+        _seed_settled_predictions_with_edge(db, "longshot-calibration-too-few", rows)
+        db.commit()
+        curve = fit_longshot_calibration_curve(db)
+    assert curve is None
+
+
+def test_fit_longshot_calibration_curve_ignores_rows_below_the_odds_threshold():
+    """Solo pool liquidaciones con cuota >= `LONGSHOT_ODDS_THRESHOLD` --
+    una muestra enorme de favoritos (cuota baja) nunca debe bastar por
+    si sola para ajustar esta curva."""
+    with _isolated_db_session() as db:
+        # model_probability=0.65, edge=0.05 -> market_probability=0.60 ->
+        # cuota ~1.67, muy por debajo del umbral: TODAS excluidas.
+        rows = [(0.65, 0.05, True)] * (MIN_SETTLED_FOR_LONGSHOT_CALIBRATION * 3)
+        _seed_settled_predictions_with_edge(db, "longshot-calibration-wrong-odds", rows)
+        db.commit()
+        curve = fit_longshot_calibration_curve(db)
+    assert curve is None
+
+
+def test_fit_longshot_calibration_curve_increases_hit_rate_prediction_with_probability():
+    """Mismo patron que la evidencia real de la seccion 13.2, restringido
+    a la cola: probabilidad dicha mas baja acierta menos que probabilidad
+    dicha mas alta -- la curva debe reflejarlo (nunca al reves, por
+    construccion `increasing=True`)."""
+    with _isolated_db_session() as db:
+        rows = (
+            [(0.15, 0.05, True)] * 3
+            + [(0.15, 0.05, False)] * 27  # cuota 10.0: ~10% acierto
+            + [(0.30, 0.05, True)] * 9
+            + [(0.30, 0.05, False)] * 21  # cuota 4.0: ~30% acierto
+        )
+        _seed_settled_predictions_with_edge(db, "longshot-calibration-increasing", rows)
+        db.commit()
+        curve = fit_longshot_calibration_curve(db)
+    assert curve is not None
+    low_probability_hit_rate = curve.predict([0.15])[0]
+    high_probability_hit_rate = curve.predict([0.30])[0]
+    assert low_probability_hit_rate < high_probability_hit_rate

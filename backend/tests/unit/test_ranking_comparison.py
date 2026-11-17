@@ -12,7 +12,11 @@ from __future__ import annotations
 
 import datetime as dt
 
-from backend.app.backtesting.ranking_comparison import compare_ranking_strategies
+from backend.app.backtesting.ranking_comparison import (
+    WALK_FORWARD_STRATEGIES,
+    compare_ranking_strategies,
+    compare_ranking_strategies_walk_forward,
+)
 from backend.app.db.models.modeling import Prediction, PredictionResult
 
 
@@ -136,3 +140,147 @@ def test_compare_ranking_strategies_reports_empty_when_nothing_settled_with_mark
     report = compare_ranking_strategies([], top_n_values=(5,))
     assert report.n_settled_with_market == 0
     assert report.slices == []
+
+
+# compare_ranking_strategies_walk_forward (seccion 15 de
+# docs/architecture_audit.md): a diferencia de compare_ranking_strategies
+# (valido sin walk-forward para v1/v2, que no tienen ningun parametro
+# ajustado), las estrategias con curva (`v2_edge_cap`, produccion actual;
+# `v2_edge_cap_longshot`, candidata pendiente de validar) exigen ajustar
+# cada curva SOLO con liquidaciones estrictamente anteriores a cada
+# prediccion evaluada -- de lo contrario la comparacion tendria leakage
+# de validacion (la curva "veria" el resultado que esta puntuando).
+
+
+def test_compare_ranking_strategies_walk_forward_is_empty_below_minimum_sample():
+    base = dt.datetime(2024, 1, 1)
+    pairs = [
+        (_prediction(i), _result(True), base + dt.timedelta(days=i)) for i in range(10)
+    ]
+    report = compare_ranking_strategies_walk_forward(pairs, min_train_n=30)
+    assert report.slices == []
+    assert report.n_settled_with_market == 10
+
+
+def test_compare_ranking_strategies_walk_forward_reports_all_four_strategies():
+    base = dt.datetime(2024, 1, 1)
+    pairs = [
+        (
+            _prediction(i, edge=0.05, market_odds=2.0),
+            _result(i % 2 == 0),
+            base + dt.timedelta(days=i),
+        )
+        for i in range(40)
+    ]
+    report = compare_ranking_strategies_walk_forward(pairs, min_train_n=30, top_n_values=(5,))
+    strategies = {s.strategy for s in report.slices}
+    assert strategies == set(WALK_FORWARD_STRATEGIES)
+    # Solo las liquidaciones DESPUES de min_train_n se evaluan (40 - 30 = 10).
+    all_slice = next(s for s in report.slices if s.strategy == "v2" and s.top_n == "all")
+    assert all_slice.n_bets == 10
+
+
+def test_compare_ranking_strategies_walk_forward_never_fits_curve_on_future_or_self_data(
+    monkeypatch,
+):
+    """Verificacion directa (espia la funcion de ajuste real, no solo
+    infiere de los resultados agregados) de que cada ajuste de la curva
+    de edge recibe EXCLUSIVAMENTE observaciones estrictamente anteriores
+    a la prediccion evaluada -- nunca la propia prediccion ni ninguna
+    posterior cronologicamente."""
+    import backend.app.backtesting.ranking_comparison as module
+
+    real_fit = module.fit_edge_reliability_curve_from_observations
+    seen_lengths: list[int] = []
+
+    def _spy(edge_pp, outcome):
+        seen_lengths.append(len(edge_pp))
+        return real_fit(edge_pp, outcome)
+
+    monkeypatch.setattr(module, "fit_edge_reliability_curve_from_observations", _spy)
+
+    base = dt.datetime(2024, 1, 1)
+    pairs = [
+        (
+            _prediction(i, edge=0.05, market_odds=2.0),
+            _result(i % 2 == 0),
+            base + dt.timedelta(days=i),
+        )
+        for i in range(70)
+    ]
+    compare_ranking_strategies_walk_forward(pairs, min_train_n=30, top_n_values=(5,))
+
+    # Primer ajuste al llegar al indice 30 (0-indexado, i==min_train_n):
+    # debe usar EXACTAMENTE las 30 liquidaciones anteriores -- ni 31 (que
+    # incluiria la propia evaluada) ni mas (que incluiria el futuro).
+    # Segundo ajuste (WALK_FORWARD_REFIT_EVERY=25) al llegar a i=50: debe
+    # usar exactamente las 50 anteriores.
+    assert seen_lengths == [30, 50]
+
+
+def test_compare_ranking_strategies_walk_forward_never_fits_longshot_curve_on_future_or_self_data(
+    monkeypatch,
+):
+    """Misma verificacion directa que la prueba de espia del techo de
+    edge, aplicada a `fit_longshot_calibration_curve_from_observations`
+    -- solo se alimenta con la cola (cuota >= `LONGSHOT_ODDS_THRESHOLD`)
+    de liquidaciones estrictamente anteriores."""
+    import backend.app.backtesting.ranking_comparison as module
+
+    real_fit = module.fit_longshot_calibration_curve_from_observations
+    seen_lengths: list[int] = []
+
+    def _spy(model_probability, outcome):
+        seen_lengths.append(len(model_probability))
+        return real_fit(model_probability, outcome)
+
+    monkeypatch.setattr(module, "fit_longshot_calibration_curve_from_observations", _spy)
+
+    base = dt.datetime(2024, 1, 1)
+    # Todas con cuota 5.0 (>= LONGSHOT_ODDS_THRESHOLD=4.0): cada fila
+    # cuenta para el historico de la cola.
+    pairs = [
+        (
+            _prediction(i, edge=0.05, market_odds=5.0),
+            _result(i % 2 == 0),
+            base + dt.timedelta(days=i),
+        )
+        for i in range(70)
+    ]
+    compare_ranking_strategies_walk_forward(pairs, min_train_n=30, top_n_values=(5,))
+
+    assert seen_lengths == [30, 50]
+
+
+def test_compare_ranking_strategies_walk_forward_longshot_curve_ignores_non_longshot_priors(
+    monkeypatch,
+):
+    """El historico de la curva de la cola se acumula SOLO con cuota >=
+    `LONGSHOT_ODDS_THRESHOLD` -- liquidaciones de favoritos (cuota baja)
+    no deben contar para alcanzar el minimo de la cola, aunque si
+    cuenten para el minimo general de filas evaluadas."""
+    import backend.app.backtesting.ranking_comparison as module
+
+    real_fit = module.fit_longshot_calibration_curve_from_observations
+    seen_lengths: list[int] = []
+
+    def _spy(model_probability, outcome):
+        seen_lengths.append(len(model_probability))
+        return real_fit(model_probability, outcome)
+
+    monkeypatch.setattr(module, "fit_longshot_calibration_curve_from_observations", _spy)
+
+    base = dt.datetime(2024, 1, 1)
+    # Cuota 1.5 (favorito, por debajo del umbral de la cola): nunca debe
+    # alimentar la curva de longshot, por muchas filas que haya.
+    pairs = [
+        (
+            _prediction(i, edge=0.05, market_odds=1.5),
+            _result(True),
+            base + dt.timedelta(days=i),
+        )
+        for i in range(70)
+    ]
+    compare_ranking_strategies_walk_forward(pairs, min_train_n=30, top_n_values=(5,))
+
+    assert seen_lengths == []  # nunca hay suficiente muestra de COLA para ajustarla

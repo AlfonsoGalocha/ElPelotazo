@@ -42,6 +42,7 @@ fuera un factor que de todas formas no es el que se esta evaluando aqui.
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -51,7 +52,13 @@ from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.models.calibration.metrics import brier_score, log_loss_score
-from backend.app.prediction.ranking import signal_score, signal_score_v2
+from backend.app.prediction.ranking import (
+    LONGSHOT_ODDS_THRESHOLD,
+    fit_edge_reliability_curve_from_observations,
+    fit_longshot_calibration_curve_from_observations,
+    signal_score,
+    signal_score_v2,
+)
 
 TOP_N_VALUES: tuple[int, ...] = (5, 10, 20, 50, 100)
 
@@ -173,3 +180,136 @@ def load_settled_predictions(
     if market:
         query = query.filter(Prediction.market == market)
     return query.all()
+
+
+def load_settled_predictions_with_kickoff(
+    db: Session, competition_code: str | None = None, market: str | None = None
+) -> list[tuple[Prediction, PredictionResult, dt.datetime]]:
+    """Igual que `load_settled_predictions`, pero con `Match.kickoff_utc`
+    incluido -- necesario para `compare_ranking_strategies_walk_forward`,
+    que debe ordenar cronologicamente antes de poder ajustar cada curva
+    SOLO con lo anterior a cada punto evaluado."""
+    query = (
+        db.query(Prediction, PredictionResult, Match.kickoff_utc)
+        .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
+        .join(Match, Match.id == Prediction.match_id)
+        .join(Competition, Competition.id == Match.competition_id)
+    )
+    if competition_code:
+        query = query.filter(Competition.code == competition_code)
+    if market:
+        query = query.filter(Prediction.market == market)
+    return query.all()
+
+
+# Cada cuantas liquidaciones nuevas se reajustan las curvas dentro del
+# walk-forward: reajustar en CADA fila seria fiel pero carisimo sin
+# necesidad (IsotonicRegression es barato, pero son miles de ajustes);
+# reajustar cada N imita ademas como funciona produccion de verdad (la
+# curva se reajusta por REQUEST, no por prediccion individual) sin dejar
+# de ser walk-forward real: ninguna liquidacion usada para evaluar entra
+# jamas en la curva que la puntua.
+WALK_FORWARD_REFIT_EVERY = 25
+
+WALK_FORWARD_STRATEGIES: tuple[str, ...] = ("v1", "v2", "v2_edge_cap", "v2_edge_cap_longshot")
+
+
+def compare_ranking_strategies_walk_forward(
+    settled_with_kickoff: list[tuple[Prediction, PredictionResult, dt.datetime]],
+    min_train_n: int = 30,
+    top_n_values: tuple[int, ...] = TOP_N_VALUES,
+) -> RankingComparisonReport:
+    """Mismo proposito que `compare_ranking_strategies`, pero para
+    estrategias que SI dependen de una curva ajustada sobre liquidaciones
+    (`v2_edge_cap` = produccion actual, seccion 12;
+    `v2_edge_cap_longshot` = candidata pendiente de validar, seccion 15)
+    -- a diferencia de v1/v2 (formulas sin ningun parametro ajustado,
+    donde `compare_ranking_strategies` ya es valido sin walk-forward),
+    aqui ajustar la curva con el conjunto COMPLETO seria leakage de
+    validacion: la curva "veria" el resultado de la propia prediccion
+    que esta puntuando.
+
+    Metodologia real: se ordena TODO cronologicamente por
+    `Match.kickoff_utc`, y cada prediccion se puntua SIEMPRE con una
+    curva ajustada SOLO con liquidaciones de partidos anteriores al suyo
+    (nunca con el futuro, nunca con ella misma) -- las primeras
+    `min_train_n` liquidaciones nunca se evaluan (no hay "antes" todavia
+    con el minimo exigido por `fit_edge_reliability_curve`/
+    `fit_longshot_calibration_curve`), exactamente como
+    `backtesting/ensemble_engine.py` excluye los folds sin
+    `min_train_seasons` suficientes.
+    """
+    with_market = [
+        (p, r, k) for p, r, k in settled_with_kickoff if p.market_odds is not None
+    ]
+    with_market.sort(key=lambda row: row[2])  # cronologico, nunca por id/orden de insercion
+    outcomes = {p.id: bool(r.outcome) for p, r, _k in with_market}
+
+    report = RankingComparisonReport(n_settled_with_market=len(with_market))
+    if len(with_market) <= min_train_n:
+        return report  # ni un solo punto queda fuera de la ventana de entrenamiento minima
+
+    scores: dict[str, dict[int, float]] = {name: {} for name in WALK_FORWARD_STRATEGIES}
+    evaluated: list[Prediction] = []
+
+    prior_edge_pp: list[float] = []
+    prior_edge_outcome: list[float] = []
+    prior_longshot_probability: list[float] = []
+    prior_longshot_outcome: list[float] = []
+    edge_curve = None
+    longshot_curve = None
+
+    for i, (prediction, result, _kickoff) in enumerate(with_market):
+        if i >= min_train_n:
+            if edge_curve is None or i % WALK_FORWARD_REFIT_EVERY == 0:
+                edge_curve = (
+                    fit_edge_reliability_curve_from_observations(
+                        np.array(prior_edge_pp), np.array(prior_edge_outcome)
+                    )
+                    if len(prior_edge_pp) >= min_train_n
+                    else None
+                )
+                longshot_curve = (
+                    fit_longshot_calibration_curve_from_observations(
+                        np.array(prior_longshot_probability), np.array(prior_longshot_outcome)
+                    )
+                    if len(prior_longshot_probability) >= min_train_n
+                    else None
+                )
+
+            evaluated.append(prediction)
+            scores["v1"][prediction.id] = signal_score(prediction)
+            scores["v2"][prediction.id] = signal_score_v2(prediction)
+            scores["v2_edge_cap"][prediction.id] = signal_score_v2(
+                prediction, edge_reliability_curve=edge_curve
+            )
+            scores["v2_edge_cap_longshot"][prediction.id] = signal_score_v2(
+                prediction,
+                edge_reliability_curve=edge_curve,
+                longshot_calibration_curve=longshot_curve,
+            )
+
+        # Esta liquidacion pasa a formar parte del "pasado" SOLO despues
+        # de puntuarse (si le tocaba) -- nunca antes, o se puntuaria con
+        # una curva que ya la conoce.
+        if prediction.edge is not None:
+            prior_edge_pp.append(prediction.edge * 100.0)
+            prior_edge_outcome.append(float(result.outcome))
+        if prediction.market_odds >= LONGSHOT_ODDS_THRESHOLD:
+            prior_longshot_probability.append(prediction.model_probability)
+            prior_longshot_outcome.append(float(result.outcome))
+
+    if not evaluated:
+        return report
+
+    for strategy in WALK_FORWARD_STRATEGIES:
+        strategy_scores = scores[strategy]
+        ranked = sorted(evaluated, key=lambda p: strategy_scores[p.id], reverse=True)
+        for n in top_n_values:
+            top_slice = ranked[:n]
+            if not top_slice:
+                continue
+            report.slices.append(_slice_metrics(strategy, str(n), top_slice, outcomes))
+        report.slices.append(_slice_metrics(strategy, "all", ranked, outcomes))
+
+    return report

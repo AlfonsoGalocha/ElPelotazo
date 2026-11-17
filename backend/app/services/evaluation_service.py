@@ -47,6 +47,12 @@ from backend.app.features.goals import build_match_feature_table
 from backend.app.market.clv import compute_clv
 from backend.app.market.consensus import compute_market_consensus
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS, label_for_market
+from backend.app.prediction.ranking import (
+    LONGSHOT_ODDS_THRESHOLD,
+    fit_edge_reliability_curve_from_observations,
+    fit_longshot_calibration_curve_from_observations,
+    fit_odds_reliability_curve_from_observations,
+)
 from backend.app.prediction.secondary_markets import (
     SECONDARY_MARKET_DEFINITIONS,
     label_for_secondary_market,
@@ -428,10 +434,7 @@ def fit_edge_reliability_curve(db: Session) -> IsotonicRegression | None:
 
     edge_pp = np.array([p.edge * 100.0 for p, _r in rows])
     outcome = np.array([float(r.outcome) for _p, r in rows])
-
-    model = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=False, out_of_bounds="clip")
-    model.fit(edge_pp, outcome)
-    return model
+    return fit_edge_reliability_curve_from_observations(edge_pp, outcome)
 
 
 MIN_SETTLED_FOR_ODDS_RELIABILITY = 30  # mismo criterio que los otros MIN_SETTLED_FOR_*
@@ -495,7 +498,69 @@ def fit_odds_reliability_curve(db: Session) -> IsotonicRegression | None:
 
     market_odds = np.array([p.market_odds for p, _r in rows])
     outcome = np.array([float(r.outcome) for _p, r in rows])
+    return fit_odds_reliability_curve_from_observations(market_odds, outcome)
 
-    model = IsotonicRegression(y_min=0.0, y_max=1.0, increasing=False, out_of_bounds="clip")
-    model.fit(market_odds, outcome)
-    return model
+
+MIN_SETTLED_FOR_LONGSHOT_CALIBRATION = 30  # mismo criterio que los otros MIN_SETTLED_FOR_*
+
+
+def fit_longshot_calibration_curve(
+    db: Session, odds_threshold: float = LONGSHOT_ODDS_THRESHOLD
+) -> IsotonicRegression | None:
+    """Pedido explicito del usuario tras el rollback de emergencia del
+    techo de cuota (seccion 14): "quiero que el modelo sea realista
+    tambien con las predicciones, no solo [que mida] mucha diferencia de
+    edge". El techo de cuota fallaba porque usaba el ROI PROMEDIO de un
+    bucket entero (que hereda el vig del mercado, negativo en TODAS las
+    cuotas observadas) como techo -- esto es distinto: recalibra la
+    PROBABILIDAD del modelo (`model_probability -> resultado real`,
+    `increasing=True`, igual direccion que una calibracion real), nunca
+    un ROI, y SOLO en la cola de cuota alta
+    (`market_odds >= odds_threshold`) donde la seccion 13 encontro
+    sobreconfianza real:
+
+        cuota 1-2:  model_prob 66.0% vs hit rate real 68.2% (bien calibrado)
+        cuota 2-3:  model_prob 41.0% vs hit rate real 38.7%
+        cuota 3-4:  model_prob 28.4% vs hit rate real 28.4% (bien calibrado)
+        cuota 4-6:  model_prob 21.7% vs hit rate real 13.9%  (sobreconfianza clara)
+        cuota 6+:   model_prob 15.8% vs hit rate real  3.6%  (sobreconfianza severa)
+
+    Por que esto NO repite el error del techo de cuota: una curva de
+    calibracion de probabilidad esta acotada en [0,1] y no mezcla el vig
+    del mercado (nunca multiplica por `market_odds` hasta DESPUES, en
+    `reality_capped_expected_value`) -- no hereda el sesgo "el ROI medio
+    es negativo en todas partes" que colapsaba el ranking entero.
+
+    Por que se restringe a la cola (`market_odds >= odds_threshold`) y
+    no a todo el rango: la seccion 11.5 ya midio, con
+    `ensemble_calibration_report` (walk-forward, sin fuga), que calibrar
+    la probabilidad en el rango COMPLETO empeora Brier/ECE en los 4
+    mercados centrales de LaLiga -- esta curva es deliberadamente mas
+    estrecha, ajustada SOLO donde hay evidencia real de sobreconfianza,
+    para no repetir ese resultado negativo.
+
+    NUNCA activada en produccion todavia (ver
+    `prediction/ranking.py::LONGSHOT_ODDS_THRESHOLD`): solo construida y
+    testeada, pendiente de validacion walk-forward real en
+    `backtesting/ranking_comparison.py` antes de conectarse a
+    `signal_score_v2`.
+
+    `None` si hay menos de `MIN_SETTLED_FOR_LONGSHOT_CALIBRATION`
+    liquidaciones con cuota >= `odds_threshold` -- la cola tiene mucha
+    menos muestra que el total (n=107 de 1133 en la evidencia real para
+    cuota >=4), asi que este umbral puede alcanzarse mas tarde que los
+    otros `MIN_SETTLED_FOR_*`.
+    """
+    rows = (
+        db.query(Prediction, PredictionResult)
+        .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
+        .filter(Prediction.market_odds.isnot(None))
+        .filter(Prediction.market_odds >= odds_threshold)
+        .all()
+    )
+    if len(rows) < MIN_SETTLED_FOR_LONGSHOT_CALIBRATION:
+        return None
+
+    model_probability = np.array([p.model_probability for p, _r in rows])
+    outcome = np.array([float(r.outcome) for _p, r in rows])
+    return fit_longshot_calibration_curve_from_observations(model_probability, outcome)
