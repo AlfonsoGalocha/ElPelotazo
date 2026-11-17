@@ -5,6 +5,7 @@ import numpy as np
 from backend.app.backtesting.metrics import (
     market_strategy_metrics,
     performance_by_edge_bucket,
+    performance_by_odds_bucket,
 )
 
 
@@ -65,3 +66,46 @@ def test_market_strategy_metrics_still_works_alongside_edge_buckets():
     result = market_strategy_metrics(y_true, y_prob, market_odds)
     assert result is not None
     assert "roi" in result
+
+
+def test_performance_by_odds_bucket_groups_by_odds_range():
+    """Bucket 1.0-2.0 (favoritos): construido para acertar casi siempre.
+    Bucket 6.0+ (longshots): construido para acertar casi nunca -- al
+    reves que un bucket de edge, donde el dataset sintetico de arriba
+    construye el hit rate en funcion del EDGE, aqui se construye en
+    funcion de la CUOTA en si, para comprobar `performance_by_odds_bucket`
+    de forma verificable."""
+    rng = np.random.default_rng(7)
+    n = 2000
+    market_odds = rng.choice([1.5, 2.5, 3.5, 5.0, 8.0], size=n)
+    true_hit_rate = 1.0 / market_odds  # favoritos aciertan mas, longshots menos
+    y_true = rng.uniform(0, 1, size=n) < true_hit_rate
+    model_probability = np.clip(true_hit_rate + 0.05, 0.01, 0.99)
+
+    buckets = performance_by_odds_bucket(y_true, model_probability, market_odds)
+    ranges = {b["odds_range"] for b in buckets}
+    assert ranges == {"1.0-2.0", "2.0-3.0", "3.0-4.0", "4.0-6.0", "6.0+"}
+    assert sum(b["n"] for b in buckets) == n
+
+    by_range = {b["odds_range"]: b for b in buckets}
+    assert by_range["1.0-2.0"]["hit_rate"] > by_range["6.0+"]["hit_rate"]
+
+
+def test_performance_by_odds_bucket_empty_without_valid_odds():
+    y_true = np.array([True, False, True])
+    y_prob = np.array([0.6, 0.4, 0.7])
+    market_odds = np.array([np.nan, np.nan, np.nan])
+    assert performance_by_odds_bucket(y_true, y_prob, market_odds) == []
+
+
+def test_performance_by_odds_bucket_reports_brier_and_roi_per_bucket():
+    y_true = np.array([True, True, False, False])
+    y_prob = np.array([0.60, 0.60, 0.60, 0.60])
+    market_odds = np.array([2.5, 2.5, 2.5, 2.5])
+    buckets = performance_by_odds_bucket(y_true, y_prob, market_odds)
+    assert len(buckets) == 1
+    bucket = buckets[0]
+    assert bucket["odds_range"] == "2.0-3.0"
+    assert bucket["n"] == 4
+    assert "brier_score" in bucket and "roi" in bucket and "hit_rate" in bucket
+    assert bucket["hit_rate"] == 0.5

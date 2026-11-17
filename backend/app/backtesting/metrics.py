@@ -25,6 +25,16 @@ PROBABILITY_BUCKETS = [(0.0, 0.5), (0.5, 0.55), (0.55, 0.6), (0.6, 0.65), (0.65,
 # El ultimo bucket es abierto (20+) para no descartar los edges extremos.
 EDGE_BUCKETS_PP = [(0.0, 5.0), (5.0, 10.0), (10.0, 15.0), (15.0, 20.0), (20.0, float("inf"))]
 
+# Cuota de mercado de la seleccion predicha (seccion 12 de
+# docs/architecture_audit.md, "favorite-longshot bias": pedido real del
+# usuario tras ver "victoria local" a cuota 5.50/6.00 destacadas como
+# mejor oportunidad -- ¿las cuotas altas (selecciones poco probables)
+# realmente aciertan lo que su propio edge sugiere, o los mercados de
+# apuestas sobrevaloran sistematicamente a los "longshots" tambien en
+# este sistema? El ultimo bucket es abierto para no descartar cuotas
+# extremas.
+ODDS_BUCKETS = [(1.0, 2.0), (2.0, 3.0), (3.0, 4.0), (4.0, 6.0), (6.0, float("inf"))]
+
 
 def model_quality_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
     return {
@@ -108,6 +118,48 @@ def performance_by_edge_bucket(y_true: np.ndarray, y_prob: np.ndarray, market_od
                 "edge_range_pp": f"{low:.0f}-{high:.0f}" if high != float("inf") else f"{low:.0f}+",
                 "n": n,
                 "average_edge_pp": float(np.mean(edge_pp[mask])),
+                "hit_rate": float(np.mean(y_t)),
+                "brier_score": brier_score(y_t, y_p),
+                "roi": float(pnl.sum() / n),
+            }
+        )
+    return buckets
+
+
+def performance_by_odds_bucket(
+    y_true: np.ndarray, y_prob: np.ndarray, market_odds: np.ndarray
+) -> list[dict]:
+    """Comportamiento historico REAL por rango de CUOTA de la seleccion
+    predicha (no de edge) -- pedido real del usuario tras ver "victoria
+    local" a cuota 5.50/6.00 destacadas como mejor oportunidad pese a
+    `model_probability` bajo (33.5%, 28.3%): "una cuota 5 o una cuota 6
+    no es una buena prediccion". Esto comprueba si existe
+    "favorite-longshot bias" EN ESTE SISTEMA -- los mercados de apuestas
+    sobrevaloran sistematicamente a los equipos/selecciones poco
+    probables en la literatura general; si aqui el hit rate/ROI real a
+    cuota alta es claramente peor que a cuota baja AUNQUE el edge
+    nominal parezca grande, es evidencia de que el EV calculado con el
+    edge por si solo no basta, sin asumirlo de antemano."""
+    valid = ~np.isnan(market_odds)
+    if valid.sum() == 0:
+        return []
+
+    y_true_v, y_prob_v, odds_v = y_true[valid], y_prob[valid], market_odds[valid]
+
+    buckets = []
+    for low, high in ODDS_BUCKETS:
+        mask = (odds_v >= low) & (odds_v < high)
+        n = int(mask.sum())
+        if n == 0:
+            continue
+        y_t, y_p, o = y_true_v[mask], y_prob_v[mask], odds_v[mask]
+        pnl = np.where(y_t, o - 1.0, -1.0)
+        buckets.append(
+            {
+                "odds_range": f"{low:.1f}-{high:.1f}" if high != float("inf") else f"{low:.1f}+",
+                "n": n,
+                "average_market_odds": float(np.mean(o)),
+                "average_model_probability": float(np.mean(y_p)),
                 "hit_rate": float(np.mean(y_t)),
                 "brier_score": brier_score(y_t, y_p),
                 "roi": float(pnl.sum() / n),
