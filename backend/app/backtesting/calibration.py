@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
 
@@ -84,7 +86,10 @@ def calibration_report_for_table(
 
 
 def ensemble_calibration_report(
-    table: pd.DataFrame, market_key: str, min_train_seasons: int = 2
+    table: pd.DataFrame,
+    market_key: str,
+    min_train_seasons: int = 2,
+    on_fold_start: Callable[[int, int, str], None] | None = None,
 ) -> dict:
     """Igual que `calibration_report_for_table`, pero sobre el ENSEMBLE REAL
     (Dixon-Coles + clasificador ML + pesos aprendidos), no sobre Dixon-Coles
@@ -105,7 +110,7 @@ def ensemble_calibration_report(
     from backend.app.backtesting.ensemble_engine import run_ensemble_walk_forward_backtest
 
     results = run_ensemble_walk_forward_backtest(
-        table, market_key, min_train_seasons=min_train_seasons
+        table, market_key, min_train_seasons=min_train_seasons, on_fold_start=on_fold_start
     )
     if not results:
         return {

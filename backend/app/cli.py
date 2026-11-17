@@ -818,7 +818,19 @@ def ensemble_calibration_report_cmd(
             raise typer.Exit(1)
         matches = load_matches_dataframe(db, comp.id)
         table = build_match_feature_table(matches)
-        report_data = ensemble_calibration_report(table, market)
+
+        def _progress(fold_idx: int, total_folds: int, test_season: str) -> None:
+            # Cada fold reentrena Dixon-Coles + 3 candidatos ML sobre datos
+            # reales (mucho mas lento que el dataset sintetico de los
+            # tests) -- sin esto el comando parece colgado durante varios
+            # minutos (bug real reportado por el usuario: Ctrl+C antes de
+            # que terminara).
+            typer.echo(
+                f"[ensemble-calibration-report] fold {fold_idx}/{total_folds} "
+                f"(test={test_season})..."
+            )
+
+        report_data = ensemble_calibration_report(table, market, on_fold_start=_progress)
 
     if "error" in report_data:
         typer.echo(f"[ensemble-calibration-report] {report_data['error']}")
