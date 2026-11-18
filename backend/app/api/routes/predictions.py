@@ -31,6 +31,7 @@ from backend.app.schemas.prediction import (
     SummaryOut,
 )
 from backend.app.services.evaluation_service import (
+    TrackRecordEstimate,
     fit_edge_reliability_curve,
     market_track_records,
     market_track_records_with_provenance,
@@ -62,6 +63,7 @@ def serialize_prediction(
     prediction: Prediction,
     anomaly_flags: list[str] | None = None,
     is_best_prediction: bool = False,
+    reliability: TrackRecordEstimate | None = None,
 ) -> dict:
     settings = get_settings()
     age_minutes = odds_age_minutes(prediction)
@@ -121,6 +123,15 @@ def serialize_prediction(
         "is_stale_odds": is_stale,
         "anomaly_flags": anomaly_flags or [],
         "is_best_prediction": is_best_prediction,
+        "reliability": (
+            {
+                "value": reliability.value,
+                "source_level": reliability.source_level,
+                "n_observations": reliability.n_observations,
+            }
+            if reliability is not None
+            else None
+        ),
     }
 
 
@@ -406,6 +417,15 @@ def _group_by_match(predictions: list[Prediction]) -> dict[int, list[Prediction]
     return by_match
 
 
+def _reliability_for(
+    prediction: Prediction, provenance: dict[tuple[str, str], TrackRecordEstimate]
+) -> TrackRecordEstimate | None:
+    """Fiabilidad jerarquica (seccion 2.2) de esta prediccion concreta --
+    ver market_track_records_with_provenance. Reutilizado por todos los
+    endpoints que exponen `reliability` en la respuesta."""
+    return provenance.get((prediction.match.competition.code, prediction.market))
+
+
 def _filter_by_quality(included: list, quality: str | None, settings) -> list:
     """`quality`: "HIGH"|"MEDIUM"|"LOW" para quedarse SOLO con esa calidad
     de mercado, o `None`/"ALL" para no filtrar (ver prediction/market_quality.py).
@@ -522,6 +542,7 @@ def top_signals(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
+    reliability_provenance = market_track_records_with_provenance(db, competition_code)
     included, excluded = rank_signals_v3(candidates, settings, track_records)
     if excluded:
         logger.info(
@@ -543,7 +564,9 @@ def top_signals(
         included = sorted(included, key=lambda s: s.prediction.edge or 0.0, reverse=True)
     return [
         serialize_prediction(
-            s.prediction, compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings)
+            s.prediction,
+            compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings),
+            reliability=_reliability_for(s.prediction, reliability_provenance),
         )
         for s in included[:limit]
     ]
@@ -596,6 +619,7 @@ def best_predictions(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
+    reliability_provenance = market_track_records_with_provenance(db, competition_code)
     included, _ = rank_signals_v3(candidates, settings, track_records)
     included = _filter_by_quality(included, quality, settings)
     included = [
@@ -605,7 +629,9 @@ def best_predictions(
     ]
     return [
         serialize_prediction(
-            s.prediction, compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings)
+            s.prediction,
+            compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings),
+            reliability=_reliability_for(s.prediction, reliability_provenance),
         )
         for s in included[:limit]
     ]
@@ -644,6 +670,7 @@ def best_of_day(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
+    reliability_provenance = market_track_records_with_provenance(db, competition_code)
     included, _ = rank_signals_v3(candidates, settings, track_records)
 
     strict_min_edge = settings.min_edge_pp * 2
@@ -676,7 +703,12 @@ def best_of_day(
 
     prediction = winner.prediction
     flags = compute_anomaly_flags(prediction, by_match[prediction.match_id], settings)
-    serialized = serialize_prediction(prediction, flags, is_best_prediction=True)
+    serialized = serialize_prediction(
+        prediction,
+        flags,
+        is_best_prediction=True,
+        reliability=_reliability_for(prediction, reliability_provenance),
+    )
     explanation = _build_explanation_summary(prediction, serialized) + [
         f"Edge minimo estricto exigido para 'mejor señal del dia': {strict_min_edge * 100:.1f} puntos porcentuales "
         f"(el doble del minimo general de {settings.min_edge_pp * 100:.1f}pp).",
@@ -717,7 +749,7 @@ def best_predictions_debug(
     provenance = market_track_records_with_provenance(db, competition_code)
 
     def _reliability_info(prediction: Prediction) -> dict | None:
-        estimate = provenance.get((prediction.match.competition.code, prediction.market))
+        estimate = _reliability_for(prediction, provenance)
         if estimate is None:
             return None
         return {

@@ -15,6 +15,14 @@ class PredictionFactorOut(BaseModel):
     raw_value: float | None
 
 
+class ReliabilityOut(BaseModel):
+    """Ver services/evaluation_service.py::TrackRecordEstimate."""
+
+    value: float
+    source_level: str  # "competition_market" | "market_tier" | "market_global"
+    n_observations: int
+
+
 class PredictionOut(BaseModel):
     id: int
     match: MatchOut
@@ -80,6 +88,17 @@ class PredictionOut(BaseModel):
     # (entre las que pasan el filtro duro y no tienen CONTRADICCION) para
     # su partido, en el contexto del endpoint que la devolvio.
     is_best_prediction: bool = False
+    # Fiabilidad historica JERARQUICA (mision "oportunidades" seccion 2.2,
+    # ver services/evaluation_service.py::market_track_records_with_provenance):
+    # `None` sin historico suficiente en NINGUN nivel. Cuando existe,
+    # `source_level` dice de donde sale -- "competition_market" (especifica
+    # de esta competicion y mercado), "market_tier" (heredada de otras
+    # competiciones del mismo tier, CORE/EXPERIMENTAL) o "market_global"
+    # (de todas las competiciones). NUNCA mostrar esto como si fuera
+    # siempre especifico de la competicion exacta -- pedido real del
+    # usuario ("nunca presentar una fiabilidad global como si fuera
+    # especifica").
+    reliability: ReliabilityOut | None = None
 
     model_config = {"from_attributes": True}
 

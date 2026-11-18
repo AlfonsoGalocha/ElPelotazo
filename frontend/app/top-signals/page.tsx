@@ -16,6 +16,15 @@ const SCOPE_LABELS: Record<SignalScope, string> = {
   all_upcoming: "Todas las próximas",
 };
 
+// Mision "oportunidades" seccion 2.2 (fiabilidad jerarquica): nunca
+// mostrar un nivel "market_tier"/"market_global" como si fuera especifico
+// de esta competicion exacta -- la etiqueta deja claro de donde sale.
+const RELIABILITY_SOURCE_LABELS: Record<string, string> = {
+  competition_market: "esta liga",
+  market_tier: "ligas similares",
+  market_global: "global",
+};
+
 export default async function TopSignalsPage({
   searchParams,
 }: {
@@ -319,6 +328,7 @@ export default async function TopSignalsPage({
               <th className="px-3 py-2 text-slate-600">Edge (info)</th>
               <th className="px-3 py-2">Calidad de datos</th>
               <th className="px-3 py-2">Calidad de mercado</th>
+              <th className="px-3 py-2">Fiabilidad histórica</th>
               <th className="px-3 py-2">Cuota actualizada</th>
             </tr>
           </thead>
@@ -362,6 +372,21 @@ export default async function TopSignalsPage({
                 </td>
                 <td className="px-3 py-2">
                   <MarketQualityBadge quality={p.market_quality} />
+                </td>
+                <td className="px-3 py-2 text-slate-400">
+                  {p.reliability ? (
+                    <span
+                      className="cursor-help"
+                      title={`${p.reliability.n_observations} liquidaciones reales usadas (${RELIABILITY_SOURCE_LABELS[p.reliability.source_level]})`}
+                    >
+                      {(p.reliability.value * 100).toFixed(0)}%{" "}
+                      <span className="text-[10px] text-slate-500">
+                        ({RELIABILITY_SOURCE_LABELS[p.reliability.source_level]})
+                      </span>
+                    </span>
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td className="px-3 py-2 text-slate-400">
                   <span className="flex items-center gap-1">
