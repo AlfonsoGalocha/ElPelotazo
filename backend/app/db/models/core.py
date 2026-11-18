@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Date, ForeignKey, String, UniqueConstraint
+from sqlalchemy import Date, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.database import Base
@@ -144,3 +144,33 @@ class RankingConfig(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     min_opportunity_odds: Mapped[float | None] = mapped_column(nullable=True)
     max_opportunity_odds: Mapped[float | None] = mapped_column(nullable=True)
+
+
+class OddsIngestionRun(Base):
+    """Un intento real de refrescar cuotas (`update-odds`/
+    `update-secondary-odds`, una fila por competicion por ejecucion) --
+    pedido real del usuario tras investigar cuotas desactualizadas:
+    hasta ahora el resultado de cada intento (cuantos fixtures devolvio
+    la API, cuantos casaron, si hubo un error) solo se imprimia en el
+    stdout del CLI y se perdia en cuanto terminaba el comando, asi que
+    "por que esta cuota no se actualizo" no se podia responder sin
+    volver a ejecutar el comando a mano y mirar la terminal en directo.
+    Esta tabla es APPEND-ONLY (nunca se borra ni actualiza una fila
+    existente, mismo principio que `MatchOddsHistory`) para conservar el
+    historial real de intentos, nunca solo "el ultimo"."""
+
+    __tablename__ = "odds_ingestion_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32))  # "api_football" | "the_odds_api"
+    # "update_odds" | "update_secondary_odds" -- nombre exacto del comando CLI que la genero.
+    operation: Mapped[str] = mapped_column(String(32))
+    competition_code: Mapped[str] = mapped_column(String(64))
+    started_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    finished_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    # `None` en fixtures_fetched/matched cuando la peticion fallo antes de
+    # llegar a contar nada (ver `error`) -- nunca 0 inventado en ese caso,
+    # 0 real significa "la API respondio pero sin partidos/sin casar".
+    fixtures_fetched: Mapped[int | None] = mapped_column(nullable=True)
+    matched: Mapped[int | None] = mapped_column(nullable=True)
+    error: Mapped[str | None] = mapped_column(String(2000), nullable=True)

@@ -17,6 +17,8 @@ en silencio o reviente el pipeline entero.
 
 from __future__ import annotations
 
+import time
+
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
@@ -151,7 +153,11 @@ class ApiFootballClient:
         wait=wait_exponential(multiplier=2, min=2, max=20),
         retry=retry_if_exception_type((httpx.HTTPError, ApiFootballRateLimitError)),
     )
-    def _get(self, path: str, params: dict) -> list[dict]:
+    def _get_page(self, path: str, params: dict) -> tuple[list[dict], dict | None]:
+        """Una sola pagina. Devuelve `(response, paging)` -- `paging` es el
+        objeto `{"current": N, "total": M}` que API-Football devuelve en
+        TODOS sus endpoints (nunca `None` salvo error real/respuesta
+        vacia), para que `_get` decida si hace falta pedir mas paginas."""
         url = f"{self._base_url()}{path}"
         response = self._client.get(url, params=params, headers=self._headers())
         if response.status_code >= 400:
@@ -189,4 +195,37 @@ class ApiFootballClient:
                 raise ApiFootballRateLimitError(
                     f"API-Football rate limit: path={path} params={params} errors={errors}"
                 )
-        return payload.get("response", [])
+        return payload.get("response", []), payload.get("paging")
+
+    def _get(self, path: str, params: dict) -> list[dict]:
+        """Pide TODAS las paginas, nunca solo la primera. Bug real
+        investigado por el usuario (cuotas/fixtures incompletos): todos
+        los endpoints de API-Football devuelven un sobre `paging`
+        (`{"current": N, "total": M}`, p.ej. `/odds` solo trae 10
+        resultados por pagina segun su documentacion oficial) -- antes de
+        este cambio, `_get` solo leia `response` de la PRIMERA pagina y
+        descartaba `paging` sin comprobarlo, perdiendo en silencio
+        cualquier resultado a partir del 11. Una pausa de 1s entre
+        paginas (solo cuando hace falta pedir una segunda, nunca en el
+        caso normal de una sola pagina) evita agotar el limite de
+        peticiones por minuto, mismo principio que ya se aplica entre
+        partidos en `fetch_odds_for_window`/`update_international`."""
+        combined: list[dict] = []
+        page = 1
+        while True:
+            page_response, paging = self._get_page(path, {**params, "page": page})
+            combined.extend(page_response)
+            total_pages = (paging or {}).get("total") or 1
+            current_page = (paging or {}).get("current") or page
+            if current_page >= total_pages:
+                break
+            if page == 1:
+                logger.info(
+                    "ingestion.api_football.paginated_response: path=%s params=%s total_pages=%d",
+                    path,
+                    params,
+                    total_pages,
+                )
+            page += 1
+            time.sleep(1)
+        return combined

@@ -62,6 +62,7 @@ from backend.app.services.evaluation_service import (
 )
 from backend.app.services.match_service import load_market_odds_column, load_matches_dataframe
 from backend.app.services.model_service import train_competition_models
+from backend.app.services.odds_diagnostics_service import record_ingestion_run
 from backend.app.services.prediction_service import generate_predictions_for_competition
 from backend.app.services.promotion_service import evaluate_and_promote
 from backend.app.services.round_service import get_current_round
@@ -313,15 +314,35 @@ def update_odds(competition: str = typer.Option(None)) -> None:
         typer.echo("[update-odds]   ODDS_API_KEY=<tu-key>")
         return
 
+    provider_key = "api_football" if use_api_football else "the_odds_api"
     competitions = [competition] if competition else ALL_COMPETITIONS
     with session_scope() as db:
         for comp in competitions:
+            started_at = dt.datetime.utcnow()
             try:
                 result = attach_odds_to_scheduled_matches(db, provider, comp)
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-odds] {comp}: ERROR {exc}")
                 db.rollback()  # ver comentario equivalente en `update()`
+                # Panel de diagnostico (Configuracion): registrar el
+                # intento FALLIDO tambien, en su propia transaccion --
+                # el rollback de arriba ya descarto la sesion anterior.
+                with session_scope() as diag_db:
+                    record_ingestion_run(
+                        diag_db, provider_key, "update_odds", comp, started_at, dt.datetime.utcnow(), error=str(exc)
+                    )
                 continue
+
+            record_ingestion_run(
+                db,
+                provider_key,
+                "update_odds",
+                comp,
+                started_at,
+                dt.datetime.utcnow(),
+                fixtures_fetched=result.fixtures_fetched,
+                matched=result.matched,
+            )
 
             typer.echo(
                 f"[update-odds] {comp} ({source_label}): la API devolvio "
@@ -432,6 +453,7 @@ def update_secondary_odds(competition: str = typer.Option(None)) -> None:
             window_start = (round_info.round_start or dt.datetime.utcnow()).date()
             window_end = (round_info.round_end or dt.datetime.utcnow()).date()
 
+            started_at = dt.datetime.utcnow()
             try:
                 result = attach_secondary_odds_to_scheduled_matches(
                     db, provider, comp, season_year, window_start, window_end
@@ -439,7 +461,28 @@ def update_secondary_odds(competition: str = typer.Option(None)) -> None:
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-secondary-odds] {comp}: ERROR {exc}")
                 db.rollback()  # ver comentario equivalente en `update()`
+                with session_scope() as diag_db:
+                    record_ingestion_run(
+                        diag_db,
+                        "api_football",
+                        "update_secondary_odds",
+                        comp,
+                        started_at,
+                        dt.datetime.utcnow(),
+                        error=str(exc),
+                    )
                 continue
+
+            record_ingestion_run(
+                db,
+                "api_football",
+                "update_secondary_odds",
+                comp,
+                started_at,
+                dt.datetime.utcnow(),
+                fixtures_fetched=result.fixtures_fetched,
+                matched=result.matched,
+            )
 
             typer.echo(
                 f"[update-secondary-odds] {comp}: {result.fixtures_fetched} partidos consultados, "

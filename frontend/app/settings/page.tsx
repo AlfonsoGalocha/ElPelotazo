@@ -2,6 +2,7 @@ import { Settings, Database } from "lucide-react";
 import { getDataSourcesStatus, getRankingConfig } from "@/lib/api";
 import { ErrorState } from "@/components/EmptyState";
 import RankingConfigForm from "@/components/RankingConfigForm";
+import OddsDiagnosticsPanel from "@/components/OddsDiagnosticsPanel";
 
 function StatusDot({ on }: { on: boolean }) {
   return (
@@ -81,6 +82,8 @@ export default async function SettingsPage() {
           </p>
         </div>
       )}
+
+      <OddsDiagnosticsPanel />
 
       <div className="rounded-xl border border-dashed border-surface-border p-4 text-sm text-slate-500">
         Pendiente de construir (requiere cuentas de usuario, que no existen hoy): preferencias
