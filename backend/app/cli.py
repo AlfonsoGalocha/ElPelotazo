@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import time
 from pathlib import Path
 
 import typer
@@ -193,53 +194,66 @@ def update_fixtures(competition: str = typer.Option(None)) -> None:
 @app.command("update-international")
 def update_international(
     competition: str = typer.Option(
-        "uefa_nations_league",
-        help="Codigo de competicion de selecciones (ver INTERNATIONAL_COMPETITION_EDITIONS).",
+        None,
+        help=(
+            "Codigo de competicion de selecciones (ver INTERNATIONAL_COMPETITION_EDITIONS). "
+            "Sin especificar, ingiere TODAS las registradas."
+        ),
     ),
 ) -> None:
-    """Ingiere TODO el historico real de una competicion de SELECCIONES
+    """Ingiere TODO el historico real de competiciones de SELECCIONES
     (seccion "Selecciones", pedido real del usuario, 2026-11) via
     API-Football -- la UNICA fuente real para estas competiciones: a
     diferencia de las 5 ligas de club, no existe un mirror historico tipo
     football-data.co.uk/openfootball para selecciones, asi que `update`
     (pensado para ese mirror) no sirve aqui.
 
-    Recorre TODAS las ediciones conocidas de la competicion
+    Recorre TODAS las ediciones conocidas de cada competicion
     (`INTERNATIONAL_COMPETITION_EDITIONS`, p.ej. Nations League es BIENAL:
-    2018/2020/2022/2024/2026) en una sola ejecucion -- a diferencia de
-    `update` para clubes, el volumen aqui es pequenho (unas pocas decenas
-    de partidos por edicion), no hace falta la logica de "solo reingerir
-    la temporada en curso" para evitar un `refresh` lento.
+    2018/2020/2022/2024/2026; el Mundial/la Eurocopa cada 4 anhos) en una
+    sola ejecucion -- a diferencia de `update` para clubes, el volumen
+    aqui es pequenho (unas pocas decenas de partidos por edicion), no hace
+    falta la logica de "solo reingerir la temporada en curso" para evitar
+    un `refresh` lento.
 
     Cada edicion se etiqueta con el MISMO `Season.label` que
     `update-fixtures`/`update-odds` ya usarian para esa fecha (via
     `season_label_from_date`, nunca un anho suelto) -- para que la edicion
     EN CURSO comparta fila de `Season` con lo que esos comandos vayan
     trayendo en vivo, en vez de duplicarla.
+
+    Pausa 1 segundo entre cada peticion a `/fixtures` (bug real visto en
+    vivo: con ~15 competiciones x varias ediciones cada una, sin pausa se
+    agota el limite de peticiones por minuto de la API -- `_get` ya
+    reintenta un `rateLimit` con backoff, ver
+    `ApiFootballRateLimitError`, pero evitarlo de entrada es mas barato
+    que depender solo del reintento).
     """
     init_db()
-    editions = INTERNATIONAL_COMPETITION_EDITIONS.get(competition)
-    if editions is None:
+    if competition is not None and competition not in INTERNATIONAL_COMPETITION_EDITIONS:
         typer.echo(
             f"[update-international] Competicion no soportada: {competition!r}. "
             f"Opciones: {sorted(INTERNATIONAL_COMPETITION_EDITIONS)}"
         )
         raise typer.Exit(code=1)
+    competitions = [competition] if competition else sorted(INTERNATIONAL_COMPETITION_EDITIONS)
 
     provider = ApiFootballMatchProvider()
     with session_scope() as db:
-        for year in editions:
-            season_label = season_label_from_date(dt.date(year, 9, 1))
-            try:
-                n = ingest_matches(db, provider, competition, season_label)
-                typer.echo(
-                    f"[update-international] {competition} {season_label} ({year}): {n} partidos"
-                )
-            except Exception as exc:  # noqa: BLE001
-                typer.echo(
-                    f"[update-international] {competition} {season_label} ({year}): ERROR {exc}"
-                )
-                db.rollback()
+        for comp_code in competitions:
+            for year in INTERNATIONAL_COMPETITION_EDITIONS[comp_code]:
+                season_label = season_label_from_date(dt.date(year, 9, 1))
+                try:
+                    n = ingest_matches(db, provider, comp_code, season_label)
+                    typer.echo(
+                        f"[update-international] {comp_code} {season_label} ({year}): {n} partidos"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    typer.echo(
+                        f"[update-international] {comp_code} {season_label} ({year}): ERROR {exc}"
+                    )
+                    db.rollback()
+                time.sleep(1)
 
 
 @app.command()

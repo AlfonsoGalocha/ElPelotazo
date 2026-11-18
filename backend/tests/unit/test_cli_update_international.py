@@ -8,6 +8,8 @@ desde este entorno)."""
 
 from __future__ import annotations
 
+import time
+
 import pytest
 import typer
 
@@ -15,6 +17,7 @@ from backend.app.cli import update_international
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match
+from backend.app.ingestion.api_football.client import INTERNATIONAL_COMPETITION_EDITIONS
 from backend.app.ingestion.api_football.fixtures_provider import ApiFootballMatchProvider
 from backend.app.ingestion.base import RawMatchRecord
 
@@ -26,6 +29,10 @@ def _enable_api_football(monkeypatch):
     from backend.app.config.settings import get_settings
 
     get_settings.cache_clear()
+    # update_international pausa 1s entre cada peticion real (seccion
+    # "Selecciones": evitar el rate limit de verdad visto en vivo) -- sin
+    # esto el test seria lento de verdad, no solo en apariencia.
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
     yield
     get_settings.cache_clear()
 
@@ -85,6 +92,20 @@ def test_update_international_ingests_every_known_edition(monkeypatch):
 def test_update_international_rejects_an_unknown_competition():
     with pytest.raises(typer.Exit):
         update_international(competition="not-a-real-international-competition")
+
+
+def test_update_international_processes_every_registered_competition_by_default(monkeypatch):
+    seen_competitions: set[str] = set()
+
+    def fake_fetch_matches(self, competition_code, season_label):
+        seen_competitions.add(competition_code)
+        return []
+
+    monkeypatch.setattr(ApiFootballMatchProvider, "fetch_matches", fake_fetch_matches)
+
+    update_international(competition=None)  # sin --competition: TODAS las registradas
+
+    assert seen_competitions == set(INTERNATIONAL_COMPETITION_EDITIONS)
 
 
 def test_update_international_recovers_after_one_edition_fails(monkeypatch):

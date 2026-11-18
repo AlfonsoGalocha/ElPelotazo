@@ -2138,3 +2138,120 @@ docker compose exec backend python scripts/purge_excluded_team_matches.py
 
 para limpiar los partidos de Russia ya guardados -- el filtro de ingesta
 evita que vuelvan, pero no retroactivo.
+
+## 18. Fase 17 (sesion 2026-11, continuacion): Mundial, Eurocopa y el resto de "absoluta masculina"
+
+### 18.1 Resultado real del reconocimiento ampliado
+
+El usuario corrio de nuevo `debug_api_football_national_teams.py` (ya con
+la seccion "ABSOLUTA MASCULINA" de la seccion 17.10) y pego el historial
+COMPLETO de temporadas de las 14 competiciones que eligio. Confirmado,
+nunca adivinado:
+
+| competicion | ID | ediciones reales | `coverage.odds=True` |
+|---|---|---|---|
+| World Cup | 1 | 2010, 2014, 2018, 2022, 2026 | ninguna |
+| World Cup - Qualification Europe | 32 | 2018, 2020, 2024 | ninguna |
+| World Cup - Qualification South America | 34 | 2018, 2022, 2026 | ninguna |
+| World Cup - Qualification CONCACAF | 31 | 2018, 2022, 2026 | ninguna |
+| World Cup - Qualification Africa | 29 | 2018, 2022, 2023 | ninguna |
+| World Cup - Qualification Asia | 30 | 2018, 2022, 2026 | ninguna |
+| World Cup - Qualification Oceania | 33 | 2018, 2022, 2026 | ninguna |
+| World Cup - Qualification Intercontinental Play-offs | 37 | 2014, 2018, 2022, 2026 | ninguna |
+| Euro Championship | 4 | 2008, 2012, 2016, 2020, 2024 | ninguna |
+| Euro Championship - Qualification | 960 | **solo 2023** (unica real listada) | ninguna |
+| Copa America | 9 | 2015, 2016, 2019, 2021, 2024 | ninguna |
+| Africa Cup of Nations | 6 | 2015, 2017, 2019, 2021, 2023, 2025 | ninguna |
+| Africa Cup of Nations - Qualification | 36 | 2021, 2023, 2025, 2027 | **solo 2027** |
+| CONCACAF Nations League | 536 | 2020, 2022, 2023, 2024, 2025 | **solo 2025** |
+
+Confirma lo ya anticipado en la seccion 17.2: NINGUNA de estas tiene
+cuotas reales salvo dos casos puntuales (el clasificatorio de Copa Africa
+de Naciones y la CONCACAF Nations League, y en ambos SOLO su edicion mas
+reciente) -- Mundial y Eurocopa (lo que el usuario pidio por nombre en
+este mensaje) aparecen en "Selecciones" con calendario y, una vez
+entrenado, prediccion del modelo, pero sin edge/EV real por falta de
+cuota, igual que cualquier partido "solo modelo" del resto de la app.
+
+### 18.2 Bug real descubierto durante el reconocimiento: rate limit silencioso
+
+El propio log de la ejecucion del usuario trae la prueba: varias llamadas
+a `/fixtures` dentro del mismo reconocimiento salieron con
+`errors={'rateLimit': 'Too many requests...'}` -- API-Football devuelve
+HTTP 200 con el error DENTRO del JSON (ya documentado en
+`client.py::_get`), pero el codigo de antes solo lo logueaba con WARNING
+y devolvia `[]`, indistinguible de "de verdad no hay partidos
+programados". Con 14 competiciones nuevas por ingerir (~56 llamadas a
+`/fixtures` en total), este bug habria corrompido silenciosamente el
+historico de varias ediciones.
+
+Fix en `ingestion/api_football/client.py`:
+- `ApiFootballRateLimitError` (nueva excepcion): se lanza especificamente
+  cuando `errors` contiene la clave `rateLimit` (el UNICO tipo de error
+  confirmado contra una respuesta real) -- cualquier otro tipo de error
+  sigue con el comportamiento previo (loguear y devolver lo que haya),
+  conservador a proposito: nunca se ha visto evidencia de que haga falta
+  tratarlos igual.
+- Anhadida al `retry_if_exception_type` del decorador `@retry` ya
+  existente en `_get` -- un rate limit se reintenta con el MISMO backoff
+  exponencial que un error de red real, en vez de fingir una respuesta
+  vacia.
+- `cli.py::update_international`: pausa 1 segundo entre cada llamada a
+  `/fixtures` (defensivo, para no depender solo del reintento con 14
+  competiciones x varias ediciones cada una en una sola ejecucion).
+
+3 tests nuevos (`test_api_football_client_rate_limit.py`, con dialectos/
+respuestas canned, `time.sleep` monkeypatcheado para no ralentizar la
+suite de verdad): se agotan los 3 intentos y propaga la excepcion si el
+rate limit persiste; se recupera si un reintento tiene exito antes de
+agotarlos; un error que NO sea `rateLimit` nunca se reintenta (sigue
+devolviendo `[]` tal cual).
+
+### 18.3 Las 14 competiciones registradas
+
+`normalization/competitions.py`, `ingestion/api_football/client.py`
+(`LEAGUE_IDS` + `INTERNATIONAL_COMPETITION_EDITIONS`, con los anhos
+reales de la tabla de 18.1, nunca adivinados) y
+`frontend/lib/internationalCompetitions.ts` -- las 14 nuevas, ademas de
+`uefa_nations_league` ya registrada. `cli.py::update_international` ahora
+acepta `--competition` opcional: sin el, recorre TODAS las registradas en
+una sola ejecucion (antes exigia repetirlo 14 veces a mano).
+
+2 tests nuevos/actualizados (`test_cli_update_international.py`): el
+comportamiento por defecto (sin `--competition`) procesa exactamente las
+competiciones registradas en `INTERNATIONAL_COMPETITION_EDITIONS`, y los
+tests existentes se adaptan a la pausa de 1s (monkeypatcheada). Suite
+completa: 466/466.
+
+**Pendiente**: pedir al usuario que ejecute
+
+```
+docker compose exec backend football-edge update-international
+docker compose exec backend football-edge update-fixtures
+docker compose exec backend football-edge update-odds
+docker compose exec backend football-edge train
+docker compose exec backend football-edge predict-upcoming
+```
+
+(sin `--competition`: ya recorren TODAS las registradas, club y
+selecciones por igual) y pegue el resultado -- con eso Mundial, Eurocopa
+y el resto deberian aparecer en "Selecciones" con calendario y
+predicciones del modelo (sin edge/señal real, por la falta de cuota ya
+documentada en 18.1).
+
+### 18.4 Limitaciones honestas que siguen pendientes
+
+- Ninguna de las 14 tiene cuotas reales salvo las dos excepciones ya
+  citadas (y solo para su ultima edicion) -- sus predicciones seran
+  "solo modelo", nunca apareceran en `/predictions/top-signals` ni en
+  "Oportunidades" (el filtro duro `evaluate_quality_gate` exige
+  `market_odds`, igual que cualquier otro partido sin mercado real).
+- `euro_championship_qualification` solo tiene UNA edicion real listada
+  (2023) -- muestra muy pequenha para entrenar un modelo propio de esta
+  competicion especifica; a vigilar si el entrenamiento la trata
+  razonablemente o si hace falta pool con otra fuente de senhal.
+- La pausa de 1s entre llamadas en `update_international` es defensiva,
+  no calibrada contra el limite real de la API (la respuesta de error no
+  dice el numero exacto) -- si sigue rate-limitando con muchas
+  competiciones de golpe, subir la pausa o anhadir un backoff mas largo
+  entre COMPETICIONES (no solo entre ediciones) seria el siguiente paso.
