@@ -151,6 +151,18 @@ export interface Prediction {
   // Fase 3 (seccion 1): true cuando es la de mayor signal_score entre las
   // que pasan el filtro duro y no tienen CONTRADICCION, para su partido.
   is_best_prediction: boolean;
+  // Mision "oportunidades" seccion 2.2 (fiabilidad jerarquica): `null` sin
+  // historico suficiente en NINGUN nivel. `source_level` dice de donde
+  // sale -- nunca mostrar un nivel "market_tier"/"market_global" como si
+  // fuera especifico de esta competicion exacta (ver
+  // backend/app/services/evaluation_service.py::TrackRecordEstimate).
+  reliability: PredictionReliability | null;
+}
+
+export interface PredictionReliability {
+  value: number;
+  source_level: "competition_market" | "market_tier" | "market_global";
+  n_observations: number;
 }
 
 export type AnomalyFlag =
