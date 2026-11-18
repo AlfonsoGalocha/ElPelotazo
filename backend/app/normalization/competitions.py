@@ -18,10 +18,35 @@ COMPETITIONS: dict[str, tuple[str, str]] = {
     # diferencia de las 5 de club, no hay mirror historico tipo
     # football-data.co.uk -- TODO su historico viene de API-Football
     # (ver ingestion/api_football/client.py::INTERNATIONAL_COMPETITION_EDITIONS
-    # y cli.py::update_international). "Europe" como pais es una
-    # simplificacion deliberada (compite entre selecciones de toda la
-    # UEFA, no de un unico pais) -- no se usa para logica, solo texto.
+    # y cli.py::update_international). El "pais" de una competicion de
+    # selecciones es una simplificacion deliberada (compite gente de todo
+    # un continente/confederacion, no de un unico pais) -- no se usa para
+    # logica, solo texto. Alcance decidido explicitamente por el usuario:
+    # absoluta MASCULINA (Mundial, Eurocopa, Copa America, Copa Africa de
+    # Naciones + sus clasificatorios, Nations League) -- deja fuera
+    # femenino, categorias inferiores y amistosos (ver seccion 17 de
+    # docs/architecture_audit.md).
     "uefa_nations_league": ("UEFA Nations League", "Europe"),
+    "world_cup": ("World Cup", "World"),
+    "world_cup_qualification_europe": ("World Cup - Qualification Europe", "Europe"),
+    "world_cup_qualification_south_america": (
+        "World Cup - Qualification South America",
+        "South America",
+    ),
+    "world_cup_qualification_concacaf": ("World Cup - Qualification CONCACAF", "North America"),
+    "world_cup_qualification_africa": ("World Cup - Qualification Africa", "Africa"),
+    "world_cup_qualification_asia": ("World Cup - Qualification Asia", "Asia"),
+    "world_cup_qualification_oceania": ("World Cup - Qualification Oceania", "Oceania"),
+    "world_cup_qualification_intercontinental_playoffs": (
+        "World Cup - Qualification Intercontinental Play-offs",
+        "World",
+    ),
+    "euro_championship": ("Euro Championship", "Europe"),
+    "euro_championship_qualification": ("Euro Championship - Qualification", "Europe"),
+    "copa_america": ("Copa America", "South America"),
+    "africa_cup_of_nations": ("Africa Cup of Nations", "Africa"),
+    "africa_cup_of_nations_qualification": ("Africa Cup of Nations - Qualification", "Africa"),
+    "concacaf_nations_league": ("CONCACAF Nations League", "North America"),
 }
 
 

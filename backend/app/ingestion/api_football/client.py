@@ -29,6 +29,24 @@ DIRECT_BASE_URL = "https://v3.football.api-sports.io"
 RAPIDAPI_BASE_URL = "https://api-football-v1.p.rapidapi.com/v3"
 RAPIDAPI_HOST = "api-football-v1.p.rapidapi.com"
 
+
+class ApiFootballRateLimitError(RuntimeError):
+    """La API senhalo `errors.rateLimit` en el cuerpo de la respuesta (HTTP
+    200 -- el error real viene DENTRO del JSON, ver docstring de `_get`).
+
+    Bug real visto en vivo (seccion "Selecciones", 2026-11): el usuario
+    corrio `debug_api_football_national_teams.py` (que encadena ~30
+    llamadas a `/fixtures` sin pausa, una por competicion de interes) y
+    varias fallaron con "Too many requests. You have exceeded the limit
+    of requests per minute" -- ANTES de este cambio, `_get` solo lo
+    logueaba con WARNING y devolvia `[]`, indistinguible de "de verdad no
+    hay partidos programados" (el mismo problema que el comentario de
+    `_get` ya describia para otros errores, pero sin cubrir este caso
+    real). Transitorio por definicion (limite POR MINUTO): se reintenta
+    con el mismo backoff exponencial que un error de red real, en vez de
+    tratarse como "cero resultados" silenciosamente.
+    """
+
 # IDs de liga de API-Football (estables, documentados publicamente) para
 # las 5 ligas del MVP.
 LEAGUE_IDS: dict[str, int] = {
@@ -46,6 +64,33 @@ LEAGUE_IDS: dict[str, int] = {
     # Eurocopa y sus clasificatorios salieron con coverage.odds=False en
     # esa misma respuesta real.
     "uefa_nations_league": 5,
+    # Resto de "Selecciones" absoluta masculina (alcance decidido
+    # explicitamente por el usuario), IDs confirmados contra la MISMA
+    # respuesta real (seccion "ABSOLUTA MASCULINA" de
+    # scripts/debug_api_football_national_teams.py, ejecutado por el
+    # usuario, 2026-11-18) -- NINGUNO tiene coverage.odds=True salvo donde
+    # se indica, asi que solo apareceran en el calendario de "Selecciones",
+    # nunca en el ranking de senhales (sin cuota real no hay edge/EV que
+    # calcular, igual que cualquier partido "solo modelo" en el resto de
+    # la app).
+    "world_cup": 1,
+    "world_cup_qualification_europe": 32,
+    "world_cup_qualification_south_america": 34,
+    "world_cup_qualification_concacaf": 31,
+    "world_cup_qualification_africa": 29,
+    "world_cup_qualification_asia": 30,
+    "world_cup_qualification_oceania": 33,
+    "world_cup_qualification_intercontinental_playoffs": 37,
+    "euro_championship": 4,
+    "euro_championship_qualification": 960,
+    "copa_america": 9,
+    "africa_cup_of_nations": 6,
+    # odds=True SOLO para su ultima edicion listada (2027) -- las
+    # anteriores (2021/2023/2025) siguen sin cuota real.
+    "africa_cup_of_nations_qualification": 36,
+    # odds=True SOLO para su ultima edicion listada (2025) -- las
+    # anteriores (2020/2022/2023/2024) siguen sin cuota real.
+    "concacaf_nations_league": 536,
 }
 
 # API-Football etiqueta cada EDICION de una competicion de selecciones con
@@ -54,10 +99,28 @@ LEAGUE_IDS: dict[str, int] = {
 # cli.py::update_international) para que comparta exactamente el mismo
 # `Season.label` que `update-fixtures`/`update-odds` ya usan para la
 # temporada EN CURSO, y asi nunca crear una fila de `Season` duplicada
-# para la misma edicion real. Nations League es BIENAL desde 2018 (nunca
-# anual): 2018, 2020, 2022, 2024, 2026 son las unicas ediciones reales.
+# para la misma edicion real. NINGUNA de estas competiciones es anual:
+# los anhos de cada lista son el HISTORIAL COMPLETO real devuelto por
+# `/leagues?country=World` (nunca adivinados ni interpolados) -- ver la
+# seccion "ABSOLUTA MASCULINA" de debug_api_football_national_teams.py.
 INTERNATIONAL_COMPETITION_EDITIONS: dict[str, list[int]] = {
     "uefa_nations_league": [2018, 2020, 2022, 2024, 2026],
+    "world_cup": [2010, 2014, 2018, 2022, 2026],
+    "world_cup_qualification_europe": [2018, 2020, 2024],
+    "world_cup_qualification_south_america": [2018, 2022, 2026],
+    "world_cup_qualification_concacaf": [2018, 2022, 2026],
+    "world_cup_qualification_africa": [2018, 2022, 2023],
+    "world_cup_qualification_asia": [2018, 2022, 2026],
+    "world_cup_qualification_oceania": [2018, 2022, 2026],
+    "world_cup_qualification_intercontinental_playoffs": [2014, 2018, 2022, 2026],
+    "euro_championship": [2008, 2012, 2016, 2020, 2024],
+    # Solo UNA edicion real listada por la API bajo este ID especifico
+    # (2023) -- nunca se inventan ciclos anteriores sin evidencia.
+    "euro_championship_qualification": [2023],
+    "copa_america": [2015, 2016, 2019, 2021, 2024],
+    "africa_cup_of_nations": [2015, 2017, 2019, 2021, 2023, 2025],
+    "africa_cup_of_nations_qualification": [2021, 2023, 2025, 2027],
+    "concacaf_nations_league": [2020, 2022, 2023, 2024, 2025],
 }
 
 
@@ -86,7 +149,7 @@ class ApiFootballClient:
         reraise=True,
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=20),
-        retry=retry_if_exception_type(httpx.HTTPError),
+        retry=retry_if_exception_type((httpx.HTTPError, ApiFootballRateLimitError)),
     )
     def _get(self, path: str, params: dict) -> list[dict]:
         url = f"{self._base_url()}{path}"
@@ -116,4 +179,14 @@ class ApiFootballClient:
                 params,
                 errors,
             )
+            # Unico tipo de error confirmado contra una respuesta REAL
+            # (ver `ApiFootballRateLimitError`) que se trata como fallo de
+            # verdad en vez de "cero resultados" -- cualquier otro error
+            # sigue solo logueado (conservador: nunca se ha visto que
+            # otros tipos de error devuelvan datos parciales validos a la
+            # vez, pero tampoco se asume sin evidencia).
+            if isinstance(errors, dict) and "rateLimit" in errors:
+                raise ApiFootballRateLimitError(
+                    f"API-Football rate limit: path={path} params={params} errors={errors}"
+                )
         return payload.get("response", [])
