@@ -137,7 +137,23 @@ MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str, tuple[str, ...]]] = [
         # estadisticas sin relacion. Mejor que un bet de tarjetas se
         # ignore del todo (comportamiento ya correcto hoy, porque no hay
         # ningun hint para "card") a que se clasifique mal.
-        ("half", "halves", "team", "result", "card"),
+        #
+        # "corner": bug real reportado por el usuario (comparo contra una
+        # app de cuotas real: Real Madrid "Over 2.5 goles" de Bet365 a
+        # 1.83 en nuestra BD, 1.40 en bet365.com real) -- confirmado
+        # contra la respuesta real de /odds para ese partido: "Home
+        # Corners Over/Under"/"Away Corners Over/Under" (corners de UN
+        # SOLO equipo) SI estan excluidos del mercado "corners_total" (ver
+        # CORNERS_EXCLUDE, por contener "home"/"away"), pero al caer
+        # excluidos de ahi, el bucle de `_parse_odds_response` los vuelve
+        # a probar contra el SIGUIENTE market_key de esta lista -- y
+        # "Home/Away Corners Over/Under" SI contiene "Over/Under" (con
+        # barra), asi que sin este exclude se colaban aqui como si fueran
+        # una linea de GOLES, mezclando dos estadisticas sin relacion
+        # (igual que "Corners Over Under" del partido completo, que no
+        # tiene barra y por eso nunca coincidio con el hint -- solo las
+        # variantes "Home"/"Away" con barra son el problema real).
+        ("half", "halves", "team", "result", "card", "corner"),
     ),
     # Bug real reportado por el usuario (comparo contra una app de cuotas
     # real: Sevilla-Betis "Doble Oportunidad 1X" a 1.57-1.61 segun la casa,
@@ -154,7 +170,15 @@ MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str, tuple[str, ...]]] = [
     # (prediction_service.py) sigue derivandolo SOLO si esta fuente no trae
     # nada para un partido concreto (nunca lo sobreescribe si ya hay dato
     # real, logica que ya existia sin usarse).
-    ("double_chance", ("double chance",), "double_chance", ()),
+    # Mismo patron de bug ya confirmado arriba para over_under_goals
+    # (un bet de primera/segunda parte cuela bajo el hint generico del
+    # partido completo): Bet365 (y probablemente otras casas) tambien
+    # ofrece "Double Chance - First Half" -- sin este exclude, se
+    # guardaria mezclado con la Doble Oportunidad del PARTIDO COMPLETO
+    # bajo la misma clave (bookmaker, "double_chance_1x"/etc), corrompiendo
+    # el consenso exactamente igual que el bug ya corregido de "Goals
+    # Over/Under First Half" mezclandose con el del partido completo.
+    ("double_chance", ("double chance",), "double_chance", ("half", "halves")),
 ]
 
 # "Double Chance" NO es un mercado de 2 selecciones complementarias como
