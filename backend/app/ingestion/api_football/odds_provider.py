@@ -2,10 +2,12 @@
 
 Cubre TODOS los mercados con fuente real que usa este proyecto en un
 UNICO fetch por partido (una sola llamada a `/odds` por `fixture_id`,
-nunca dos): 1X2 (match_result), goles Over/Under (over_under_goals),
-BTTS, y corners (corners_total) -- este ultimo porque se comprobo que
-The Odds API no lo ofrece para futbol en NINGUN plan (su catalogo se
-limita a resultado y totales de goles), no es una cuestion de
+nunca dos): 1X2 (match_result), doble oportunidad (double_chance_1x/x2/12
+-- bug real corregido, ver DOUBLE_CHANCE_VALUE_MAP: se asumia sin
+confirmar que ningun proveedor la traia), goles Over/Under
+(over_under_goals), BTTS, y corners (corners_total) -- este ultimo porque
+se comprobo que The Odds API no lo ofrece para futbol en NINGUN plan (su
+catalogo se limita a resultado y totales de goles), no es una cuestion de
 configuracion.
 
 Tarjetas (cards) NO se cubre (pedido real del usuario, tras confirmar
@@ -137,7 +139,49 @@ MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str, tuple[str, ...]]] = [
         # ningun hint para "card") a que se clasifique mal.
         ("half", "halves", "team", "result", "card"),
     ),
+    # Bug real reportado por el usuario (comparo contra una app de cuotas
+    # real: Sevilla-Betis "Doble Oportunidad 1X" a 1.57-1.61 segun la casa,
+    # la app mostraba 1.70): el comentario anterior de este modulo (y de
+    # prediction_service.py) decia "ningun proveedor actual trae doble
+    # oportunidad como mercado propio" -- FALSO, nunca confirmado contra
+    # una respuesta real, solo asumido. API-Football SI devuelve "Double
+    # Chance" como mercado propio (agregando las mismas casas reales:
+    # bet365, Sportium, 1xBet, Betway, bwin...), con margen real de cada
+    # casa -- mientras tanto, la app mostraba un precio SIN margen (1 /
+    # P(1)+P(X) derivado del consenso de 1X2), que por construccion
+    # matematica siempre sale MAS ALTO que cualquier cuota real con margen.
+    # Ahora se ingesta el mercado real; `_add_derived_double_chance_quotes`
+    # (prediction_service.py) sigue derivandolo SOLO si esta fuente no trae
+    # nada para un partido concreto (nunca lo sobreescribe si ya hay dato
+    # real, logica que ya existia sin usarse).
+    ("double_chance", ("double chance",), "double_chance", ()),
 ]
+
+# "Double Chance" NO es un mercado de 2 selecciones complementarias como
+# over/under o btts (cuyas probabilidades reales suman 1 y por eso se
+# puede quitar el vig con el metodo proporcional estandar, ver
+# market/vig.py) -- sus 3 "selecciones" (1X, X2, 12) se SOLAPAN (cada una
+# cubre 2 de los 3 resultados de 1X2; sus probabilidades reales suman 2,
+# no 1). Pasar las 3 juntas a `no_vig_probabilities` normalizaria mal
+# (aproximadamente a la mitad de la probabilidad real de cada una). Por
+# eso cada una se guarda como su PROPIO mercado independiente
+# ("double_chance_1x"/"double_chance_x2"/"double_chance_12", selection fija
+# "yes") en vez de 3 selecciones de un unico mercado "double_chance" --
+# `compute_market_consensus` las trata entonces como cotizacion de una
+# unica cara (misma logica, honesta, ya usada cuando una casa solo cotiza
+# un lado de btts/over-under: probabilidad implicita CRUDA, con vig, nunca
+# se inventa un "no vig" sin la selecion complementaria real).
+DOUBLE_CHANCE_VALUE_MAP = {
+    "home/draw": "double_chance_1x",
+    "homedraw": "double_chance_1x",
+    "1x": "double_chance_1x",
+    "draw/away": "double_chance_x2",
+    "drawaway": "double_chance_x2",
+    "x2": "double_chance_x2",
+    "home/away": "double_chance_12",
+    "homeaway": "double_chance_12",
+    "12": "double_chance_12",
+}
 
 # "Over 3.5" / "Under 9.5" / "Over3.5" -> (selection, line)
 OVER_UNDER_VALUE_RE = re.compile(r"(over|under)\s*([\d.]+)", re.IGNORECASE)
@@ -323,5 +367,18 @@ class ApiFootballOddsProvider(ApiFootballClient):
             if normalized not in ("yes", "no"):
                 return None
             return RawOddsRecord(bookmaker, market_key, None, normalized, price)
+
+        if value_kind == "double_chance":
+            # `market_key` aqui es solo el hint generico ("double_chance")
+            # que disparo el match -- el mercado REAL a guardar depende del
+            # VALOR de esta seleccion concreta (1X/X2/12), no del nombre
+            # del bet (ver DOUBLE_CHANCE_VALUE_MAP arriba). "yes" fija a
+            # proposito: cada variante es su propio mercado de una sola
+            # cara (nunca 3 selecciones del mismo "double_chance").
+            normalized = raw_value.strip().lower().replace(" ", "")
+            resolved_market = DOUBLE_CHANCE_VALUE_MAP.get(normalized)
+            if resolved_market is None:
+                return None
+            return RawOddsRecord(bookmaker, resolved_market, None, "yes", price)
 
         return None

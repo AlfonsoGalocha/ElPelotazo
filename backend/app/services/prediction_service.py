@@ -42,17 +42,19 @@ MARKET_TO_ODDS_LOOKUP = {
     "home_win": ("match_result", None, "home"),
     "draw": ("match_result", None, "draw"),
     "away_win": ("match_result", None, "away"),
-    # Doble oportunidad: ningun proveedor actual la trae como mercado
-    # propio, por eso este lookup nunca encuentra filas reales en
-    # MatchOdds para "double_chance" -- la cuota real se DERIVA sumando
-    # los dos componentes de h2h (ver _add_derived_double_chance_quotes
-    # mas abajo), que se ejecuta DESPUES de este lookup y solo rellena el
-    # hueco si no hay ya una cuota real para este market_key (si algun dia
-    # se integra una fuente que sí trae "double_chance" como mercado
-    # propio, esa cuota real tiene prioridad sobre la derivada).
-    "double_chance_1x": ("double_chance", None, "1x"),
-    "double_chance_x2": ("double_chance", None, "x2"),
-    "double_chance_12": ("double_chance", None, "12"),
+    # Doble oportunidad: API-Football SI trae este mercado como propio
+    # (bug real corregido, ver ingestion/api_football/odds_provider.py --
+    # el comentario anterior aqui decia "ningun proveedor lo trae", nunca
+    # confirmado contra una respuesta real). Se guarda como 3 mercados
+    # independientes de una sola cara, nunca 3 selecciones de un unico
+    # "double_chance" (ver docstring de DOUBLE_CHANCE_VALUE_MAP alli: esas
+    # 3 selecciones se SOLAPAN, no son un par complementario valido para
+    # quitar el vig). `_add_derived_double_chance_quotes` (mas abajo) solo
+    # rellena el hueco si esta fuente no trajo nada para un partido
+    # concreto -- la cuota real de aqui SIEMPRE tiene prioridad.
+    "double_chance_1x": ("double_chance_1x", None, "yes"),
+    "double_chance_x2": ("double_chance_x2", None, "yes"),
+    "double_chance_12": ("double_chance_12", None, "yes"),
     # Goles de un equipo: NINGUNA fuente actual trae esta cuota (ver
     # market_labels.py) -- este lookup nunca encontrara filas en
     # MatchOdds para "home_team_total_goals"/"away_team_total_goals" hoy,
@@ -87,16 +89,17 @@ def _market_line_and_selection(market_key: str) -> tuple[float | None, str]:
 
 
 def _add_derived_double_chance_quotes(market_quotes: dict, match_ids) -> None:
-    """Doble oportunidad NUNCA depende de que una casa concreta ofrezca
-    ese mercado exacto (a diferencia de btts/alternate_totals, que si):
-    su cuota de mercado se DERIVA sumando las probabilidades sin vig ya
-    calculadas para sus dos componentes de h2h (ver
-    market_labels.py::DOUBLE_CHANCE_COMPONENTS) -- los 3 resultados de
-    1X2 son mutuamente excluyentes, asi que la probabilidad de "1 o X" es
-    exactamente P(1) + P(X) sin necesidad de ninguna cuota adicional.
-    Solo rellena el hueco si el mercado NO tiene ya una cuota real (por si
-    algun dia una fuente trae "double_chance" como mercado propio, esa
-    cuota real prevalece sobre la derivada).
+    """Red de seguridad, no la fuente principal: API-Football SI trae
+    doble oportunidad como mercado propio (ver
+    ingestion/api_football/odds_provider.py), y el lookup de mas arriba ya
+    la recoge con prioridad. Esta funcion solo rellena el HUECO cuando esa
+    fuente no trajo nada para un partido concreto (The Odds API no lo
+    cubre en absoluto, o la casa no ofrecio el mercado esa vez): se deriva
+    sumando las probabilidades sin vig ya calculadas para sus dos
+    componentes de h2h (ver market_labels.py::DOUBLE_CHANCE_COMPONENTS) --
+    los 3 resultados de 1X2 son mutuamente excluyentes, asi que la
+    probabilidad de "1 o X" es exactamente P(1) + P(X). Nunca sobreescribe
+    una cuota real ya presente.
 
     Honestidad: `market_odds` resultante es un precio JUSTO derivado del
     consenso (1 / probabilidad), no una cuota realmente ofrecida por

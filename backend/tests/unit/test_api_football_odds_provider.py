@@ -43,10 +43,59 @@ def test_parses_corners_market_case_insensitively():
 
 
 def test_ignores_unrelated_markets():
-    response = _odds_response("Double Chance", [{"value": "Home/Draw", "odd": "1.25"}])
+    response = _odds_response("Correct Score", [{"value": "1-0", "odd": "7.50"}])
     records, seen = ApiFootballOddsProvider._parse_odds_response(response)
     assert records == []
+    assert seen == {"Correct Score"}
+
+
+def test_parses_double_chance_market_as_three_independent_single_sided_markets():
+    """Bug real reportado por el usuario (comparo contra una app de cuotas
+    real: Sevilla-Betis "Doble Oportunidad 1X" a 1.57-1.61 segun la casa,
+    la app mostraba 1.70, un precio SIN margen derivado del 1X2 en vez de
+    la cuota real de este mercado propio). "Double Chance" SI es un
+    mercado real que API-Football agrega -- se guarda como 3 mercados
+    independientes de una sola cara (ver DOUBLE_CHANCE_VALUE_MAP), nunca
+    como 3 selecciones del mismo "double_chance" (sus probabilidades
+    reales se SOLAPAN, no son un par complementario valido para quitar
+    el vig con el metodo proporcional estandar)."""
+    response = _odds_response(
+        "Double Chance",
+        [
+            {"value": "Home/Draw", "odd": "1.57"},
+            {"value": "Draw/Away", "odd": "1.30"},
+            {"value": "Home/Away", "odd": "1.40"},
+        ],
+    )
+    records, seen = ApiFootballOddsProvider._parse_odds_response(response)
     assert seen == {"Double Chance"}
+    by_market = {r.market: (r.selection, r.line, r.price) for r in records}
+    assert by_market == {
+        "double_chance_1x": ("yes", None, 1.57),
+        "double_chance_x2": ("yes", None, 1.30),
+        "double_chance_12": ("yes", None, 1.40),
+    }
+
+
+def test_parses_double_chance_with_1x_style_values():
+    """Algunos bookmakers devuelven "1X"/"X2"/"12" en vez de
+    "Home/Draw"/"Draw/Away"/"Home/Away" (confirmado en la propia UI de una
+    app de cuotas real, columnas literalmente tituladas "1X"/"12"/"X2")."""
+    response = _odds_response(
+        "Double Chance",
+        [
+            {"value": "1X", "odd": "1.57"},
+            {"value": "X2", "odd": "1.30"},
+            {"value": "12", "odd": "1.40"},
+        ],
+    )
+    records, _ = ApiFootballOddsProvider._parse_odds_response(response)
+    by_market = {r.market: r.price for r in records}
+    assert by_market == {
+        "double_chance_1x": 1.57,
+        "double_chance_x2": 1.30,
+        "double_chance_12": 1.40,
+    }
 
 
 def test_ignores_values_that_dont_match_over_under_pattern():

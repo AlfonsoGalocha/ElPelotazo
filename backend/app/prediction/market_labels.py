@@ -40,13 +40,15 @@ MARKET_DEFINITIONS: dict[str, MarketSpec] = {
     "away_win": MarketSpec("Victoria Visitante (2)", "match_result", None),
     # Doble oportunidad: union de dos de los tres resultados de 1X2 (ver
     # DOUBLE_CHANCE_COMPONENTS). El modelo la calcula igual que cualquier
-    # otro mercado (mismo score_matrix); la cuota de MERCADO no se ingesta
-    # aparte (ningun proveedor actual la trae) sino que se DERIVA sumando
-    # las probabilidades sin vig ya calculadas para sus dos componentes de
-    # h2h -- ver services/prediction_service.py::_add_derived_double_chance_quotes.
-    # Por eso siempre hay cuota de mercado si la hay para h2h (garantizado
-    # a diferencia de btts/alternate_totals, que dependen de que una casa
-    # concreta ofrezca ese mercado exacto).
+    # otro mercado (mismo score_matrix). La cuota de MERCADO SI se ingesta
+    # como mercado propio desde API-Football (ver
+    # ingestion/api_football/odds_provider.py) -- y si para un partido
+    # concreto no hay dato real, se DERIVA sumando las probabilidades sin
+    # vig ya calculadas para sus dos componentes de h2h (ver
+    # services/prediction_service.py::_add_derived_double_chance_quotes)
+    # como red de seguridad. Por eso siempre hay cuota de mercado si la
+    # hay para h2h (garantizado a diferencia de btts/alternate_totals, que
+    # dependen de que una casa concreta ofrezca ese mercado exacto).
     "double_chance_1x": MarketSpec("Doble Oportunidad 1X (Local o Empate)", "double_chance", None),
     "double_chance_x2": MarketSpec("Doble Oportunidad X2 (Empate o Visitante)", "double_chance", None),
     "double_chance_12": MarketSpec("Doble Oportunidad 12 (Local o Visitante)", "double_chance", None),
