@@ -107,14 +107,36 @@ Pendiente (ver sección G).
   nunca se sobrescribe (cada train = fila nueva), `MatchOddsHistory`
   (append-only para cuotas, alimenta CLV), `OddsIngestionRun` (append-only,
   diagnóstico de cada intento de ingesta).
-- **Pendiente real (no implementado todavía)**: el prompt pide capturar
-  también "contexto disponible en ese momento" (clasificación, forma
-  reciente) dentro del snapshot — hoy `Prediction.features_used` solo
-  guarda los NOMBRES de las features usadas (`{"feature_names": [...]}`),
-  no sus VALORES reales en ese momento. Para reconstruir exactamente qué
-  sabía el modelo (pedido explícito del Bloque 3.1), haría falta ampliar
-  `features_used`/`PredictionSnapshot` para guardar también los valores,
-  no solo los nombres. Riesgo de tamaño de fila (JSON grande) a evaluar.
+- **Hallazgo real importante, confirmado por grep exhaustivo**: ya existe
+  `backend/app/db/models/features.py::TeamMatchFeatures` — una tabla
+  pensada EXACTAMENTE para esto ("Snapshot de features conocidas ANTES
+  del kickoff... materializadas para reproducibilidad", `as_of` como
+  instante de corte, `features: JSON`, `UniqueConstraint(match_id,
+  team_id, feature_set_version)`) — pero **nunca se ha escrito ninguna
+  fila en ella en todo el proyecto** (confirmado: `grep -rl
+  "TeamMatchFeatures("` solo encuentra su propia definición). Es una
+  tabla muerta, nunca conectada al pipeline real.
+  `Prediction.explanation` SÍ guarda valores reales (`raw_value` por
+  feature), pero solo de las top-N features más explicativas (ver
+  `prediction/explanation.py`), no del vector completo usado.
+  **Diseño para conectar `TeamMatchFeatures` la próxima sesión** (no
+  implementado todavía, deliberadamente no apresurado):
+  1. `build_match_feature_table` (`backend/app/features/goals.py`) ya
+     devuelve columnas con prefijo `home_`/`away_` consistente — separar
+     por equipo es mecánico: `{col.removeprefix("home_"): valor for col
+     in table.columns if col.startswith("home_")}` (y análogo para away).
+  2. Hook en `generate_predictions_for_competition` (prediction_service.py),
+     justo después de construir `table`, antes de archivar en
+     `PredictionSnapshot`.
+  3. **Decisión de diseño pendiente**: la restricción de unicidad actual
+     (match_id, team_id, feature_set_version) implica UPSERT si
+     `feature_set_version` se queda fija ("v1") — eso perdería historial
+     igual que `Prediction` antes del fix de hoy. Opciones: (a) versionar
+     `feature_set_version` con un timestamp/hash por cada regeneración
+     (verdaderamente append-only, más filas), o (b) aceptarlo como "última
+     foto conocida" y añadir un `PredictionSnapshot`-equivalente aparte
+     SOLO si hace falta reconstruir una version anterior exacta. Evaluar
+     volumen esperado antes de decidir.
 
 ### Bloque 3.4/3.5 (esquema DB) — auditoría de tablas existentes vs pedidas
 
@@ -212,8 +234,11 @@ por este bloque de trabajo).
 Orden de prioridad recomendado para la próxima sesión (1 y 2.2 completos,
 UI de fiabilidad incluida):
 
-1. **Ampliar `PredictionSnapshot`/`features_used`** para guardar valores
-   reales de las variables usadas, no solo nombres (Bloque 3.1 completo).
+1. **Conectar `TeamMatchFeatures`** (tabla ya existente, nunca usada —
+   ver diseño detallado arriba en sección A, Bloque 3) — el entregable de
+   mayor impacto real para Bloque 3.1/3.7 (reconstruir exactamente qué
+   sabía el modelo). Requiere decidir primero cómo versionar
+   `feature_set_version` para que sea realmente histórico.
 2. **`standings_snapshots`** (clasificación histórica por fecha) y
    **`provider_responses`** (respuesta cruda de API-Football archivada) —
    gaps de esquema reales, sin implementar.
