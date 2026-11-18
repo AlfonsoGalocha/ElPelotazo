@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import type { PerformanceSegment } from "@/types";
+import { isInternationalCompetition } from "@/lib/internationalCompetitions";
 import CalibrationChart from "@/components/CalibrationChart";
 import EdgeRoiChart from "@/components/EdgeRoiChart";
 
@@ -68,58 +69,52 @@ function SegmentCard({ segment }: { segment: PerformanceSegment }) {
 
 // Filtro por liga (pedido por el usuario): todos los segmentos (de todas
 // las ligas) ya se traen server-side (page.tsx) -- aqui solo se decide
-// cuales mostrar, sin volver a pedir nada a la API. De SELECCION, no de
-// exclusion (pedido explicito: "tengo que deseleccionar" era el problema):
-// empieza sin ninguna marcada, el usuario elige que liga(s) quiere ver.
+// cuales mostrar, sin volver a pedir nada a la API. Pedido real del
+// usuario: "ponme el mismo filtro de oportunidades en todas las secciones
+// de la app" -- un unico desplegable con optgroup Ligas/Selecciones,
+// "Todas" por defecto (nunca botones sueltos de multi-seleccion).
 export default function ModelPerformanceBoard({ segments }: { segments: PerformanceSegment[] }) {
   const leagueCodes = [...new Set(segments.map((s) => s.competition_code))].sort();
-  const [selected, setSelected] = useState<string[]>([]);
+  const clubCodes = leagueCodes.filter((code) => !isInternationalCompetition(code));
+  const internationalCodes = leagueCodes.filter((code) => isInternationalCompetition(code));
+  const [selected, setSelected] = useState<string | null>(null);
 
-  function toggle(code: string) {
-    setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
-  }
-
-  const allSelected = selected.length === leagueCodes.length;
-  const visibleSegments = segments.filter((s) => selected.includes(s.competition_code));
+  const visibleSegments = selected ? segments.filter((s) => s.competition_code === selected) : segments;
 
   return (
     <>
       {leagueCodes.length > 1 && (
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-slate-500">Ligas:</span>
-          <button
-            onClick={() => setSelected(leagueCodes)}
-            className={
-              "rounded-full border px-3 py-1 " +
-              (allSelected
-                ? "border-accent/50 bg-accent/15 text-slate-100"
-                : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
-            }
+          <span className="text-slate-500">Liga:</span>
+          <select
+            value={selected ?? ""}
+            onChange={(e) => setSelected(e.target.value || null)}
+            className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
           >
-            Todas
-          </button>
-          {leagueCodes.map((code) => (
-            <button
-              key={code}
-              onClick={() => toggle(code)}
-              className={
-                "rounded-full border px-3 py-1 " +
-                (selected.includes(code)
-                  ? "border-accent/50 bg-accent/15 text-slate-100"
-                  : "border-surface-border text-slate-500 hover:bg-surface-alt/60")
-              }
-            >
-              {code}
-            </button>
-          ))}
+            <option value="">Todas</option>
+            <optgroup label="Ligas">
+              {clubCodes.map((code) => (
+                <option key={code} value={code}>
+                  {code}
+                </option>
+              ))}
+            </optgroup>
+            {internationalCodes.length > 0 && (
+              <optgroup label="Selecciones">
+                {internationalCodes.map((code) => (
+                  <option key={code} value={code}>
+                    {code}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
         </div>
       )}
 
       {visibleSegments.length === 0 && (
         <div className="rounded-xl border border-surface-border bg-card p-6 text-sm text-slate-500">
-          {segments.length === 0
-            ? "Todavía no hay predicciones liquidadas."
-            : "Elige una o varias ligas arriba para ver su rendimiento."}
+          Todavía no hay predicciones liquidadas.
         </div>
       )}
 

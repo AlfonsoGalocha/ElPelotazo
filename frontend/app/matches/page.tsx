@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Search } from "lucide-react";
 import { getCompetitions, getMatchesList } from "@/lib/api";
 import { formatMatchDateTime } from "@/lib/dates";
+import { isInternationalCompetition } from "@/lib/internationalCompetitions";
 import type { Competition, Match } from "@/types";
 import TeamLogo from "@/components/TeamLogo";
 import CompetitionBadge from "@/components/CompetitionBadge";
@@ -45,6 +46,11 @@ export default function MatchesPage() {
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Pedido real del usuario: "ponme el mismo filtro de oportunidades en
+  // todas las secciones de la app" -- mismo desplegable con optgroup
+  // Ligas/Selecciones que /top-signals, nunca botones sueltos.
+  const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code));
+  const internationalCompetitions = competitions.filter((c) => isInternationalCompetition(c.code));
 
   useEffect(() => {
     getCompetitions()
@@ -101,25 +107,29 @@ export default function MatchesPage() {
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-slate-500">Liga:</span>
-          {/* Filtro de seleccion, nunca de deseleccion (regla fija del
-              proyecto): empieza SIN ninguna marcada (= todas visibles) y
-              solo una a la vez -- clic en la ya marcada la quita, clic en
-              otra la sustituye. Nunca un boton "Todas" que parezca
-              "seleccionado" por defecto. */}
-          {competitions.map((c) => (
-            <button
-              key={c.code}
-              onClick={() => setCompetitionCode((prev) => (prev === c.code ? null : c.code))}
-              className={
-                "rounded-full border px-3 py-1 transition-colors " +
-                (competitionCode === c.code
-                  ? "border-accent/50 bg-accent/15 text-slate-100"
-                  : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
-              }
-            >
-              {c.name}
-            </button>
-          ))}
+          <select
+            value={competitionCode ?? ""}
+            onChange={(e) => setCompetitionCode(e.target.value || null)}
+            className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+          >
+            <option value="">Todas</option>
+            <optgroup label="Ligas">
+              {clubCompetitions.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.name}
+                </option>
+              ))}
+            </optgroup>
+            {internationalCompetitions.length > 0 && (
+              <optgroup label="Selecciones">
+                {internationalCompetitions.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-slate-500">Estado:</span>

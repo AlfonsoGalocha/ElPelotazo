@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Sparkles, SlidersHorizontal } from "lucide-react";
 import { getCompetitions, getSummary, getTopSignals } from "@/lib/api";
+import { isInternationalCompetition } from "@/lib/internationalCompetitions";
 import type { Competition, Prediction, Summary } from "@/types";
 import MatchCard from "./MatchCard";
 import { MatchCardSkeletonGrid } from "./Skeleton";
@@ -59,6 +60,11 @@ export default function DashboardBoard() {
   }, [competitionCode, quality]);
 
   const featured = predictions.slice(0, 3);
+  // Pedido real del usuario: "ponme el mismo filtro de oportunidades en
+  // todas las secciones de la app" -- mismo desplegable con optgroup
+  // Ligas/Selecciones que /top-signals, nunca botones sueltos.
+  const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code));
+  const internationalCompetitions = competitions.filter((c) => isInternationalCompetition(c.code));
 
   return (
     <div className="flex flex-col gap-6">
@@ -79,20 +85,29 @@ export default function DashboardBoard() {
       <section className="flex flex-wrap items-center gap-2 rounded-xl border border-surface-border bg-card p-3">
         <SlidersHorizontal className="h-4 w-4 shrink-0 text-slate-500" />
         <span className="text-xs text-slate-500">Liga:</span>
-        {competitions.map((c) => (
-          <button
-            key={c.code}
-            onClick={() => setCompetitionCode((prev) => (prev === c.code ? null : c.code))}
-            className={
-              "rounded-full border px-3 py-1 text-xs transition-colors " +
-              (competitionCode === c.code
-                ? "border-accent/50 bg-accent/15 text-slate-100"
-                : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
-            }
-          >
-            {c.name}
-          </button>
-        ))}
+        <select
+          value={competitionCode ?? ""}
+          onChange={(e) => setCompetitionCode(e.target.value || null)}
+          className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-xs text-slate-200"
+        >
+          <option value="">Todas</option>
+          <optgroup label="Ligas">
+            {clubCompetitions.map((c) => (
+              <option key={c.code} value={c.code}>
+                {c.name}
+              </option>
+            ))}
+          </optgroup>
+          {internationalCompetitions.length > 0 && (
+            <optgroup label="Selecciones">
+              {internationalCompetitions.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+        </select>
         <span className="ml-2 text-xs text-slate-500">Confianza:</span>
         {(Object.keys(QUALITY_LABELS) as QualityFilter[]).map((key) => (
           <button

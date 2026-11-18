@@ -165,20 +165,23 @@ export default function SeleccionesPage() {
       {competitions.length > 1 && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-surface-border bg-card p-4 text-xs">
           <span className="text-slate-500">Competición:</span>
-          {competitions.map((c) => (
-            <button
-              key={c.code}
-              onClick={() => setCompetitionCode((prev) => (prev === c.code ? null : c.code))}
-              className={
-                "rounded-full border px-3 py-1 transition-colors " +
-                (competitionCode === c.code
-                  ? "border-accent/50 bg-accent/15 text-slate-100"
-                  : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
-              }
-            >
-              {c.name}
-            </button>
-          ))}
+          {/* Pedido real del usuario: "ponme el mismo filtro de
+              oportunidades en todas las secciones de la app" -- aqui no
+              hace falta optgroup Ligas/Selecciones (esta pagina ya esta
+              acotada solo a selecciones), pero el control sigue siendo el
+              mismo desplegable, nunca botones sueltos. */}
+          <select
+            value={competitionCode ?? ""}
+            onChange={(e) => setCompetitionCode(e.target.value || null)}
+            className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+          >
+            <option value="">Todas</option>
+            {competitions.map((c) => (
+              <option key={c.code} value={c.code}>
+                {c.name}
+              </option>
+            ))}
+          </select>
         </div>
       )}
 

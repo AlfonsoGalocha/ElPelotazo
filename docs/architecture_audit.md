@@ -2310,3 +2310,59 @@ resultados reales recientes sin restriccion de fecha).
 
 `npx tsc --noEmit` y `npm run build` limpios (`/selecciones` sigue
 generandose como pagina estatica, 2.27 kB).
+
+## 20. Mismo filtro de competicion (desplegable Ligas/Selecciones) en toda la app
+
+Pedido real del usuario: "ponme el mismo filtro de oportunidades en
+todas las secciones de la app un menu desplegable, primero las ligas y
+luego selecciones". Esto amplia -- y sustituye -- la decision de la
+seccion 19.1 de no tocar `/matches`: ahi se dijo explicitamente que esa
+pagina no entraba porque el usuario no lo habia pedido "ahi"; en este
+mensaje si lo pide, para TODAS las secciones sin excepcion.
+
+### 20.1 Alcance
+
+Grep de `competitionCode|competition_code|getCompetitions|Liga:|Ligas:|
+Competición:|optgroup` sobre `frontend/app` y `frontend/components`
+encontro 6 archivos con filtro de competicion propio. `/top-signals`
+(Oportunidades) ya tenia el patron de referencia (seccion 19.1): un unico
+`<select>` con dos `<optgroup>`, "Ligas" primero y "Selecciones" despues
+(solo si `internationalCompetitions.length > 0`), usando
+`isInternationalCompetition()` de `frontend/lib/internationalCompetitions.ts`
+para la division -- nunca inferida de `competition.country`. Los otros 5
+se convirtieron al mismo patron exacto:
+
+- `frontend/app/matches/page.tsx` (Partidos): de fila de pill-buttons de
+  seleccion unica (todas las competiciones mezcladas) a un `<select>`
+  controlado con el mismo split de optgroup.
+- `frontend/components/DashboardBoard.tsx` (Dashboard, filtro "Liga:"):
+  misma conversion; el filtro "Confianza:" (no es de competicion) se deja
+  tal cual, pills.
+- `frontend/components/HistoryBoard.tsx` (Historico): este SI cambia de
+  comportamiento, no solo de estilo -- antes era multi-seleccion
+  (`string[]`, pills en dos filas separadas "Ligas:"/"Selecciones:",
+  seccion 19.1) y por defecto no mostraba nada hasta elegir. Ahora es
+  seleccion unica (`string | null`) igual que Oportunidades: "Todas" por
+  defecto muestra la ultima jornada de cada competicion, una liga
+  concreta filtra a solo esa. Decision deliberada: "el mismo filtro de
+  oportunidades" se interpreta literalmente -- un desplegable de
+  seleccion unica, no una lista con casillas.
+- `frontend/components/ModelPerformanceBoard.tsx` (Estadisticas): mismo
+  cambio multi->unico que Historico, con el mismo split de optgroup
+  (aqui por `competition_code` directamente, ya que `PerformanceSegment`
+  no trae nombre legible de competicion -- la opcion muestra el codigo,
+  igual que antes mostraba el codigo en el boton).
+- `frontend/app/selecciones/page.tsx` (filtro propio de esa pagina): pills
+  -> `<select>`, pero SIN optgroup -- todas las opciones de esa pagina ya
+  son de selecciones (filtradas a `INTERNATIONAL_COMPETITION_CODES` antes
+  de llegar aqui), asi que dividir en dos grupos no aportaria nada.
+
+`frontend/components/StatsOverview.tsx` aparecio en el grep inicial pero
+NO tiene filtro propio: recibe siempre el total de `segments` sin
+filtrar (el filtro de `ModelPerformanceBoard` es local a ese componente,
+nunca se propaga hacia arriba) -- se descarto tras leerlo.
+
+### 20.2 Verificacion
+
+`npx tsc --noEmit` limpio. `npm run build` limpio, las 16 rutas se
+generan igual que antes (`/matches` y `/selecciones` siguen estaticas).
