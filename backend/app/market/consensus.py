@@ -179,10 +179,30 @@ def compute_market_consensus(
     else:
         kept, removed, market_probability, source = {}, [], None, None
 
+    # Bug real reportado por el usuario (cuota real en 1.35 segun Bet365,
+    # la app seguia mostrando 1.70): `market_odds` (la cuota que se
+    # muestra y la que alimenta EV/edge en todo el resto del sistema) se
+    # calculaba con la mediana de TODAS las casas en crudo, SIN aplicar
+    # el mismo filtro de outliers que ya protege a `market_probability` --
+    # asi que una casa fiable (Bet365) podia quedar descartada del
+    # consenso de PROBABILIDAD por discrepar de casas ruidosas (1xBet,
+    # que cotiza decenas de lineas distintas sin filtrar, Marathonbet),
+    # pero la CUOTA mostrada seguia arrastrada por esas mismas casas
+    # ruidosas, dejando `market_odds` inconsistente con la probabilidad
+    # real usada para todo lo demas. `representative_prices` usa las
+    # MISMAS casas supervivientes (`kept`) -- nunca todas sin filtrar --
+    # para que la cuota mostrada sea coherente con esa probabilidad.
+    # `min_odds`/`max_odds`/`median_odds`/`average_odds` SI se quedan sin
+    # filtrar a proposito (evidencia de dispersion real para la UI,
+    # "Dispersion"): filtrarlos tambien ocultaria precisamente la senhal
+    # de que hay casas discrepando.
+    representative_prices = [selection_odds[bookmaker] for bookmaker in kept] if kept else raw_prices
+    market_odds = statistics.median(representative_prices)
+
     return MarketConsensus(
         market_probability=market_probability,
         market_probability_source=source,
-        market_odds=median_odds,
+        market_odds=market_odds,
         bookmakers_count=bookmakers_count,
         bookmakers_used=len(kept),
         min_odds=min_odds,

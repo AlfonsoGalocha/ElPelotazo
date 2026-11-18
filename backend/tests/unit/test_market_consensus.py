@@ -93,6 +93,18 @@ def test_outlier_bookmaker_is_excluded_from_consensus():
     # El consenso de probabilidad debe seguir cerca de ~0.55 (cuota ~1.80),
     # NO cerca de 1/4.40 ~= 0.227 (lo que pasaria si el outlier dominase).
     assert result.market_probability > 0.45
+    # Bug real reportado por el usuario (cuota real distinta de la
+    # mostrada en la app): `market_odds` -- la cuota que se MUESTRA y la
+    # que alimenta EV/edge -- debe venir de las MISMAS 4 casas que
+    # sobrevivieron el filtro de outliers, nunca de las 5 sin filtrar
+    # (eso arrastraria la cuota mostrada hacia el outlier aunque la
+    # probabilidad ya lo hubiera descartado correctamente).
+    assert result.market_odds == statistics.median([1.80, 1.82, 1.79, 1.81])
+    # `median_odds` (el dato de "Dispersion" de la UI) SI se queda sin
+    # filtrar a proposito -- debe seguir reflejando las 5 casas reales,
+    # para no ocultar que una de ellas discrepa mucho.
+    assert result.median_odds == statistics.median([1.80, 1.82, 1.79, 1.81, 4.40])
+    assert result.market_odds != result.median_odds
 
 
 def test_few_bookmakers_never_triggers_outlier_filter():
