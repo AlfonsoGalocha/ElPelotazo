@@ -45,12 +45,28 @@ class ExclusionReason(str, Enum):
     STALE_ODDS = (
         "cuota_desactualizada"  # mas antigua que max_odds_age_minutes (desactivado por defecto)
     )
+    # --- v3 ("Mejores oportunidades", cambio de filosofia del ranking) ---
+    ODDS_OUTSIDE_OPPORTUNITY_BAND = (
+        "cuota_fuera_de_banda"  # fuera de [min_opportunity_odds, max_opportunity_odds], AMBOS inclusive
+    )
+    NON_POSITIVE_ESTIMATED_EV = "ev_estimado_no_positivo"  # EV con probabilidad calibrada <= 0
+    NON_POSITIVE_CONSERVATIVE_EV = "ev_conservador_no_positivo"  # EV con probabilidad conservadora <= 0
+    INSUFFICIENT_TRACK_RECORD = (
+        "fiabilidad_historica_insuficiente"  # sin track record real para (competicion, mercado)
+    )
 
 
 @dataclass
 class RankedSignal:
     prediction: Prediction
-    score: float
+    # `float` para v1/v2 (un score combinado). v3 ("Mejores oportunidades",
+    # cambio de filosofia del ranking) usa en cambio una TUPLA -- orden
+    # lexicografico por prioridad (probabilidad calibrada, EV conservador,
+    # fiabilidad historica, incertidumbre, calidad de datos, edge), nunca
+    # un score combinado con pesos inventados. Python ordena tuplas
+    # exactamente igual que floats (`sort(key=..., reverse=True)` funciona
+    # sin cambios), asi que no hace falta un dataclass nuevo.
+    score: float | tuple[float, ...]
 
 
 @dataclass
@@ -535,4 +551,227 @@ def rank_signals_v2(
         included.append(RankedSignal(prediction=prediction, score=score))
 
     included.sort(key=lambda s: s.score, reverse=True)
+    return included, excluded
+
+
+# ---------------------------------------------------------------------------
+# signal ranking v3 ("Mejores oportunidades", cambio de filosofia del
+# ranking -- pedido real del usuario, 2026-11): v1/v2 dejaban que un EV o
+# un edge grande compensaran una probabilidad baja ("un 44% a cuota 3.50
+# por delante de un 72% a cuota 1.70, solo porque su EV ajustado era
+# mayor" -- diagnostico real del usuario, confirmado leyendo la formula:
+# `model_probability^2` cae mucho mas despacio de lo que crece el EV con
+# la cuota). v3 NO es una formula con pesos nuevos: es un ORDEN DE
+# PRIORIDAD literal (seccion 5 del pedido), aplicado como sort
+# LEXICOGRAFICO -- la probabilidad calibrada decide primero, el EV
+# conservador solo rompe empates de probabilidad, etc. "No inventes
+# pesos para construir un score" se cumple por construccion: no hay
+# ningun score combinado que inventar.
+#
+# Requisitos DUROS para entrar (seccion 2/4 del pedido), antes de
+# ordenar nada:
+#   - Cuota de mercado REAL (nunca estimada) dentro de
+#     [min_opportunity_odds, max_opportunity_odds], AMBOS inclusive.
+#   - EV estimado (con probabilidad CALIBRADA) estrictamente positivo.
+#   - EV conservador (con probabilidad conservadora) estrictamente positivo.
+#   - Calidad de datos sobre el minimo ya configurado (`min_data_quality`).
+#   - Fiabilidad historica (`market_track_record`) REAL y suficiente para
+#     este (competicion, mercado) -- a diferencia de v1/v2 (que tratan la
+#     ausencia de historico como neutro, 1.0), v3 EXIGE que exista: "la
+#     fiabilidad historica del segmento debe ser suficiente" es un
+#     requisito de entrada, no solo un factor de orden. Consecuencia
+#     esperada y deliberada: en competiciones/mercados nuevos, sin
+#     historico liquidado suficiente todavia (ver
+#     evaluation_service.py::MIN_SETTLED_FOR_TRACK_RECORD), "Mejores
+#     oportunidades" puede quedar vacio -- es el comportamiento CORRECTO
+#     pedido explicitamente (seccion 7: "nunca rellenes el ranking con
+#     predicciones que incumplan los filtros"), nunca un bug.
+#
+# Deliberadamente SIN exigir `edge >= min_edge_pp`: el edge es
+# "informacion secundaria" (ultimo criterio de la seccion 5), nunca un
+# sustituto de las condiciones de arriba -- un EV positivo con una cuota
+# bien respaldada ya implica que hay valor real, exigir ademas un edge
+# minimo en puntos porcentuales duplicaria el mismo criterio de otra
+# forma.
+
+
+def calibrated_probability_or_fallback(prediction: Prediction) -> float:
+    """"Probabilidad calibrada" (seccion 3 del pedido): `calibrated_
+    probability` cuando existe (ajustada en el holdout de entrenamiento,
+    ver model_service.py); si no (mercado/competicion sin holdout
+    suficiente, `MIN_CALIBRATION_MATCHES`), cae a `model_probability` --
+    NUNCA se descarta la prediccion solo por falta de calibracion
+    (eso excluiria sistematicamente ligas/mercados nuevos), pero tampoco
+    se inventa una calibracion que no existe."""
+    return prediction.calibrated_probability if prediction.calibrated_probability is not None else prediction.model_probability
+
+
+def conservative_probability(prediction: Prediction) -> float:
+    """"Probabilidad conservadora" (seccion 3): el MINIMO entre la
+    probabilidad calibrada (o su fallback) y `uncertainty_low` (cota
+    conservadora real sobre el ruido de MUESTRA, Wilson score interval ya
+    validado -- ver prediction/uncertainty.py), cuando existe.
+
+    Un minimo, nunca un blend ni una resta arbitraria -- mismo principio
+    YA establecido en este modulo (`reality_capped_expected_value`: "el
+    minimo de los dos EV que implican es la estimacion conservadora real,
+    nunca un blend"). Aqui se aplica a probabilidad en vez de a EV: si la
+    calibracion dice 70% pero el intervalo de incertidumbre de este
+    partido concreto solo respalda un 55%, la estimacion conservadora
+    real es 55%, nunca el 70% optimista. Sin dato de incertidumbre (raro,
+    ver uncertainty_low: `None` cuando no se pudo calcular), se usa solo
+    la calibrada/fallback -- nunca se inventa un intervalo."""
+    calibrated = calibrated_probability_or_fallback(prediction)
+    if prediction.uncertainty_low is None:
+        return calibrated
+    return min(calibrated, prediction.uncertainty_low)
+
+
+def ev_with_probability(probability: float, market_odds: float | None) -> float | None:
+    """EV = probabilidad * cuota - 1 (seccion 4), con la probabilidad que
+    decida el llamador (calibrada o conservadora) -- `None` sin cuota
+    real, nunca un EV calculado sobre una cuota inventada."""
+    if market_odds is None:
+        return None
+    return probability * market_odds - 1.0
+
+
+def evaluate_quality_gate_v3(
+    prediction: Prediction,
+    settings: Settings | None = None,
+    market_track_record: float | None = None,
+) -> ExclusionReason | None:
+    """Filtro duro de "Mejores oportunidades" (v3) -- DELIBERADAMENTE
+    INDEPENDIENTE de `evaluate_quality_gate` (v1/v2): reutilizar sus
+    comprobaciones de cuota seria incorrecto aqui, porque
+    `min_signal_odds`/`max_signal_odds` (1.45/4.0 por defecto) definen
+    una banda DISTINTA (el filtro de sanidad general) de
+    `min_opportunity_odds`/`max_opportunity_odds` (1.35/1.90): una cuota
+    de 1.40 debe PASAR v3 (esta dentro de [1.35, 1.90]) aunque quede por
+    debajo de `min_signal_odds` -- mezclar ambas comprobaciones
+    rechazaria cuotas validas para esta estrategia por error.
+    """
+    settings = settings or get_settings()
+
+    if prediction.market_odds is None or prediction.market_probability is None:
+        return ExclusionReason.NO_MARKET
+    # Ambos limites INCLUSIVOS (seccion 2 del pedido: "Ambos limites son
+    # inclusivos") -- por eso `<`/`>` estrictos, nunca `<=`/`>=`.
+    if (
+        prediction.market_odds < settings.min_opportunity_odds
+        or prediction.market_odds > settings.max_opportunity_odds
+    ):
+        return ExclusionReason.ODDS_OUTSIDE_OPPORTUNITY_BAND
+    if (prediction.bookmakers_used or 0) < settings.min_bookmakers:
+        return ExclusionReason.INSUFFICIENT_BOOKMAKERS
+    if prediction.data_quality < settings.min_data_quality:
+        return ExclusionReason.LOW_DATA_QUALITY
+    if settings.max_odds_age_minutes is not None:
+        age_minutes = (dt.datetime.utcnow() - prediction.created_at).total_seconds() / 60.0
+        if age_minutes > settings.max_odds_age_minutes:
+            return ExclusionReason.STALE_ODDS
+
+    calibrated = calibrated_probability_or_fallback(prediction)
+    ev_estimated = ev_with_probability(calibrated, prediction.market_odds)
+    if ev_estimated is None or ev_estimated <= 0.0:
+        return ExclusionReason.NON_POSITIVE_ESTIMATED_EV
+
+    conservative = conservative_probability(prediction)
+    ev_conservative = ev_with_probability(conservative, prediction.market_odds)
+    if ev_conservative is None or ev_conservative <= 0.0:
+        return ExclusionReason.NON_POSITIVE_CONSERVATIVE_EV
+
+    if market_track_record is None:
+        return ExclusionReason.INSUFFICIENT_TRACK_RECORD
+
+    return None
+
+
+def ranking_key_v3(prediction: Prediction, market_track_record: float) -> tuple[float, float, float, float, float, float]:
+    """Orden de prioridad LITERAL de la seccion 5 del pedido, como tupla
+    para sort lexicografico (nunca un score combinado -- ver el bloque de
+    comentarios justo arriba de esta seccion):
+
+        1. probabilidad calibrada
+        2. EV conservador
+        3. fiabilidad historica del mercado/competicion (market_track_record)
+        4. incertidumbre (ancho del intervalo; MENOR ancho = mejor, se
+           guarda como NEGATIVO para que el sort descendente lo prefiera)
+        5. calidad de datos
+        6. edge (informacion secundaria, ultimo criterio de desempate)
+
+    `market_track_record` nunca es `None` aqui: el llamador solo invoca
+    esto DESPUES de que `evaluate_quality_gate_v3` ya exigio que existiera.
+    Ancho de incertidumbre ausente (raro) se trata como el PEOR caso
+    posible (1.0) para el orden -- nunca se finge una certeza que no se
+    pudo medir, aunque esto no sea un filtro duro (solo afecta el orden).
+    """
+    calibrated = calibrated_probability_or_fallback(prediction)
+    conservative = conservative_probability(prediction)
+    ev_conservative = ev_with_probability(conservative, prediction.market_odds) or 0.0
+    if prediction.uncertainty_low is not None and prediction.uncertainty_high is not None:
+        width = max(0.0, prediction.uncertainty_high - prediction.uncertainty_low)
+    else:
+        width = 1.0
+    return (
+        calibrated,
+        ev_conservative,
+        market_track_record,
+        -width,
+        prediction.data_quality,
+        prediction.edge or 0.0,
+    )
+
+
+def select_one_per_match(ranked: list[RankedSignal]) -> list[RankedSignal]:
+    """Seccion 6 del pedido: "evalua todos los mercados disponibles de
+    cada partido... evita mostrar multiples apuestas redundantes del
+    mismo partido". `ranked` debe venir YA ORDENADO (mejor primero) --
+    se queda con la PRIMERA (mejor) aparicion de cada `match_id`,
+    descartando el resto SOLO de esta lista de salida (las candidatas
+    siguen todas en la BD, nunca se borran -- ver Prediction/
+    PredictionResult, esto es puramente una decision de que mostrar)."""
+    seen_match_ids: set[int] = set()
+    selected: list[RankedSignal] = []
+    for signal in ranked:
+        match_id = signal.prediction.match_id
+        if match_id in seen_match_ids:
+            continue
+        seen_match_ids.add(match_id)
+        selected.append(signal)
+    return selected
+
+
+def rank_signals_v3(
+    predictions: list[Prediction],
+    settings: Settings | None = None,
+    market_track_records: dict[tuple[str, str], float] | None = None,
+    one_per_match: bool = True,
+) -> tuple[list[RankedSignal], list[ExcludedSignal]]:
+    """Filtra con `evaluate_quality_gate_v3` y ordena con `ranking_key_v3`
+    -- "Mejores oportunidades" tal como lo pide el cambio de filosofia
+    del ranking. `one_per_match=True` (por defecto) aplica
+    `select_one_per_match` al final; se puede desactivar para depuracion
+    (ver /best/debug) o para el comparador de backtesting, que SI quiere
+    ver todas las candidatas liquidadas."""
+    settings = settings or get_settings()
+    included: list[RankedSignal] = []
+    excluded: list[ExcludedSignal] = []
+
+    for prediction in predictions:
+        track_record = None
+        if market_track_records and prediction.match is not None:
+            key = (prediction.match.competition.code, prediction.market)
+            track_record = market_track_records.get(key)
+
+        reason = evaluate_quality_gate_v3(prediction, settings, track_record)
+        if reason is not None:
+            excluded.append(ExcludedSignal(prediction=prediction, reason=reason))
+            continue
+        key_tuple = ranking_key_v3(prediction, track_record)
+        included.append(RankedSignal(prediction=prediction, score=key_tuple))
+
+    included.sort(key=lambda s: s.score, reverse=True)
+    if one_per_match:
+        included = select_one_per_match(included)
     return included, excluded

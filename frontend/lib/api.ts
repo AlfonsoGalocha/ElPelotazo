@@ -282,3 +282,36 @@ export interface DataSourcesStatus {
 export function getDataSourcesStatus(): Promise<DataSourcesStatus> {
   return apiFetch<DataSourcesStatus>("/config/data-sources");
 }
+
+// "Mejores oportunidades" (cambio de filosofia del ranking, seccion 7 del
+// pedido): primera preferencia de usuario editable en RUNTIME de esta
+// app (ver backend/app/services/ranking_config_service.py) -- el resto
+// de "Configuracion" es de solo lectura. `default_*` son los valores de
+// fabrica (`Settings`), para poder mostrar "restaurar por defecto" sin
+// hardcodearlos aqui tambien.
+export interface RankingConfig {
+  min_opportunity_odds: number;
+  max_opportunity_odds: number;
+  default_min_opportunity_odds: number;
+  default_max_opportunity_odds: number;
+}
+
+export function getRankingConfig(): Promise<RankingConfig> {
+  return apiFetch<RankingConfig>("/config/ranking");
+}
+
+// Lanza con el mensaje real del backend (422: "max_odds debe ser mayor
+// que min_odds", etc.) si la banda no es valida -- nunca se valida solo
+// en el cliente, el backend es la unica fuente de verdad.
+export async function updateRankingConfig(minOdds: number, maxOdds: number): Promise<RankingConfig> {
+  const res = await fetch(`${resolveApiUrl()}/config/ranking`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ min_opportunity_odds: minOdds, max_opportunity_odds: maxOdds }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(body?.detail ?? `API /config/ranking respondio ${res.status}`);
+  }
+  return res.json() as Promise<RankingConfig>;
+}

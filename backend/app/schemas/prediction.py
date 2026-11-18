@@ -41,6 +41,18 @@ class PredictionOut(BaseModel):
     # 100% para estimar rentabilidad esperada. `None` solo cuando no hay
     # cuota de mercado (igual que `expected_value`).
     risk_adjusted_expected_value: float | None = None
+    # "Mejores oportunidades" (cambio de filosofia del ranking, pedido
+    # real del usuario): EV_estimado con la probabilidad CALIBRADA
+    # (`ev_calibrated`) y EV_conservador con la probabilidad conservadora
+    # (`ev_conservative`, min(calibrada, uncertainty_low)) -- ver
+    # api/routes/predictions.py::serialize_prediction y
+    # prediction/ranking.py. Distintos de `expected_value`/
+    # `risk_adjusted_expected_value` (que usan `model_probability` CRUDA,
+    # formula de v1/v2): se calculan solo para mostrar, nunca se guardan
+    # en `Prediction` -- esta implementacion no toca los modelos
+    # predictivos ni sus probabilidades.
+    ev_calibrated: float | None = None
+    ev_conservative: float | None = None
     confidence: float
     data_quality: float
     uncertainty_low: float | None = None

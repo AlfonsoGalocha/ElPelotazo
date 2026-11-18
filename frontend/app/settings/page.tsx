@@ -1,6 +1,7 @@
 import { Settings, Database } from "lucide-react";
-import { getDataSourcesStatus } from "@/lib/api";
+import { getDataSourcesStatus, getRankingConfig } from "@/lib/api";
 import { ErrorState } from "@/components/EmptyState";
+import RankingConfigForm from "@/components/RankingConfigForm";
 
 function StatusDot({ on }: { on: boolean }) {
   return (
@@ -13,16 +14,18 @@ function StatusDot({ on }: { on: boolean }) {
 }
 
 // Pagina "Configuracion" del nuevo menu. Honesto sobre lo que hay de
-// verdad: esta app no tiene cuentas de usuario ni un sistema de
-// preferencias persistentes todavia -- no se simula un panel de ajustes
-// que en realidad no guarda nada. Lo unico real que se puede mostrar hoy
-// es el ESTADO de las fuentes de datos (configuradas via variables de
-// entorno del backend, nunca desde aqui).
+// verdad: esta app no tiene cuentas de usuario, asi que las demas
+// secciones son de solo lectura (fuentes de datos, configuradas via
+// variables de entorno del backend). El filtro de cuotas de "Mejores
+// oportunidades" (abajo) es la EXCEPCION real: una preferencia que si se
+// guarda de verdad (RankingConfig, compartida por ahora -- no hay
+// cuentas de usuario todavia, asi que no es "por persona").
 export default async function SettingsPage() {
   let status: Awaited<ReturnType<typeof getDataSourcesStatus>> | null = null;
+  let rankingConfig: Awaited<ReturnType<typeof getRankingConfig>> | null = null;
   let error: string | null = null;
   try {
-    status = await getDataSourcesStatus();
+    [status, rankingConfig] = await Promise.all([getDataSourcesStatus(), getRankingConfig()]);
   } catch {
     error = "No se pudo conectar con la API.";
   }
@@ -35,13 +38,15 @@ export default async function SettingsPage() {
           Configuración
         </h1>
         <p className="text-sm text-slate-500">
-          Esta aplicación todavía no tiene cuentas de usuario ni preferencias que se guarden por
-          persona — lo que sigue es de solo lectura: el estado real de las fuentes de datos
-          configuradas en el backend.
+          Esta aplicación todavía no tiene cuentas de usuario — el filtro de cuotas de abajo es
+          compartido (no &quot;por persona&quot;), pero sí se guarda de verdad. El resto es de solo
+          lectura: el estado real de las fuentes de datos configuradas en el backend.
         </p>
       </div>
 
       {error && <ErrorState message={error} />}
+
+      {rankingConfig && <RankingConfigForm initial={rankingConfig} />}
 
       {status && (
         <div className="rounded-xl border border-surface-border bg-card p-4">
@@ -79,7 +84,7 @@ export default async function SettingsPage() {
 
       <div className="rounded-xl border border-dashed border-surface-border p-4 text-sm text-slate-500">
         Pendiente de construir (requiere cuentas de usuario, que no existen hoy): preferencias
-        guardadas de liga favorita, tema, notificaciones.
+        guardadas POR PERSONA de liga favorita, tema, notificaciones.
       </div>
     </div>
   );
