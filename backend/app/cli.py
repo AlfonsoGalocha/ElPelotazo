@@ -34,7 +34,7 @@ from backend.app.config.settings import REPO_ROOT, get_settings
 from backend.app.db.database import init_db, session_scope
 from backend.app.db.models.core import Competition, Season, Team, TeamNameMapping
 from backend.app.db.models.matches import Match
-from backend.app.db.models.modeling import Prediction, PredictionResult
+from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionResult
 from backend.app.features.goals import build_match_feature_table, feature_columns
 from backend.app.ingestion.api_football.client import INTERNATIONAL_COMPETITION_EDITIONS
 from backend.app.ingestion.api_football.fixtures_provider import ApiFootballMatchProvider
@@ -58,10 +58,12 @@ from backend.app.services.data_service import (
 from backend.app.services.evaluation_service import (
     evaluate_settled_predictions,
     settle_finished_predictions,
+    void_cancelled_predictions,
 )
 from backend.app.services.match_service import load_market_odds_column, load_matches_dataframe
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import generate_predictions_for_competition
+from backend.app.services.promotion_service import evaluate_and_promote
 from backend.app.services.round_service import get_current_round
 from backend.app.utils.dates import season_label as season_label_from_date
 from backend.app.utils.logging import get_logger
@@ -457,13 +459,27 @@ def update_secondary_odds(competition: str = typer.Option(None)) -> None:
 
 @app.command()
 def train(competition: str = typer.Option(None)) -> None:
-    """Entrena baseline + Dixon-Coles + ML classifier + ensemble por competicion."""
+    """Entrena baseline + Dixon-Coles + ML classifier + ensemble por competicion.
+
+    Tras entrenar, decide si la ModelVersion nueva SUSTITUYE a la que ya
+    esta en produccion (`services/promotion_service.py::evaluate_and_promote`):
+    solo si demuestra mejor Brier score en partidos reales POSTERIORES a su
+    propio entrenamiento. Si no mejora (o no hay suficientes partidos
+    nuevos con los que comparar todavia), la version de produccion
+    anterior sigue siendo la que usa `predict`/`predict-upcoming` -- la
+    nueva se guarda igual, nunca se descarta, solo no se activa.
+    """
     init_db()
     competitions = [competition] if competition else ALL_COMPETITIONS
     with session_scope() as db:
         for comp in competitions:
             result = train_competition_models(db, comp)
             typer.echo(f"[train] {json.dumps(result, default=str)}")
+            if result.get("status") != "trained":
+                continue
+            model_version = db.get(ModelVersion, result["model_version_id"])
+            decision = evaluate_and_promote(db, comp, model_version)
+            typer.echo(f"[train] promocion: {json.dumps(decision, default=str)}")
 
 
 @app.command()
@@ -700,12 +716,23 @@ def refresh(
     API_FOOTBALL_KEY respectivamente; si no estan configuradas, cada paso
     se salta solo sin romper el resto del pipeline).
 
-    Paso 2 (`evaluate`): en cuanto llegan resultados reales nuevos (paso 1),
-    compara las predicciones que YA estaban guardadas de esos partidos
-    contra el resultado real -- asi queda un historial de "como de bien
-    predijo el modelo" ANTES de que el reentrenamiento del paso 6 cambie
-    nada. Nunca falla el `refresh` completo si no hay nada nuevo que
-    evaluar (p.ej. la primera vez que se ejecuta).
+    Paso 5 (`evaluate`): en cuanto llegan resultados reales nuevos (pasos
+    1 y 3), compara las predicciones que YA estaban guardadas de esos
+    partidos contra el resultado real -- asi queda un historial de "como
+    de bien predijo el modelo" ANTES de que el reentrenamiento del paso 6
+    cambie nada. Nunca falla el `refresh` completo si no hay nada nuevo
+    que evaluar (p.ej. la primera vez que se ejecuta).
+
+    Bug real corregido (reportado por el usuario: partidos con marcador ya
+    visible seguian "sin resolver" en el Historico): `evaluate` iba en el
+    paso 2, ANTES de `update_fixtures` (paso 3) -- es `update_fixtures`
+    quien trae el resultado/estado real de los partidos de la temporada en
+    curso desde API-Football, asi que un partido recien finalizado
+    quedaba con `Match.status` todavia "scheduled" cuando `evaluate` leia
+    la BD en ESTE `refresh`, y no se liquidaba hasta el SIGUIENTE. Mover
+    `evaluate` a justo antes de `train` (ya con fixtures/odds frescos)
+    liquida los partidos recien finalizados en el mismo `refresh` en el
+    que se descubren.
     """
     typer.echo("=== [1/7] Resultados historicos ===")
     if skip_historical:
@@ -713,17 +740,17 @@ def refresh(
     else:
         update(competition=competition, season=None, source="history_dataset")
 
-    typer.echo("=== [2/7] Evaluar predicciones de partidos ya finalizados ===")
-    evaluate(competition=competition)
-
-    typer.echo("=== [3/7] Fixtures reales (temporada en curso) ===")
+    typer.echo("=== [2/7] Fixtures reales (temporada en curso) ===")
     update_fixtures(competition=competition)
 
-    typer.echo("=== [4/7] Cuotas de mercado reales: goles/1X2 (The Odds API) ===")
+    typer.echo("=== [3/7] Cuotas de mercado reales: goles/1X2 (The Odds API) ===")
     update_odds(competition=competition)
 
-    typer.echo("=== [5/7] Cuotas de mercado reales: corners (API-Football) ===")
+    typer.echo("=== [4/7] Cuotas de mercado reales: corners (API-Football) ===")
     update_secondary_odds(competition=competition)
+
+    typer.echo("=== [5/7] Evaluar predicciones de partidos ya finalizados ===")
+    evaluate(competition=competition)
 
     typer.echo("=== [6/7] Entrenamiento de modelos ===")
     train(competition=competition)
@@ -750,6 +777,7 @@ def evaluate(competition: str = typer.Option(None), output: str | None = None) -
     init_db()
     with session_scope() as db:
         settled_count = settle_finished_predictions(db, competition_code=competition)
+        voided_count = void_cancelled_predictions(db, competition_code=competition)
         report_data = evaluate_settled_predictions(db, competition_code=competition)
         # Alertas proactivas de Jarvis (Fase 6, agent/alerts.py) -- misma
         # cadencia que el settlement (cada hora via scheduler), no-op si
@@ -762,6 +790,10 @@ def evaluate(competition: str = typer.Option(None), output: str | None = None) -
         typer.echo(
             f"[evaluate] {settled_count} predicciones liquidadas "
             "(PredictionResult creado, nunca sobreescrito)."
+        )
+    if voided_count:
+        typer.echo(
+            f"[evaluate] {voided_count} predicciones anuladas (partido cancelado, stake devuelto)."
         )
     if new_alerts:
         typer.echo(f"[evaluate] {new_alerts} alertas nuevas de Jarvis generadas.")

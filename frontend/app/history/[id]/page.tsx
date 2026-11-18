@@ -8,7 +8,20 @@ import AnomalyBadges from "@/components/AnomalyBadge";
 // Fase 4 (seccion 8): detalle histórico de UN partido finalizado -- TODAS
 // sus predicciones (no solo la mejor) comparadas contra la realidad, para
 // poder auditar por qué el modelo eligió lo que eligió.
+// Mismo criterio de colores que HistoryBoard.tsx: gris para pendiente Y
+// anulada (texto distinto para no confundirlas), amarillo para media
+// ganancia/perdida (sin mercado real que las produzca todavia).
 function ResultCell({ prediction }: { prediction: HistoryPrediction }) {
+  if (prediction.settlement_status === "void") {
+    return <span className="text-xs font-semibold text-slate-500">ANULADA</span>;
+  }
+  if (prediction.settlement_status === "half_won" || prediction.settlement_status === "half_lost") {
+    return (
+      <span className="text-xs font-semibold text-amber-400">
+        {prediction.settlement_status === "half_won" ? "MEDIA GANANCIA" : "MEDIA PÉRDIDA"}
+      </span>
+    );
+  }
   if (prediction.is_correct === null) {
     return <span className="text-xs text-slate-500">sin resolver</span>;
   }
@@ -72,9 +85,11 @@ export default async function HistoryDetailPage({ params }: { params: { id: stri
             <tr>
               <th className="px-3 py-2">Mercado</th>
               <th className="px-3 py-2">Modelo</th>
+              <th className="px-3 py-2">Calibrada</th>
               <th className="px-3 py-2">Mercado</th>
               <th className="px-3 py-2">Cuota</th>
               <th className="px-3 py-2">Edge</th>
+              <th className="px-3 py-2">EV</th>
               <th className="px-3 py-2">CLV</th>
               <th className="px-3 py-2">Resultado real</th>
               <th className="px-3 py-2">Estado</th>
@@ -114,11 +129,24 @@ export default async function HistoryDetailPage({ params }: { params: { id: stri
                   )}
                 </td>
                 <td className="px-3 py-2">{(p.model_probability * 100).toFixed(1)}%</td>
+                <td className="px-3 py-2 text-slate-300">
+                  {p.calibrated_probability !== null ? `${(p.calibrated_probability * 100).toFixed(1)}%` : "—"}
+                </td>
                 <td className="px-3 py-2">
                   {p.market_probability !== null ? `${(p.market_probability * 100).toFixed(1)}%` : "—"}
                 </td>
                 <td className="px-3 py-2">{p.market_odds !== null ? p.market_odds.toFixed(2) : "—"}</td>
                 <td className="px-3 py-2">{p.edge !== null ? `${(p.edge * 100).toFixed(1)} pp` : "—"}</td>
+                <td className="px-3 py-2">
+                  {p.expected_value !== null ? (
+                    <span className={p.expected_value >= 0 ? "text-edge-positive" : "text-edge-negative"}>
+                      {p.expected_value >= 0 ? "+" : ""}
+                      {(p.expected_value * 100).toFixed(1)}%
+                    </span>
+                  ) : (
+                    "—"
+                  )}
+                </td>
                 <td className="px-3 py-2">
                   <ClvCell prediction={p} />
                 </td>
@@ -130,7 +158,7 @@ export default async function HistoryDetailPage({ params }: { params: { id: stri
             ))}
             {predictions.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-3 py-4 text-center text-slate-500">
+                <td colSpan={10} className="px-3 py-4 text-center text-slate-500">
                   Sin predicciones guardadas para este partido.
                 </td>
               </tr>

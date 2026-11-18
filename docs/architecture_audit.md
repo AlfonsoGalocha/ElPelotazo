@@ -2366,3 +2366,182 @@ nunca se propaga hacia arriba) -- se descarto tras leerlo.
 
 `npx tsc --noEmit` limpio. `npm run build` limpio, las 16 rutas se
 generan igual que antes (`/matches` y `/selecciones` siguen estaticas).
+
+## 21. "Rendimiento del modelo": sistema de evaluación y aprendizaje continuo
+
+Pedido real del usuario: transformar el Histórico de jornadas en el
+centro de evaluación histórica del motor predictivo -- "no quiero un
+simple historial de marcadores, quiero un sistema de evaluación y
+aprendizaje continuo".
+
+### 21.1 Auditoría previa (antes de tocar código)
+
+La mayor parte de lo pedido YA EXISTÍA, construido en sesiones
+anteriores de este mismo proyecto, y se reutilizó sin duplicar nada:
+
+- Captura prepartido inmutable: `Prediction` ya guardaba probabilidad
+  original/calibrada, incertidumbre, EV (normal y ajustado a riesgo),
+  edge, `signal_score` CONGELADO, versión de modelo, y todas las
+  candidatas (no solo la mejor) -- ver `db/models/modeling.py`.
+- Liquidación separada e inmutable: `PredictionResult`, creada por
+  `services/evaluation_service.py::settle_finished_predictions`, NUNCA
+  sobrescribe `Prediction`.
+- Evaluación real (no backtest sintético): Brier/log loss/ECE/ROI/
+  calibración por segmento (competición/mercado/versión), con desglose
+  por bucket de probabilidad y de edge -- `real_performance_report`.
+- Infraestructura walk-forward completa (`backtesting/engine.py`,
+  `ranking_comparison.py`).
+
+Lo que NO existía, y es lo que se construyó en esta sesión:
+
+1. **Bug real confirmado**: partidos con marcador ya visible aparecían
+   "sin resolver" en el Histórico porque `cli.py::refresh()` liquidaba
+   predicciones (`evaluate`, paso 2) ANTES de traer los fixtures reales
+   de la temporada en curso (`update_fixtures`, paso 3) -- un partido
+   recién finalizado no se liquidaba hasta el SIGUIENTE `refresh`. Fix:
+   reordenar `evaluate` a justo antes de `train` (pasos 1-7: historial →
+   fixtures → cuotas goles → cuotas corners → evaluar → entrenar →
+   predecir).
+2. Estados de partido incompletos: solo "scheduled"/"finished", nunca
+   "postponed"/"cancelled" -- un aplazamiento quedaba indistinguible de
+   un partido normal por jugar, para siempre.
+3. Estados de liquidación incompletos: solo booleano (acertada/fallada),
+   sin "void" para partidos cancelados -- se liquidarían como "lost",
+   penalizando al modelo por algo ajeno a su predicción.
+4. Sin gate de promoción de modelo: cada `train` se usaba en producción
+   de inmediato, sin comparar nunca con la versión anterior.
+
+### 21.2 Tablas nuevas o modificadas
+
+- `matches.status`: ahora `scheduled|finished|postponed|cancelled`
+  (antes solo los dos primeros). Deliberadamente SIN un estado "live"
+  aparte: fragmentaría los muchos filtros `status == "scheduled"`
+  existentes sin que nada lo necesite hoy (sin apuestas en vivo).
+- `prediction_results.settlement_status` (nueva, nullable, mismo patrón
+  aditivo que `competitions.tier`): `won|lost|void|half_won|half_lost`.
+  Solo `won`/`lost`/`void` los produce el pipeline hoy; `half_won`/
+  `half_lost` quedan soportados por el esquema pero sin ningún mercado
+  real que los necesite (ver limitaciones).
+- `model_versions.is_active` (nueva, nullable): decide
+  `services/promotion_service.py`, nunca "la más reciente" a ciegas.
+
+### 21.3 Flujo automático: predicción → liquidación
+
+Sin cambios en la CAPTURA (ya era correcta e inmutable). Lo nuevo es el
+ciclo de vida completo del PARTIDO y de su LIQUIDACIÓN:
+
+- `ingestion/api_football/fixtures_provider.py::_match_status`: mapea
+  cada estado real de API-Football a uno de los 4 (FT/AET/PEN→finished,
+  CANC/ABD/AWD/WO→cancelled, PST/SUSP/INT→postponed, resto→scheduled).
+- `RawMatchRecord.status` (nuevo campo, `None` para fuentes que no lo
+  distinguen) viaja hasta `data_service.py::_upsert_match`, que lo
+  prefiere sobre la inferencia antigua (goles→finished) cuando está
+  presente.
+- `evaluation_service.py::settle_finished_predictions` (sin cambios de
+  comportamiento, solo ahora también fija `settlement_status`) +
+  `void_cancelled_predictions` (nueva): partidos "cancelled" con
+  predicciones sin liquidar se anulan ("void", stake devuelto), nunca se
+  cuentan como "lost". "postponed" se deja intacto a propósito (puede
+  reprogramarse bajo el mismo id y jugarse más tarde -- anularlo
+  prematuramente violaría la inmutabilidad).
+- Todas las agregaciones reales (`real_performance_report`,
+  `market_track_records`, las 3 curvas de fiabilidad) EXCLUYEN
+  explícitamente las liquidaciones "void" -- nunca se mezclan con
+  ganancias/pérdidas reales. `real_performance_report` reporta `n_void`
+  aparte por segmento.
+
+### 21.4 Aprendizaje controlado: gate de promoción de modelo
+
+`services/promotion_service.py::evaluate_and_promote`, llamado desde
+`cli.py::train` tras cada entrenamiento:
+
+- Sin versión anterior de esa competición → se activa directamente.
+- Con versión anterior → comparación walk-forward REAL: ambas versiones
+  (candidata y activa) se evalúan sobre los MISMOS partidos reales,
+  estrictamente POSTERIORES al `training_end` del candidato (nunca
+  vistos por él durante el entrenamiento; la versión anterior, al
+  entrenarse antes en el tiempo, tampoco pudo haberlos usado). Métrica
+  de decisión: Brier score (nunca accuracy, regla fija del proyecto).
+  Menos de 20 partidos fuera de muestra → no se promociona (ante la
+  duda, se queda la versión ya en producción).
+- El candidato NUNCA se borra, gane o pierda la comparación -- solo
+  queda `is_active=False` si pierde.
+- `prediction_service.py::generate_predictions_for_competition` ahora
+  elige la versión ACTIVA (`is_active.isnot(False)`, trata `None` como
+  activa para no romper despliegues con historial previo a este cambio),
+  nunca simplemente la más reciente.
+
+### 21.5 Nuevo frontend: "Rendimiento del modelo"
+
+Sustituye "Histórico de jornadas" + "Estadísticas" (dos páginas
+separadas que medían lo mismo desde ángulos distintos) por una única
+página (`/model`) con 4 pestañas (`ModelPerformanceTabs.tsx`, estado
+local, sin recargar red al cambiar de pestaña):
+
+- **Resumen global**: KPIs ya existentes (`StatsOverview`) +
+  `PerformanceEvolutionChart` (nuevo): beneficio teórico acumulado
+  (stake=1, mejor predicción de cada partido) ordenado por fecha,
+  excluyendo "void" de la curva.
+- **Jornadas**: `HistoryBoard.tsx` extendido -- con "Todas" las ligas
+  (por defecto) se sigue viendo la última jornada de cada una, igual que
+  antes; al elegir UNA liga concreta aparecen selectores reales de
+  Temporada y Jornada (histórico profundo de esa liga, `getHistory(code,
+  500)`, agrupado client-side por `seasonLabelFor()`, misma regla de
+  corte en julio que el backend). Columna EV añadida. Colores de estado
+  ampliados: gris para pendiente Y anulada (texto distinto), amarillo
+  para media ganancia/pérdida.
+- **Competiciones y mercados**: `ModelPerformanceBoard.tsx` (sin
+  cambios de fondo, ya desglosaba por competición y mercado).
+- **Versiones del modelo** (nueva): `ModelVersionsBoard.tsx` -- lista de
+  `ModelVersion` por competición, con ventana de entrenamiento,
+  calibración, predicciones liquidadas y Brier real desde que esa
+  versión entró en producción (unido por `model_version_id` con
+  `/models/performance`), y si está ACTIVA o fue rechazada por no
+  mejorar fuera de muestra.
+
+`/history` queda como una redirección a `/model?tab=jornadas` (nunca se
+borra el enlace, por si algo externo lo apuntaba); `/history/[id]`
+(detalle de partido, sección 21.6) sigue viviendo donde estaba.
+
+### 21.6 Detalle de partido ("qué sabía el sistema antes del partido")
+
+`/history/[id]` ya mostraba TODAS las candidatas (no solo la mejor,
+marcada con ★), la justificación por factor ("¿por qué predijo esto?"),
+probabilidad del modelo, cuota, edge, CLV, resultado real y acierto/
+fallo -- se añadieron las dos columnas que faltaban del pedido:
+**Probabilidad calibrada** y **EV**, más el mismo tratamiento de colores
+de estado (ANULADA/media ganancia-pérdida) que "Jornadas".
+
+### 21.7 Verificación
+
+Backend: **497 tests pasan** (466 ya existentes + 31 nuevos: estados de
+partido, `_upsert_match` respetando `record.status`, liquidación "void"
+y su exclusión de todas las métricas reales, orden de `refresh()`, y el
+gate de promoción completo -- primera versión se activa sola, candidato
+peor nunca sustituye a la activa, candidato sin suficiente fuera de
+muestra no se promociona). Frontend: `npx tsc --noEmit` y `npm run
+build` limpios, 16 rutas generadas correctamente.
+
+### 21.8 Limitaciones conocidas (pedidas explícitamente en la entrega)
+
+- **Tarjetas como mercado**: sigue sin existir (decisión confirmada con
+  el usuario en esta misma sesión). Ninguna casa agregada por The Odds
+  API cotiza tarjetas para estas ligas -- generar predicciones sin
+  cuota real violaría el principio de este sistema de nunca mostrar
+  "oportunidades" sin mercado real detrás. Córners sí tiene mercado real
+  y sigue implementado.
+- **`half_won`/`half_lost`**: el esquema de liquidación los soporta
+  (`settlement_status`), pero ningún mercado de este sistema (1X2,
+  over/under, doble oportunidad, BTTS, corners) produce hoy un
+  resultado parcial -- no hay líneas de hándicap asiático ni mercados
+  con "push". Quedan listos para el día que se añada un mercado que sí
+  los necesite.
+- **Estado "live"**: no se distingue de "scheduled" a propósito (ver
+  21.3) -- no hay nada en este sistema (sin apuestas en vivo) que
+  consuma ese detalle todavía.
+- **Gate de promoción**: la comparación walk-forward usa Brier score
+  agregado sobre los mercados centrales (1X2/over-under/BTTS/doble
+  oportunidad) con probabilidad SIN calibrar (misma base para ambas
+  versiones, para no mezclar "mejor modelo" con "mejor calibración
+  disponible en cada una"); corners no entra en la comparación de
+  promoción todavía.

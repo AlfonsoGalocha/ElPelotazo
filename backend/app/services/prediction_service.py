@@ -137,9 +137,17 @@ def generate_predictions_for_competition(
     if competition is None:
         raise ValueError(f"Competicion no encontrada: {competition_code}")
 
+    # Seccion "Rendimiento del modelo": la version ACTIVA (ver
+    # services/promotion_service.py), nunca simplemente "la mas reciente"
+    # -- un entrenamiento nuevo que no demostro mejoras fuera de muestra
+    # queda guardado pero `is_active=False`, y production sigue usando la
+    # anterior. `isnot(False)` trata `None` (ModelVersion de antes de
+    # este gate) como activa, para no desactivar en silencio todo el
+    # historico ya entrenado de un despliegue existente.
     model_versions = (
         db.query(ModelVersion)
         .filter(ModelVersion.dataset_version.like(f"{competition_code}:%"))
+        .filter(ModelVersion.is_active.isnot(False))
         .order_by(ModelVersion.created_at.desc())
         .first()
     )

@@ -4,6 +4,7 @@ import pytest
 
 from backend.app.ingestion.api_football.fixtures_provider import (
     ApiFootballMatchProvider,
+    _match_status,
     parse_matchday,
 )
 
@@ -155,3 +156,48 @@ def test_fetch_matches_raises_for_unsupported_competition():
     provider = ApiFootballMatchProvider(http_client=_FakeHttpClient({"response": [], "errors": []}))
     with pytest.raises(ValueError):
         provider.fetch_matches("not-a-real-league", "2025/26")
+
+
+# Seccion "Rendimiento del modelo" (pedido real del usuario): un partido
+# aplazado/cancelado quedaba indistinguible de "scheduled" para siempre --
+# _match_status es la pieza que lo corrige, mapeando cada estado real de
+# API-Football a uno de los 4 que entiende el resto del sistema.
+@pytest.mark.parametrize(
+    "status_short,expected",
+    [
+        ("FT", "finished"),
+        ("AET", "finished"),
+        ("PEN", "finished"),
+        ("CANC", "cancelled"),
+        ("ABD", "cancelled"),
+        ("AWD", "cancelled"),
+        ("WO", "cancelled"),
+        ("PST", "postponed"),
+        ("SUSP", "postponed"),
+        ("INT", "postponed"),
+        ("NS", "scheduled"),
+        ("1H", "scheduled"),
+        ("2H", "scheduled"),
+        (None, "scheduled"),
+        ("algo-nunca-visto", "scheduled"),
+    ],
+)
+def test_match_status_maps_every_known_api_football_status(status_short, expected):
+    assert _match_status(status_short) == expected
+
+
+def test_fetch_matches_includes_the_mapped_status_on_every_record():
+    payload = {
+        "response": [
+            _fixture(7, "FT", home_goals=2, away_goals=1),
+            _fixture(8, "PST"),
+            _fixture(9, "CANC"),
+            _fixture(10, "NS"),
+        ],
+        "errors": [],
+    }
+    provider = ApiFootballMatchProvider(http_client=_FakeHttpClient(payload))
+
+    records = provider.fetch_matches("laliga", "2025/26")
+
+    assert [r.status for r in records] == ["finished", "postponed", "cancelled", "scheduled"]

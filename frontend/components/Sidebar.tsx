@@ -10,7 +10,6 @@ import {
   Bot,
   BarChart3,
   Settings,
-  History,
   Menu,
   X,
   Circle,
@@ -22,8 +21,7 @@ import SearchBar from "@/components/SearchBar";
 
 // Rediseño completo pedido por el usuario: sidebar lateral FIJA en vez
 // del menu horizontal anterior. Mismas 6 secciones/paginas de siempre
-// (nunca se duplica funcionalidad, solo cambia la presentacion) + enlace
-// discreto al Historico de jornadas, que ya existia.
+// (nunca se duplica funcionalidad, solo cambia la presentacion).
 //
 // "Selecciones" (seccion 17/18 de architecture_audit.md, 2026-11):
 // pagina dedicada, SEPARADA de "Partidos" -- los partidos de selecciones
@@ -31,13 +29,20 @@ import SearchBar from "@/components/SearchBar";
 // club, con partidos casi cada semana), asi que el usuario pidio
 // explicitamente verlos agrupados por fecha en su propio apartado, no
 // mezclados en el listado general.
+//
+// "Rendimiento del modelo" (pedido real del usuario, sistema de
+// evaluacion y aprendizaje del motor predictivo): sustituye tanto al
+// antiguo "Estadísticas" como al enlace discreto de "Histórico de
+// jornadas" que vivia aparte -- ambos eran la misma idea (como de bien
+// predice el modelo) partida en dos sitios distintos sin necesidad.
+// Ahora es una unica pagina con pestañas (ver app/model/page.tsx).
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/matches", label: "Partidos", icon: CalendarDays },
   { href: "/selecciones", label: "Selecciones", icon: Globe },
   { href: "/top-signals", label: "Oportunidades", icon: TrendingUp },
   { href: "/ai-analyst", label: "Analista IA", icon: Bot },
-  { href: "/model", label: "Estadísticas", icon: BarChart3 },
+  { href: "/model", label: "Rendimiento del modelo", icon: BarChart3 },
   { href: "/settings", label: "Configuración", icon: Settings },
 ];
 
@@ -130,15 +135,6 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           );
         })}
       </nav>
-
-      <Link
-        href="/history"
-        onClick={onNavigate}
-        className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-slate-500 transition-colors hover:bg-surface-alt/60 hover:text-slate-300"
-      >
-        <History className="h-4 w-4 shrink-0" />
-        Histórico de jornadas
-      </Link>
 
       <div className="mt-auto">
         <ConnectionStatus />

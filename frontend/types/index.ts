@@ -20,7 +20,10 @@ export interface Match {
   home_team: Team;
   away_team: Team;
   kickoff_utc: string;
-  status: "scheduled" | "finished";
+  // "postponed"/"cancelled" anhadidos (Rendimiento del modelo, pedido
+  // real del usuario): antes un aplazamiento quedaba indistinguible de
+  // "scheduled" para siempre -- ver backend/app/db/models/matches.py.
+  status: "scheduled" | "finished" | "postponed" | "cancelled";
   home_goals: number | null;
   away_goals: number | null;
   matchday: number | null;
@@ -162,6 +165,11 @@ export interface HistoryPrediction extends Prediction {
   // Closing Line Value (ver backend/app/market/clv.py): null hasta que
   // haya historico de cuotas suficiente (nunca retroactivo).
   closing_line_value: number | null;
+  // "won"|"lost"|"void"|"half_won"|"half_lost", o null para predicciones
+  // pendientes O liquidadas antes de que existiera esta columna -- en
+  // ese caso `is_correct` sigue siendo la fuente de verdad (ver
+  // backend/app/db/models/modeling.py::PredictionResult.settlement_status).
+  settlement_status: string | null;
 }
 
 export interface MatchHistory {
@@ -202,6 +210,10 @@ export interface PerformanceSegment {
   market: string;
   model_version_id: number;
   n_settled: number;
+  // Predicciones de partidos CANCELADOS, liquidadas como "void" (stake
+  // devuelto) -- excluidas de model_quality/market_strategy, nunca
+  // contadas como "lost" (ver evaluation_service.py::void_cancelled_predictions).
+  n_void: number;
   model_quality: {
     n_predictions: number;
     brier_score: number;
@@ -225,6 +237,25 @@ export interface PerformanceSegment {
 
 export interface ModelPerformanceReport {
   segments: PerformanceSegment[];
+}
+
+// Subseccion "Versiones del modelo" (Rendimiento del modelo, pedido real
+// del usuario). Ver backend/app/api/routes/models.py::ModelVersionOut.
+export interface ModelVersionInfo {
+  id: number;
+  name: string;
+  version: string;
+  market_family: string;
+  dataset_version: string;
+  metrics: Record<string, unknown>;
+  training_start: string | null;
+  training_end: string | null;
+  created_at: string;
+  calibration_method: string | null;
+  // null = ModelVersion de antes del gate de promocion -- se trata como
+  // activa igual que el backend (nunca como "rechazada" por ausencia de dato).
+  is_active: boolean | null;
+  competition_code: string | null;
 }
 
 export interface BookmakerOdds {
