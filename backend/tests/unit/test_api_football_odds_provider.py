@@ -445,3 +445,42 @@ def test_fetch_secondary_odds_reuses_the_combined_fetch_without_duplicate_reques
     assert len(odds_calls) == 1  # un unico fetch de /odds, nunca uno por "familia" de mercado
     assert len(secondary) == 1
     assert secondary[0].odds[0].market == "corners_total"  # match_winner/cards quedan fuera
+
+
+def test_fetch_odds_for_window_pauses_between_fixtures_to_avoid_the_per_minute_rate_limit(monkeypatch):
+    """Bug real reportado por el usuario (cuota real movida a 1.35, la
+    app seguia mostrando 1.70 varios ciclos despues): este bucle pide
+    `/odds` UNA VEZ POR PARTIDO de la ventana sin ninguna pausa -- con
+    varios partidos programados, eso agota el limite de peticiones por
+    minuto de API-Football a mitad de la lista, y la excepcion resultante
+    (ver ApiFootballRateLimitError) cancela TODOS los partidos restantes
+    de esa liga para ese ciclo, no solo el que la disparo. Se comprueba
+    aqui que hay una pausa entre cada peticion a `/odds` (nunca antes de
+    la primera, ver `enumerate(fixtures)`/`i > 0`) -- mismo remedio ya
+    usado en `cli.py::update_international` para el mismo problema real."""
+    import datetime as dt
+
+    from backend.app.ingestion.api_football import odds_provider as odds_provider_module
+
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(odds_provider_module.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
+    fixtures_payload = {
+        "response": [
+            {
+                "fixture": {"id": i, "date": "2026-01-10T20:00:00+00:00"},
+                "teams": {"home": {"name": f"Team {i}A"}, "away": {"name": f"Team {i}B"}},
+            }
+            for i in range(3)
+        ],
+        "errors": [],
+    }
+    odds_payload = {"response": [], "errors": []}
+    fake_client = _FakeMultiCallHttpClient({"/fixtures": fixtures_payload, "/odds": odds_payload})
+    provider = ApiFootballOddsProvider(http_client=fake_client)
+
+    provider.fetch_odds_for_window("laliga", 2026, dt.date(2026, 1, 1), dt.date(2026, 1, 31))
+
+    odds_calls = [c for c in fake_client.calls if c[0] == "/odds"]
+    assert len(odds_calls) == 3
+    assert sleep_calls == [1, 1]  # 2 pausas entre 3 peticiones, nunca antes de la primera
