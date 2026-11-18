@@ -58,27 +58,27 @@ Pendiente (ver sección G).
   diagnóstico pedido explícitamente en el Bloque 2.1**: `GET
   /predictions/best/debug` (`backend/app/api/routes/predictions.py:690`),
   devuelve included/excluded con motivo exacto por candidata.
-- **GAP REAL CONFIRMADO (Bloque 2.2, fiabilidad jerárquica — no existe)**:
-  `backend/app/services/evaluation_service.py:430-472`
-  (`market_track_records`) solo calcula fiabilidad por **(competición,
-  mercado) exacto**, con corte duro `MIN_SETTLED_FOR_TRACK_RECORD = 30`: si
-  esa combinación exacta no llega a 30 liquidaciones reales, desaparece del
-  diccionario entero — no hay fallback a "mercado global" ni a "grupo de
-  competiciones similares" como pide el prompt. Esto es la causa real,
-  verificada, de que "Oportunidades" mostrara 0 partidos en Bundesliga con
-  ventana de 1 día (visto en vivo en esta misma sesión, antes de esta
-  auditoría formal).
-  **Diseño propuesto para la siguiente sesión** (no implementado todavía):
-  1. (competición, mercado, versión de modelo) — nivel actual.
-  2. (mercado, familia de competición: ligas top-5 vs selecciones vs otras).
-  3. (mercado) global, todas las competiciones.
-  4. Fallback final: sin fiabilidad (actual, categoría "en observación").
-  Cada nivel debe devolver también `n_observations` y `source_level` para
-  que la UI muestre de dónde sale la fiabilidad (pedido explícito del
-  usuario: "nunca presentar una fiabilidad global como si fuera
-  específica"). Candidato a shrinkage bayesiano simple (James-Stein o
-  Beta-Binomial) en vez de corte duro — evaluar con backtest antes de
-  activar en producción.
+- **GAP REAL CONFIRMADO Y YA RESUELTO (Bloque 2.2, fiabilidad jerárquica)**:
+  `backend/app/services/evaluation_service.py::market_track_records` solo
+  calculaba fiabilidad por **(competición, mercado) exacto**, con corte
+  duro `MIN_SETTLED_FOR_TRACK_RECORD = 30`: si esa combinación exacta no
+  llegaba a 30 liquidaciones reales, desaparecía del diccionario entero —
+  causa real, verificada, de que "Oportunidades" mostrara 0 partidos en
+  Bundesliga con ventana de 1 día (visto en vivo en esta misma sesión).
+  **IMPLEMENTADO Y PROBADO** (commit `9714948`, mergeado a `main`): nueva
+  jerarquía en `market_track_records_with_provenance` — (competición,
+  mercado) exacto → (tier de competición ya existente, CORE/EXPERIMENTAL,
+  mercado) → mercado global → ninguno. `market_track_records()` mantiene
+  el mismo contrato de siempre (sin tocar ningún llamador), la jerarquía
+  vive en la función nueva, que ahora también alimenta
+  `/predictions/best/debug` con `source_level`/`n_observations` por
+  predicción (nunca se presenta un nivel general como si fuera
+  específico). 564/564 tests.
+  **Pendiente real todavía**: shrinkage bayesiano (James-Stein o
+  Beta-Binomial) en vez de corte duro de 30 — evaluado como mejora futura,
+  no implementado; y exponer `source_level`/`n_observations` en el
+  frontend de Oportunidades (hoy solo lo ve `/best/debug`, pensado para
+  depuración, no para el usuario final de la app).
 
 ### Bloque 3 (histórico inmutable) — PRIORIDAD MÁXIMA, trabajo real hecho esta sesión
 
@@ -205,15 +205,11 @@ por este bloque de trabajo).
 
 ## G. Pendientes (siguiente paso EXACTO para retomar)
 
-Orden de prioridad recomendado para la próxima sesión:
+Orden de prioridad recomendado para la próxima sesión (1 y 2.2 ya hechos):
 
-1. **Implementar la fiabilidad jerárquica (Bloque 2.2)** — el gap más
-   claro y de mayor impacto visible para el usuario (es literalmente por
-   qué "Oportunidades" se queda vacío). Archivo a tocar:
-   `backend/app/services/evaluation_service.py::market_track_records`.
-   Diseño ya escrito arriba. Necesita backtest antes de activar
-   (`backend/app/backtesting/ranking_comparison.py` ya tiene la
-   infraestructura de comparación).
+1. **Exponer `source_level`/`n_observations` en el frontend de
+   Oportunidades** (hoy solo en `/best/debug`) — cierra el círculo de la
+   fiabilidad jerárquica para el usuario final, no solo para depuración.
 2. **Ampliar `PredictionSnapshot`/`features_used`** para guardar valores
    reales de las variables usadas, no solo nombres (Bloque 3.1 completo).
 3. **`standings_snapshots`** (clasificación histórica por fecha) y
@@ -227,6 +223,8 @@ Orden de prioridad recomendado para la próxima sesión:
 6. Integración de lesiones/ausencias vía `/injuries` de API-Football
    (requiere verificar cobertura real para las 5 ligas antes de construir
    nada, mismo principio "nunca inventar" ya aplicado todo el día de hoy).
+7. Shrinkage bayesiano para la fiabilidad jerárquica (en vez del corte
+   duro de 30 observaciones) — evaluar con backtest antes de activar.
 
 Nada de esto requiere credenciales nuevas ni decisiones que no pueda tomar
 yo solo — son puramente de ingeniería. Continuar diciendo "sigue con la
