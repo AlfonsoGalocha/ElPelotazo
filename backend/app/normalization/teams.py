@@ -221,6 +221,26 @@ def _normalize_key(name: str) -> str:
     return key
 
 
+# Pedido real del usuario (seccion "Selecciones", 2026-11): "Selecciones"
+# mostraba partidos de Russia con fecha de kickoff de 2022 como "proximo
+# partido" -- Russia esta suspendida de UEFA/FIFA desde entonces, asi que
+# esos partidos nunca se van a jugar, pero API-Football los sigue
+# devolviendo con estado "scheduled" indefinidamente (nunca pasan a
+# finalizado ni a cancelado en la fuente). Mismo mecanismo YA EXISTENTE
+# para casas de apuestas excluidas (ver `normalization/bookmakers.py::
+# EXCLUDED_BOOKMAKERS`), aplicado aqui a EQUIPOS: comprobado ANTES de
+# guardar nada (en `ingest_matches`), nunca despues, para que ni un
+# partido fantasma de Russia llegue a crearse.
+EXCLUDED_TEAMS: frozenset[str] = frozenset({"russia"})
+
+
+def is_excluded_team(raw_name: str) -> bool:
+    """True si este equipo debe descartarse por completo (ver
+    EXCLUDED_TEAMS) -- cualquier partido donde aparezca, local o
+    visitante, se descarta ANTES de persistirse."""
+    return _normalize_key(raw_name) in EXCLUDED_TEAMS
+
+
 def _fuzzy_key(name: str) -> str:
     """Normalizacion mas agresiva que `_normalize_key`, solo para el
     fallback de `resolve_team_id`: quita acentos Y toda la puntuacion/

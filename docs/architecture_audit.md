@@ -2085,3 +2085,56 @@ tengan `coverage.odds=True` (la mayoria, segun lo ya visto en la seccion
 17.2) apareceran en el calendario de "Selecciones" pero SIN predicciones/
 señales -- igual que ya pasa con cualquier partido "solo modelo" sin
 cuota real en el resto de la app, nunca una excepcion nueva.
+
+### 17.11 Bug real visto en vivo: partidos de Russia de 2022 como "proximo partido"
+
+El usuario mando una captura real de "Selecciones" mostrando "Albania vs
+Russia" con fecha de kickoff del 2 de junio (sin anho visible en el
+titulo de grupo -- en realidad 2022) como "Proximo partido". Diagnostico
+del propio usuario, correcto: "supongo que es porque es Russia y la
+quitaron de todas las competiciones, quitemosla nosotros tambien" --
+Russia esta suspendida de UEFA/FIFA desde 2022, asi que esos partidos de
+Nations League NUNCA se van a jugar, pero API-Football los sigue
+devolviendo con `status="scheduled"` indefinidamente (nunca pasan a
+finalizado ni a cancelado en la fuente real).
+
+Mismo mecanismo YA EXISTENTE para casas de apuestas excluidas
+(`normalization/bookmakers.py::EXCLUDED_BOOKMAKERS`, pedido real anterior
+del usuario con Betano), aplicado aqui a EQUIPOS:
+
+- `normalization/teams.py::EXCLUDED_TEAMS = frozenset({"russia"})` +
+  `is_excluded_team(raw_name)` (misma normalizacion que
+  `is_excluded_bookmaker`: minusculas, sin acentos, espacios colapsados).
+- `services/data_service.py::ingest_matches`: cualquier `RawMatchRecord`
+  con un equipo excluido de local O de visitante se descarta ANTES de
+  `_upsert_match` -- nunca vuelve a crearse en una ingesta nueva, de
+  cualquier competicion o proveedor (no especifico de Nations League).
+- `scripts/purge_excluded_team_matches.py` (nuevo, mismo patron que
+  `purge_excluded_bookmaker_odds.py`): limpia lo que YA estaba guardado
+  de ANTES de excluirlo -- tanto partidos `scheduled` (el sintoma visible)
+  como `finished` (Russia SI jugo partidos reales de Nations League antes
+  de 2022, con `Prediction`/`PredictionResult` real asociado, un caso que
+  `cli.py::reset_scheduled` nunca cubre porque solo mira `scheduled`).
+  Borra `PredictionResult` y `Prediction` ANTES del `Match` (sin esto,
+  Postgres rechaza el borrado por la FK de `PredictionResult
+  .prediction_id`, que no tiene `ON DELETE CASCADE`); `MatchOdds`/
+  `MatchStatistics`/`MatchOddsHistory` se borran solos via el cascade ORM
+  ya existente en `Match`. Nunca borra la fila de `Team` en si (quedaria
+  inerte, sin partidos -- mas simple y seguro que tambien limpiar
+  `TeamNameMapping`).
+
+3 tests nuevos reales contra BD: la ingesta salta un equipo excluido como
+local, como visitante, y con mayusculas/espacios distintos (nunca
+depende de coincidencia exacta); el purgado borra partidos `scheduled` Y
+`finished` (con su `Prediction`/`PredictionResult` real) de un equipo
+excluido sin tocar un partido de control sin ningun equipo excluido, y es
+idempotente. Suite completa: 462/462.
+
+**Pendiente**: pedir al usuario que ejecute
+
+```
+docker compose exec backend python scripts/purge_excluded_team_matches.py
+```
+
+para limpiar los partidos de Russia ya guardados -- el filtro de ingesta
+evita que vuelvan, pero no retroactivo.

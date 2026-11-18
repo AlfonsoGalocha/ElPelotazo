@@ -20,7 +20,7 @@ from backend.app.ingestion.odds.provider import OddsApiProvider
 from backend.app.normalization.bookmakers import canonical_bookmaker, is_excluded_bookmaker
 from backend.app.normalization.competitions import resolve_competition_id, resolve_season_id
 from backend.app.normalization.players import resolve_referee_id
-from backend.app.normalization.teams import resolve_team_id
+from backend.app.normalization.teams import is_excluded_team, resolve_team_id
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -93,13 +93,23 @@ def ingest_matches(
     season_id = resolve_season_id(db, competition_id, season_label)
 
     count = 0
+    excluded_team_count = 0
     for record in records:
+        if is_excluded_team(record.home_team_raw) or is_excluded_team(record.away_team_raw):
+            excluded_team_count += 1
+            continue
         _upsert_match(db, record, competition_id, season_id)
         count += 1
     db.commit()
     logger.info(
         "ingestion.completed",
-        extra={"provider": provider.name, "competition": competition_code, "season": season_label, "count": count},
+        extra={
+            "provider": provider.name,
+            "competition": competition_code,
+            "season": season_label,
+            "count": count,
+            "excluded_team_count": excluded_team_count,
+        },
     )
     return count
 
