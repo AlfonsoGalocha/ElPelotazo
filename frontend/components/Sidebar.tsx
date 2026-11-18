@@ -15,6 +15,7 @@ import {
   X,
   Circle,
   LineChart,
+  Globe,
 } from "lucide-react";
 import { pingHealth } from "@/lib/api";
 import SearchBar from "@/components/SearchBar";
@@ -23,9 +24,17 @@ import SearchBar from "@/components/SearchBar";
 // del menu horizontal anterior. Mismas 6 secciones/paginas de siempre
 // (nunca se duplica funcionalidad, solo cambia la presentacion) + enlace
 // discreto al Historico de jornadas, que ya existia.
+//
+// "Selecciones" (seccion 17/18 de architecture_audit.md, 2026-11):
+// pagina dedicada, SEPARADA de "Partidos" -- los partidos de selecciones
+// se concentran en pocos parones al año (a diferencia de una liga de
+// club, con partidos casi cada semana), asi que el usuario pidio
+// explicitamente verlos agrupados por fecha en su propio apartado, no
+// mezclados en el listado general.
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/matches", label: "Partidos", icon: CalendarDays },
+  { href: "/selecciones", label: "Selecciones", icon: Globe },
   { href: "/top-signals", label: "Oportunidades", icon: TrendingUp },
   { href: "/ai-analyst", label: "Analista IA", icon: Bot },
   { href: "/model", label: "Estadísticas", icon: BarChart3 },
