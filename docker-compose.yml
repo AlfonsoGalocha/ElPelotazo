@@ -131,19 +131,28 @@ services:
       - ./models:/srv/models
       - ./data:/srv/data
     entrypoint: ["/bin/sh", "-c"]
-    # NO usa 'football-edge refresh' entero cada hora a proposito: ese
-    # comando incluye update-odds/update-secondary-odds (llaman a APIs
-    # externas con cuota LIMITADA -- The Odds API free tier = 500
-    # peticiones/mes). Pedir cuotas cada hora para 5 ligas agota esa cuota
-    # en menos de una semana (500 / 5 ligas / 24h ~= 4 dias), sin ninguna
-    # ganancia real: las cuotas de mercado no cambian tan rapido como para
-    # necesitar refresco horario. Lo que SI necesita ser horario es lo que
-    # no gasta cuota externa: traer fixtures nuevos y liquidar
-    # (evaluate/settle) los partidos que hayan terminado, para que
-    # Historico se actualice casi en tiempo real. Las cuotas se piden solo
-    # 4 veces al dia (horas 0/6/12/18 UTC) -- suficiente para que "Mejores
-    # senhales" no se quede con cuotas muy desactualizadas, sin quemar la
-    # cuota mensual gratuita.
+    # 'update-odds'/'update-secondary-odds' SI corren cada hora (no cada
+    # 6h como antes) -- cambio real pedido por el usuario tras confirmar
+    # con el endpoint real `/status` de API-Football que su plan es "Pro"
+    # (7500 peticiones/dia, ~260/dia gastadas en un ciclo completo de
+    # cuotas de las 5 ligas): el limite de 6h era una precaucion heredada
+    # de cuando la fuente de cuotas era The Odds API (free tier, 500
+    # peticiones/MES, ahi si agotaria la cuota en dias) -- con API-Football
+    # como fuente primaria, correr esto cada hora sale a ~1700
+    # peticiones/dia, menos de una cuarta parte del limite diario. Reduce
+    # la ventana maxima de "cuota desactualizada" de 6h a 1h (bug real
+    # confirmado: un movimiento real de mercado de ~1h dejaba la app
+    # mostrando una cuota ya superada, ver Over/Under 2.5 Real Madrid,
+    # 2026-11-18). 'update-secondary-odds' no anhade coste real aqui: se
+    # salta sola sin hacer ninguna peticion en cuanto API-Football es la
+    # fuente primaria (ver su propio docstring en cli.py).
+    #
+    # 'update' (resultados reales, redescarga un CSV de ~45MB del mirror
+    # de GitHub) y 'train' (reentrenamiento) SI siguen cada 6h a proposito
+    # -- su coste es CPU/ancho de banda, no cupo de API-Football, y los
+    # resultados de una jornada no cambian cada hora como para
+    # necesitarlo mas a menudo.
+    #
     # IMPORTANTE: todo "$" de este script va escapado como "$$" a
     # proposito. Docker Compose interpola SU PROPIA sintaxis de variables
     # ($VAR, ${VAR}, ${VAR:-default}...) en cualquier valor del YAML antes
@@ -162,8 +171,10 @@ services:
           hour=$$(date -u +%H);
           hour=$${hour#0};
           hour=$${hour:-0};
-          echo "[scheduler] $$(date -u +%FT%TZ) -- fixtures + liquidacion de partidos terminados + predicciones";
+          echo "[scheduler] $$(date -u +%FT%TZ) -- fixtures + cuotas de mercado + liquidacion de partidos terminados + predicciones";
           football-edge update-fixtures || echo "[scheduler] fallo update-fixtures, se reintenta en 1h";
+          football-edge update-odds || echo "[scheduler] fallo update-odds, se reintenta en 1h";
+          football-edge update-secondary-odds || echo "[scheduler] fallo update-secondary-odds, se reintenta en 1h";
           if [ $$((hour % 6)) -eq 0 ]; then
             # 'update-fixtures' (arriba) NUNCA trae resultados: descarta a
             # proposito los partidos ya jugados de su propia fuente (ver
@@ -176,10 +187,8 @@ services:
             # CSV de ~45MB del mirror de GitHub -- sin limite de cuota
             # como las APIs de cuotas, pero sin necesidad de hacerlo mas a
             # menudo (los resultados de una jornada no cambian cada hora).
-            echo "[scheduler] $$(date -u +%FT%TZ) -- resultados reales + cuotas de mercado (cada 6h)";
+            echo "[scheduler] $$(date -u +%FT%TZ) -- resultados reales + reentrenamiento (cada 6h)";
             football-edge update || echo "[scheduler] fallo update (resultados reales), se reintenta en 6h";
-            football-edge update-odds || echo "[scheduler] fallo update-odds, se reintenta en 6h";
-            football-edge update-secondary-odds || echo "[scheduler] fallo update-secondary-odds, se reintenta en 6h";
             # Cierra el ciclo "el modelo aprende de sus propios fallos"
             # (pedido real de usuario): 'train' reentrena desde cero
             # leyendo TODOS los resultados reales ya en la BD, incluidos
