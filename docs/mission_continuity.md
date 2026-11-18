@@ -74,11 +74,15 @@ Pendiente (ver sección G).
   `/predictions/best/debug` con `source_level`/`n_observations` por
   predicción (nunca se presenta un nivel general como si fuera
   específico). 564/564 tests.
+  **También implementado y mergeado** (commit `403ba57`): `/top-signals`,
+  `/best` y `/best-of-day` ahora devuelven `reliability` por predicción
+  (`ReliabilityOut`: value/source_level/n_observations), y la tabla de
+  Oportunidades muestra una columna "Fiabilidad histórica" con etiqueta
+  de procedencia (esta liga / ligas similares / global) — nunca presenta
+  un nivel general como si fuera específico.
   **Pendiente real todavía**: shrinkage bayesiano (James-Stein o
   Beta-Binomial) en vez de corte duro de 30 — evaluado como mejora futura,
-  no implementado; y exponer `source_level`/`n_observations` en el
-  frontend de Oportunidades (hoy solo lo ve `/best/debug`, pensado para
-  depuración, no para el usuario final de la app).
+  no implementado.
 
 ### Bloque 3 (histórico inmutable) — PRIORIDAD MÁXIMA, trabajo real hecho esta sesión
 
@@ -205,25 +209,23 @@ por este bloque de trabajo).
 
 ## G. Pendientes (siguiente paso EXACTO para retomar)
 
-Orden de prioridad recomendado para la próxima sesión (1 y 2.2 ya hechos):
+Orden de prioridad recomendado para la próxima sesión (1 y 2.2 completos,
+UI de fiabilidad incluida):
 
-1. **Exponer `source_level`/`n_observations` en el frontend de
-   Oportunidades** (hoy solo en `/best/debug`) — cierra el círculo de la
-   fiabilidad jerárquica para el usuario final, no solo para depuración.
-2. **Ampliar `PredictionSnapshot`/`features_used`** para guardar valores
+1. **Ampliar `PredictionSnapshot`/`features_used`** para guardar valores
    reales de las variables usadas, no solo nombres (Bloque 3.1 completo).
-3. **`standings_snapshots`** (clasificación histórica por fecha) y
+2. **`standings_snapshots`** (clasificación histórica por fecha) y
    **`provider_responses`** (respuesta cruda de API-Football archivada) —
    gaps de esquema reales, sin implementar.
-4. Auditar `backend/app/api/routes/model_performance` (confianza/N bajo
-   no se expone) y añadir intervalos de confianza/aviso de muestra
-   pequeña a la respuesta del endpoint.
-5. Auditar los 7 gráficos pedidos en el Bloque 5.2 uno a uno contra los ya
+3. Auditar `backend/app/api/routes/models.py::model_performance`
+   (confianza/N bajo no se expone) y añadir intervalos de confianza/aviso
+   de muestra pequeña a la respuesta del endpoint.
+4. Auditar los 7 gráficos pedidos en el Bloque 5.2 uno a uno contra los ya
    existentes, aplicando la skill `dataviz` del proyecto.
-6. Integración de lesiones/ausencias vía `/injuries` de API-Football
+5. Integración de lesiones/ausencias vía `/injuries` de API-Football
    (requiere verificar cobertura real para las 5 ligas antes de construir
    nada, mismo principio "nunca inventar" ya aplicado todo el día de hoy).
-7. Shrinkage bayesiano para la fiabilidad jerárquica (en vez del corte
+6. Shrinkage bayesiano para la fiabilidad jerárquica (en vez del corte
    duro de 30 observaciones) — evaluar con backtest antes de activar.
 
 Nada de esto requiere credenciales nuevas ni decisiones que no pueda tomar
