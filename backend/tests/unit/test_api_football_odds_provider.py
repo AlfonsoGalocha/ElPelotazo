@@ -350,6 +350,93 @@ def test_corners_total_is_not_corrupted_by_per_team_or_unrelated_corner_markets(
     }
 
 
+def test_home_away_corners_over_under_never_leaks_into_goals():
+    """Bug real reportado por el usuario (comparo contra una app de
+    cuotas real: Real Madrid "Over 2.5 goles" de Bet365 a 1.83 en nuestra
+    BD, 1.40 real en bet365.com): confirmado contra la respuesta real de
+    /odds que "Home Corners Over/Under"/"Away Corners Over/Under"
+    (corners de UN SOLO equipo) SI quedan excluidos del mercado
+    "corners_total" (por "home"/"away" en CORNERS_EXCLUDE), pero al caer
+    excluidos de ahi, el bucle de `_parse_odds_response` los volvia a
+    probar contra el SIGUIENTE market_key de la lista -- y como SI
+    contienen "Over/Under" (con barra), se colaban como linea de GOLES.
+    1.83 es el valor REAL visto en produccion para "Away Corners
+    Over/Under" de Bet365 en ese partido -- nunca debe aparecer bajo
+    'over_under_goals'."""
+    response = [
+        {
+            "bookmakers": [
+                {
+                    "name": "Bet365",
+                    "bets": [
+                        {
+                            "name": "Goals Over/Under",
+                            "values": [
+                                {"value": "Over 2.5", "odd": "1.40"},
+                                {"value": "Under 2.5", "odd": "3.00"},
+                            ],
+                        },
+                        {
+                            "name": "Home Corners Over/Under",
+                            "values": [
+                                {"value": "Over 6.5", "odd": "1.80"},
+                                {"value": "Under 6.5", "odd": "1.91"},
+                            ],
+                        },
+                        {
+                            "name": "Away Corners Over/Under",
+                            "values": [
+                                {"value": "Over 2.5", "odd": "1.83"},
+                                {"value": "Under 2.5", "odd": "1.83"},
+                            ],
+                        },
+                    ],
+                }
+            ]
+        }
+    ]
+    records, _ = ApiFootballOddsProvider._parse_odds_response(response)
+    # Los dos bets de corners por equipo no deben acabar en NINGUN mercado
+    # reconocido (ni goles ni corners_total) -- solo debe sobrevivir el
+    # "Goals Over/Under" real del partido completo.
+    assert len(records) == 2
+    by_line_and_selection = {(r.market, r.line, r.selection): r.price for r in records}
+    assert by_line_and_selection == {
+        ("over_under_goals", 2.5, "over"): 1.40,
+        ("over_under_goals", 2.5, "under"): 3.00,
+    }
+
+
+def test_double_chance_first_half_never_leaks_into_full_match_double_chance():
+    """Mismo patron de bug que el de goles de arriba, aplicado a Doble
+    Oportunidad: Bet365 tambien ofrece "Double Chance - First Half" --
+    sin excluir "half" aqui, se mezclaria con la Doble Oportunidad del
+    PARTIDO COMPLETO bajo la misma clave de mercado."""
+    response = [
+        {
+            "bookmakers": [
+                {
+                    "name": "Bet365",
+                    "bets": [
+                        {
+                            "name": "Double Chance",
+                            "values": [{"value": "Home/Draw", "odd": "1.57"}],
+                        },
+                        {
+                            "name": "Double Chance - First Half",
+                            "values": [{"value": "Home/Draw", "odd": "1.15"}],
+                        },
+                    ],
+                }
+            ]
+        }
+    ]
+    records, _ = ApiFootballOddsProvider._parse_odds_response(response)
+    dc_1x_records = [r for r in records if r.market == "double_chance_1x"]
+    assert len(dc_1x_records) == 1
+    assert dc_1x_records[0].price == 1.57
+
+
 def test_corners_total_range_market_edge_values_are_excluded():
     """Confirmado contra la respuesta real: "Corners. Total (Range)" es
     una apuesta por RANGOS ("Under 6", "6 - 8", "9 - 11", "12 - 14", "Over
