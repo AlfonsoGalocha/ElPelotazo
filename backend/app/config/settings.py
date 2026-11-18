@@ -105,6 +105,21 @@ class Settings(BaseSettings):
     # siendo ajustable; `None` desactiva el filtro por completo.
     max_signal_odds: float | None = 4.0
 
+    # --- "Mejores oportunidades": cambio de filosofia del ranking (pedido
+    # real del usuario, 2026-11) ---
+    # Banda de cuotas DISTINTA (y mas estrecha) que `min_signal_odds`/
+    # `max_signal_odds`: esos dos siguen siendo el filtro de SANIDAD
+    # general (cuota invalida / tiro muy largo) que usan v1/v2 -- estos
+    # dos son el requisito NUEVO, deliberadamente conservador, de la
+    # estrategia v3 ("apuestas relativamente conservadoras, pero que
+    # sigan teniendo rentabilidad potencial", nunca la mayor discrepancia
+    # modelo-mercado). Son los VALORES POR DEFECTO; el usuario puede
+    # cambiarlos en Configuracion sin reiniciar el backend -- ver
+    # db/models/core.py::RankingConfig y services/ranking_config_service.py,
+    # que lee la preferencia guardada y cae aqui solo si no hay ninguna.
+    min_opportunity_odds: float = 1.35
+    max_opportunity_odds: float = 1.90
+
     # --- Calidad de mercado (prediction/market_quality.py) ---
     # Clasificacion HIGH/MEDIUM/LOW basada en cuantas casas respaldan el
     # consenso y cuanto se dispersan sus cuotas -- NUNCA se mezcla con la

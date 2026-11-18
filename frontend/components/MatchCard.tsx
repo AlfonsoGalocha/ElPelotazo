@@ -9,18 +9,18 @@ import SignalBadge from "./SignalBadge";
 import MarketQualityBadge from "./MarketQualityBadge";
 import AnomalyBadges from "./AnomalyBadge";
 
-// Tarjeta de partido del rediseño (spec exacta pedida por el usuario):
-// escudos de ambos equipos, competicion+jornada, fecha/hora, mercado
-// recomendado, probabilidad del modelo, cuota disponible, edge%,
-// confianza, y acceso al analisis completo. El edge POSITIVO destaca en
-// verde (edge negativo nunca se muestra como "recomendado": ver
-// backend/app/prediction/ranking.py, `signal_score` solo es > 0 con
-// edge > 0 -- esta tarjeta nunca recibe una prediccion con edge <= 0 como
-// "mercado recomendado", pero el color se calcula igualmente por si
-// algun dia se usa para mostrar cualquier prediccion).
+// Tarjeta de partido del rediseño ("Mejores oportunidades", cambio de
+// filosofia del ranking): escudos de ambos equipos, competicion+jornada,
+// fecha/hora, mercado recomendado, PROBABILIDAD CALIBRADA (protagonista,
+// no el edge), cuota real, EV conservador, confianza, y acceso al
+// analisis completo. El edge ya NO es el criterio destacado -- queda
+// como dato secundario/informativo (ver prediction/ranking.py: el orden
+// de "Mejores oportunidades" prioriza probabilidad calibrada y EV
+// conservador; el edge nunca decide que se muestra como recomendado).
 export default function MatchCard({ prediction }: { prediction: Prediction }) {
   const match = prediction.match;
-  const edgePositive = prediction.edge !== null && prediction.edge > 0;
+  const evPositive = prediction.ev_conservative !== null && prediction.ev_conservative > 0;
+  const calibratedProbability = prediction.calibrated_probability ?? prediction.model_probability;
 
   return (
     <Link
@@ -56,9 +56,12 @@ export default function MatchCard({ prediction }: { prediction: Prediction }) {
           <div className="truncate text-sm font-medium text-slate-100">
             {MARKET_DISPLAY_NAMES[prediction.market] ?? prediction.market}
           </div>
-          <div className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
-            <Gauge className="h-3 w-3" />
-            Modelo: {(prediction.model_probability * 100).toFixed(1)}%
+          <div className="mt-0.5 flex items-center gap-1 text-lg font-bold text-slate-100">
+            <Gauge className="h-3.5 w-3.5 text-slate-500" />
+            {(calibratedProbability * 100).toFixed(1)}%
+            {prediction.calibrated_probability === null && (
+              <span className="text-xs font-normal text-slate-500">(sin calibrar)</span>
+            )}
           </div>
         </div>
         <div className="shrink-0 text-right">
@@ -67,14 +70,20 @@ export default function MatchCard({ prediction }: { prediction: Prediction }) {
           ) : (
             <div className="text-xs text-slate-500">sin cuota</div>
           )}
-          {prediction.edge !== null && (
+          {prediction.ev_conservative !== null && (
             <div
               className={
-                "text-sm font-bold " + (edgePositive ? "text-edge-positive" : "text-slate-500")
+                "text-sm font-bold " + (evPositive ? "text-edge-positive" : "text-slate-500")
               }
             >
-              {edgePositive ? "+" : ""}
-              {(prediction.edge * 100).toFixed(1)}% edge
+              {evPositive ? "+" : ""}
+              {(prediction.ev_conservative * 100).toFixed(1)}% EV
+            </div>
+          )}
+          {prediction.edge !== null && (
+            <div className="text-xs text-slate-600">
+              edge {prediction.edge >= 0 ? "+" : ""}
+              {(prediction.edge * 100).toFixed(1)}pp
             </div>
           )}
         </div>

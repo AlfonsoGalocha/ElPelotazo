@@ -131,7 +131,7 @@ export default function DashboardBoard() {
         {!error && loading && <MatchCardSkeletonGrid count={6} />}
         {!error && !loading && predictions.length === 0 && (
           <EmptyState
-            title="Sin señales con mercado válido para estos filtros"
+            title="No hay oportunidades de alta fiabilidad para los criterios actuales"
             description="Prueba a quitar el filtro de liga/confianza, o ejecuta football-edge update-odds para traer cuotas nuevas."
           />
         )}

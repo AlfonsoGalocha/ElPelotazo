@@ -118,6 +118,14 @@ export interface Prediction {
   // incertidumbre (uncertainty_low), no con model_probability -- nunca
   // mas optimista que expected_value. Ver backend/app/prediction/anomaly.py.
   risk_adjusted_expected_value: number | null;
+  // "Mejores oportunidades" (cambio de filosofia del ranking): EV con
+  // `calibrated_probability` (`ev_calibrated`) y con la probabilidad
+  // conservadora (min(calibrada, uncertainty_low), `ev_conservative`) --
+  // distintos de `expected_value`/`risk_adjusted_expected_value`, que
+  // usan `model_probability` CRUDA (formula v1/v2). `null` solo sin
+  // cuota de mercado real. Ver backend/app/prediction/ranking.py.
+  ev_calibrated: number | null;
+  ev_conservative: number | null;
   confidence: number;
   data_quality: number;
   uncertainty_low: number | null;

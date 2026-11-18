@@ -48,14 +48,20 @@ from dataclasses import dataclass, field
 import numpy as np
 from sqlalchemy.orm import Session
 
+from backend.app.config.settings import get_settings
 from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction, PredictionResult
-from backend.app.models.calibration.metrics import brier_score, log_loss_score
+from backend.app.models.calibration.metrics import brier_score, expected_calibration_error, log_loss_score
 from backend.app.prediction.ranking import (
     LONGSHOT_ODDS_THRESHOLD,
+    RankedSignal,
+    calibrated_probability_or_fallback,
+    evaluate_quality_gate_v3,
     fit_edge_reliability_curve_from_observations,
     fit_longshot_calibration_curve_from_observations,
+    ranking_key_v3,
+    select_one_per_match,
     signal_score,
     signal_score_v2,
 )
@@ -100,13 +106,17 @@ def _score_v2(prediction: Prediction) -> float:
 
 
 def _probability_for_strategy(prediction: Prediction, strategy: str) -> float:
-    """Ambas estrategias usan `model_probability` (CRUDA), nunca
-    `calibrated_probability` -- ver prediction/ranking.py::signal_score_v2
-    para la evidencia real (ensemble_calibration_report contra LaLiga)
-    que descarto preferir la calibrada. `strategy` se mantiene como
-    parametro por si una futura estrategia SI la necesitara, no por
-    diferenciar v1/v2 hoy."""
-    del strategy  # sin diferencia hoy; ver docstring
+    """v1/v2 (y sus variantes de cota) usan `model_probability` (CRUDA),
+    nunca `calibrated_probability` -- ver prediction/ranking.py::
+    signal_score_v2 para la evidencia real (ensemble_calibration_report
+    contra LaLiga) que descarto preferir la calibrada para ESAS
+    estrategias. v3 ("Mejores oportunidades") es la excepcion deliberada
+    (pedido real del usuario: "Utiliza la probabilidad calibrada, nunca
+    la probabilidad bruta") -- su Brier/log loss deben medir la
+    probabilidad que REALMENTE usa para ordenar, con el mismo fallback a
+    la cruda que `ranking.py::calibrated_probability_or_fallback`."""
+    if strategy == V3_STRATEGY_NAME:
+        return calibrated_probability_or_fallback(prediction)
     return prediction.model_probability
 
 
@@ -226,6 +236,44 @@ WALK_FORWARD_REFIT_EVERY = 25
 
 WALK_FORWARD_STRATEGIES: tuple[str, ...] = ("v1", "v2", "v2_edge_cap", "v2_edge_cap_longshot")
 
+# Mismo umbral que evaluation_service.py::MIN_SETTLED_FOR_TRACK_RECORD --
+# v3 ("Mejores oportunidades", cambio de filosofia del ranking) EXIGE
+# fiabilidad historica real para entrar (nunca el valor neutro 1.0 de
+# v1/v2 cuando falta), asi que el walk-forward necesita su propia
+# reconstruccion INCREMENTAL del track record (ver
+# `_track_records_from_observations` mas abajo) -- calcularlo una sola
+# vez con TODO el historico (como hace `market_track_records()` en
+# produccion) seria leakage: la fiabilidad "de entonces" de un
+# (competicion, mercado) solo puede depender de liquidaciones anteriores
+# a cada punto evaluado, igual que `edge_curve`/`longshot_curve`.
+MIN_SETTLED_FOR_WALK_FORWARD_TRACK_RECORD = 30
+
+# Nombre de la estrategia nueva en los informes/CLI -- separado de
+# WALK_FORWARD_STRATEGIES porque su candidate pool es DISTINTO (pasa por
+# `evaluate_quality_gate_v3`, no el gate de v1/v2): no tiene sentido
+# puntuar con la formula v3 una prediccion que v3 ni siquiera
+# consideraria una oportunidad.
+V3_STRATEGY_NAME = "v3_probability_first"
+
+
+def _track_records_from_observations(
+    observations: dict[tuple[str, str], list[tuple[bool, float]]]
+) -> dict[tuple[str, str], float]:
+    """Mismo calculo exacto que `evaluation_service.py::market_track_records`
+    (1 - error de calibracion historico, por (competicion, mercado)) pero
+    puro (sin BD) -- para que el walk-forward pueda reconstruirlo SOLO
+    con las liquidaciones anteriores a cada punto, sin duplicar la
+    formula."""
+    records: dict[tuple[str, str], float] = {}
+    for key, pairs in observations.items():
+        if len(pairs) < MIN_SETTLED_FOR_WALK_FORWARD_TRACK_RECORD:
+            continue
+        y_true = np.array([outcome for outcome, _ in pairs])
+        y_prob = np.array([prob for _, prob in pairs])
+        ece = expected_calibration_error(y_true, y_prob)
+        records[key] = float(np.clip(1.0 - ece, 0.0, 1.0))
+    return records
+
 
 def compare_ranking_strategies_walk_forward(
     settled_with_kickoff: list[tuple[Prediction, PredictionResult, dt.datetime]],
@@ -262,15 +310,20 @@ def compare_ranking_strategies_walk_forward(
     if len(with_market) <= min_train_n:
         return report  # ni un solo punto queda fuera de la ventana de entrenamiento minima
 
+    settings = get_settings()
     scores: dict[str, dict[int, float]] = {name: {} for name in WALK_FORWARD_STRATEGIES}
     evaluated: list[Prediction] = []
+    v3_scores: dict[int, tuple[float, ...]] = {}
+    v3_evaluated: list[Prediction] = []
 
     prior_edge_pp: list[float] = []
     prior_edge_outcome: list[float] = []
     prior_longshot_probability: list[float] = []
     prior_longshot_outcome: list[float] = []
+    prior_track_record_observations: dict[tuple[str, str], list[tuple[bool, float]]] = {}
     edge_curve = None
     longshot_curve = None
+    track_records: dict[tuple[str, str], float] = {}
 
     for i, (prediction, result, _kickoff) in enumerate(with_market):
         if i >= min_train_n:
@@ -289,6 +342,7 @@ def compare_ranking_strategies_walk_forward(
                     if len(prior_longshot_probability) >= min_train_n
                     else None
                 )
+                track_records = _track_records_from_observations(prior_track_record_observations)
 
             evaluated.append(prediction)
             scores["v1"][prediction.id] = signal_score(prediction)
@@ -302,15 +356,35 @@ def compare_ranking_strategies_walk_forward(
                 longshot_calibration_curve=longshot_curve,
             )
 
+            # v3 ("Mejores oportunidades"): candidate pool DISTINTO (pasa
+            # por su propio filtro duro, con el track record reconstruido
+            # SOLO con liquidaciones anteriores a este punto) -- una
+            # prediccion que no pasa `evaluate_quality_gate_v3` AQUI
+            # nunca entra en su ranking, ni siquiera para "all".
+            track_record_key = (
+                (prediction.match.competition.code, prediction.market)
+                if prediction.match is not None
+                else None
+            )
+            track_record = track_records.get(track_record_key) if track_record_key else None
+            if evaluate_quality_gate_v3(prediction, settings, track_record) is None:
+                v3_evaluated.append(prediction)
+                v3_scores[prediction.id] = ranking_key_v3(prediction, track_record)
+
         # Esta liquidacion pasa a formar parte del "pasado" SOLO despues
         # de puntuarse (si le tocaba) -- nunca antes, o se puntuaria con
-        # una curva que ya la conoce.
+        # una curva/track-record que ya la conoce.
         if prediction.edge is not None:
             prior_edge_pp.append(prediction.edge * 100.0)
             prior_edge_outcome.append(float(result.outcome))
         if prediction.market_odds >= LONGSHOT_ODDS_THRESHOLD:
             prior_longshot_probability.append(prediction.model_probability)
             prior_longshot_outcome.append(float(result.outcome))
+        if prediction.match is not None:
+            tr_key = (prediction.match.competition.code, prediction.market)
+            prior_track_record_observations.setdefault(tr_key, []).append(
+                (bool(result.outcome), prediction.model_probability)
+            )
 
     if not evaluated:
         return report
@@ -324,5 +398,23 @@ def compare_ranking_strategies_walk_forward(
                 continue
             report.slices.append(_slice_metrics(strategy, str(n), top_slice, outcomes))
         report.slices.append(_slice_metrics(strategy, "all", ranked, outcomes))
+
+    # v3: mismo ranking que produccion, UNA sola predicción por partido
+    # (ver prediction/ranking.py::select_one_per_match) -- comparar su
+    # top-N contra v1/v2 tal cual se mostraria de verdad, no contra un
+    # candidate pool mas ancho que nunca se llegaria a ver.
+    if v3_evaluated:
+        ranked_signals = sorted(
+            (RankedSignal(prediction=p, score=v3_scores[p.id]) for p in v3_evaluated),
+            key=lambda s: s.score,
+            reverse=True,
+        )
+        ranked_v3 = [s.prediction for s in select_one_per_match(ranked_signals)]
+        for n in top_n_values:
+            top_slice = ranked_v3[:n]
+            if not top_slice:
+                continue
+            report.slices.append(_slice_metrics(V3_STRATEGY_NAME, str(n), top_slice, outcomes))
+        report.slices.append(_slice_metrics(V3_STRATEGY_NAME, "all", ranked_v3, outcomes))
 
     return report

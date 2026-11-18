@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { AlertTriangle, TrendingUp } from "lucide-react";
-import { getCompetitions, getTopSignals } from "@/lib/api";
+import { getCompetitions, getRankingConfig, getTopSignals } from "@/lib/api";
 import type { SignalScope } from "@/lib/api";
 import { formatMatchDateOnly } from "@/lib/dates";
 import { isInternationalCompetition } from "@/lib/internationalCompetitions";
@@ -70,7 +70,7 @@ export default async function TopSignalsPage({
     minEv !== undefined ||
     quality !== "ALL";
 
-  const [predictions, competitions] = await Promise.all([
+  const [predictions, competitions, rankingConfig] = await Promise.all([
     getTopSignals({
       limit: 30,
       date,
@@ -86,6 +86,7 @@ export default async function TopSignalsPage({
       quality,
     }).catch(() => []),
     getCompetitions().catch(() => []),
+    getRankingConfig().catch(() => null),
   ]);
   // Pedido real del usuario: "lo importante son las ligas" -- las ligas
   // de club quedan como opciones principales del selector, las
@@ -99,7 +100,7 @@ export default async function TopSignalsPage({
     <div>
       <h1 className="mb-1 flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-100">
         <TrendingUp className="h-5 w-5 text-accent" />
-        Oportunidades
+        Mejores oportunidades
       </h1>
       <p className="mb-4 text-sm text-slate-500">
         {date
@@ -111,17 +112,24 @@ export default async function TopSignalsPage({
           : scope === "all_upcoming"
             ? `De los próximos ${days} días (sin restricción de jornada).`
             : `${SCOPE_LABELS[scope]} de cada competición — nunca un partido de otra jornada aunque tenga más edge.`}{" "}
-        Solo predicciones con mercado real y válido (cuota entre 1.45 y 4.0, edge no
-        negativo, al menos una casa de apuestas respaldando el consenso) — ni una cuota irrisoria
-        (1.02, edge casi nulo) ni un edge grande en un resultado muy improbable (cuota justa 8,
-        mercado a 15) son predicciones prácticas para destacar, aunque matemáticamente haya
-        diferencia.{" "}
-        {sortBy === "edge"
-          ? "Ordenado por edge de mayor a menor."
-          : "Puntuación = probabilidad²× edge × confianza × calidad de datos — una cuota irrisoria (ej. 1.02) con edge casi nulo no sube aquí aunque la probabilidad del modelo sea altísima. La confianza ya incluye cuántas casas respaldan la cuota: un consenso de una única casa pesa menos que el de 5+."}{" "}
+        No son las de mayor discrepancia modelo-mercado (edge) sino las mas fiables: cuota REAL
+        entre {rankingConfig ? rankingConfig.min_opportunity_odds.toFixed(2) : "1.35"} y{" "}
+        {rankingConfig ? rankingConfig.max_opportunity_odds.toFixed(2) : "1.90"} (ambos límites
+        inclusive, configurable en{" "}
+        <Link href="/settings" className="underline hover:text-slate-300">
+          Configuración
+        </Link>
+        ), probabilidad calibrada alta, EV estimado Y conservador positivos, y fiabilidad
+        histórica real suficiente para ese mercado/competición. Orden de prioridad (nunca una
+        puntuación con pesos inventados): 1) probabilidad calibrada, 2) EV conservador, 3)
+        fiabilidad histórica, 4) incertidumbre, 5) calidad de datos, 6) edge — solo información
+        secundaria, nunca decide qué aparece aquí. Como mucho una oportunidad por partido (el
+        resto de mercados candidatos del mismo partido quedan descartados de esta lista, aunque
+        siguen guardados).{" "}
+        {sortBy === "edge" && "Reordenado por edge de mayor a menor (el filtro de qué aparece no cambia)."}{" "}
         {hasFairOddsFilter && (
           <>
-            Filtrado a cuota justa del modelo entre {minFairOdds ?? "0"} y {maxFairOdds ?? "∞"}.
+            Filtrado además a cuota justa del modelo entre {minFairOdds ?? "0"} y {maxFairOdds ?? "∞"}.
           </>
         )}
       </p>
@@ -208,8 +216,8 @@ export default async function TopSignalsPage({
               defaultValue={sortBy}
               className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
             >
-              <option value="score">Puntuación (por defecto)</option>
-              <option value="edge">Edge (mayor a menor)</option>
+              <option value="score">Probabilidad / fiabilidad (por defecto)</option>
+              <option value="edge">Edge (mayor a menor, informativo)</option>
             </select>
             <label htmlFor="min_fair_odds" className="ml-2">
               Cuota justa entre:
@@ -303,12 +311,12 @@ export default async function TopSignalsPage({
               <th className="px-3 py-2">Partido</th>
               <th className="px-3 py-2">Fecha</th>
               <th className="px-3 py-2">Mercado</th>
-              <th className="px-3 py-2">Modelo</th>
-              <th className="px-3 py-2">Mercado</th>
+              <th className="px-3 py-2">Prob. calibrada</th>
               <th className="px-3 py-2">Cuota</th>
               <th className="px-3 py-2">Casas</th>
-              <th className="px-3 py-2">Edge</th>
-              <th className="px-3 py-2">Cuota justa</th>
+              <th className="px-3 py-2">EV estimado</th>
+              <th className="px-3 py-2">EV conservador</th>
+              <th className="px-3 py-2 text-slate-600">Edge (info)</th>
               <th className="px-3 py-2">Calidad de datos</th>
               <th className="px-3 py-2">Calidad de mercado</th>
               <th className="px-3 py-2">Cuota actualizada</th>
@@ -330,16 +338,22 @@ export default async function TopSignalsPage({
                   })}
                 </td>
                 <td className="px-3 py-2 text-slate-300">{MARKET_DISPLAY_NAMES[p.market] ?? p.market}</td>
-                <td className="px-3 py-2">{(p.model_probability * 100).toFixed(1)}%</td>
-                <td className="px-3 py-2">
-                  {p.market_probability !== null ? `${(p.market_probability * 100).toFixed(1)}%` : "—"}
+                <td className="px-3 py-2 font-semibold text-slate-100">
+                  {p.calibrated_probability !== null
+                    ? `${(p.calibrated_probability * 100).toFixed(1)}%`
+                    : `${(p.model_probability * 100).toFixed(1)}% (sin calibrar)`}
                 </td>
                 <td className="px-3 py-2">{p.market_odds !== null ? p.market_odds.toFixed(2) : "—"}</td>
                 <td className="px-3 py-2 text-slate-400">{p.bookmakers_used ?? "—"}</td>
                 <td className="px-3 py-2 text-edge-positive">
-                  {p.edge !== null ? `+${(p.edge * 100).toFixed(1)} pp` : "—"}
+                  {p.ev_calibrated !== null ? `+${(p.ev_calibrated * 100).toFixed(1)}%` : "—"}
                 </td>
-                <td className="px-3 py-2">{p.fair_odds.toFixed(2)}</td>
+                <td className="px-3 py-2 text-edge-positive">
+                  {p.ev_conservative !== null ? `+${(p.ev_conservative * 100).toFixed(1)}%` : "—"}
+                </td>
+                <td className="px-3 py-2 text-slate-600">
+                  {p.edge !== null ? `${p.edge >= 0 ? "+" : ""}${(p.edge * 100).toFixed(1)} pp` : "—"}
+                </td>
                 <td className="px-3 py-2">
                   <div className="flex flex-wrap items-center gap-1">
                     <SignalBadge tier={p.signal_tier} />
@@ -361,10 +375,7 @@ export default async function TopSignalsPage({
         </table>
         {predictions.length === 0 && (
           <div className="p-2">
-            <EmptyState
-              title="Sin señales con mercado válido para este filtro"
-              description={'Prueba con "Todas las próximas" o ejecuta football-edge update-odds.'}
-            />
+            <EmptyState title="No hay oportunidades de alta fiabilidad para los criterios actuales" />
           </div>
         )}
       </div>

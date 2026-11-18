@@ -1133,6 +1133,17 @@ def compare_ranking_strategies_walk_forward_cmd(
     mejora ROI/win-rate/Brier out-of-sample sobre `v2_edge_cap` (el
     estado actual) con muestra suficiente y drawdown estable, NO se
     activa.
+
+    Incluye tambien `v3_probability_first` ("Mejores oportunidades",
+    cambio de filosofia del ranking, 2026-11): banda de cuotas 1.35-1.90
+    + orden de prioridad por probabilidad calibrada (ya ACTIVADA en
+    produccion, ver seccion correspondiente de architecture_audit.md --
+    son reglas deterministas, no una correccion estadistica nueva sin
+    validar). Su candidate pool es mas pequenho a proposito (pasa por su
+    propio filtro: EV estimado y conservador positivos, fiabilidad
+    historica real exigida) -- corre esto contra tu BD real para
+    confirmar con datos de verdad que mejora ROI/win-rate/Brier frente a
+    v2.
     """
     init_db()
     with session_scope() as db:

@@ -5,7 +5,7 @@ import datetime as dt
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from backend.app.config.settings import get_settings
+from backend.app.config.settings import Settings, get_settings
 from backend.app.db.database import get_db
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
@@ -16,7 +16,13 @@ from backend.app.prediction.anomaly import (
 )
 from backend.app.prediction.confidence import signal_tier
 from backend.app.prediction.market_quality import market_quality_tier
-from backend.app.prediction.ranking import odds_age_minutes, rank_signals_v2
+from backend.app.prediction.ranking import (
+    calibrated_probability_or_fallback,
+    conservative_probability,
+    ev_with_probability,
+    odds_age_minutes,
+    rank_signals_v3,
+)
 from backend.app.schemas.prediction import (
     BestOfDayOut,
     CurrentRoundPredictionsOut,
@@ -28,10 +34,26 @@ from backend.app.services.evaluation_service import (
     fit_edge_reliability_curve,
     market_track_records,
 )
+from backend.app.services.ranking_config_service import get_opportunity_odds_band
 from backend.app.services.round_service import get_current_round, get_next_round
 from backend.app.utils.logging import get_logger
 
 router = APIRouter(prefix="/predictions", tags=["predictions"])
+
+
+def _settings_for_opportunities(db: Session, settings: Settings) -> Settings:
+    """`get_settings()` es un singleton cacheado (`lru_cache`): nunca se
+    muta en sitio (eso filtraria la preferencia de una request a todas las
+    demas para siempre). La banda de cuotas de "Mejores oportunidades" SI
+    es editable en runtime (`RankingConfig`/`/config/ranking`, seccion 7
+    del pedido) -- esta funcion devuelve una COPIA de `settings` con esa
+    preferencia aplicada, para que `rank_signals_v3` siempre vea la banda
+    vigente (la guardada, o el default de `Settings` si nunca se guardo
+    ninguna -- ver `get_opportunity_odds_band`)."""
+    min_odds, max_odds = get_opportunity_odds_band(db, settings)
+    return settings.model_copy(update={"min_opportunity_odds": min_odds, "max_opportunity_odds": max_odds})
+
+
 logger = get_logger(__name__)
 
 
@@ -57,6 +79,16 @@ def serialize_prediction(
         "edge": prediction.edge,
         "expected_value": prediction.expected_value,
         "risk_adjusted_expected_value": prediction.risk_adjusted_expected_value,
+        # "Mejores oportunidades" (cambio de filosofia del ranking):
+        # EV_estimado = probabilidad CALIBRADA (o su fallback) * cuota - 1;
+        # EV_conservador = probabilidad conservadora (min(calibrada,
+        # uncertainty_low)) * cuota - 1 -- ver prediction/ranking.py.
+        # Calculados aqui SOLO para mostrar (nunca se guardan en
+        # `Prediction`: esta implementacion no toca los modelos
+        # predictivos ni sus probabilidades, solo como se ordenan/
+        # presentan). `None` sin cuota real, nunca inventados.
+        "ev_calibrated": ev_with_probability(calibrated_probability_or_fallback(prediction), prediction.market_odds),
+        "ev_conservative": ev_with_probability(conservative_probability(prediction), prediction.market_odds),
         "confidence": prediction.confidence,
         "data_quality": prediction.data_quality,
         "uncertainty_low": prediction.uncertainty_low,
@@ -141,7 +173,7 @@ def predictions_summary(db: Session = Depends(get_db)) -> dict:
     aparte con su propio criterio inventado."""
     from backend.app.db.models.core import Competition
 
-    settings = get_settings()
+    settings = _settings_for_opportunities(db, get_settings())
     competitions = db.query(Competition).all()
     match_ids = _resolve_scope_match_ids(db, "current_round", None)
     matches_pending = (
@@ -158,12 +190,11 @@ def predictions_summary(db: Session = Depends(get_db)) -> dict:
 
     candidates = _base_signal_query(db, None, True, scope="current_round").all()
     by_match = _group_by_match(candidates)
-    edge_reliability_curve = fit_edge_reliability_curve(db)
-    included, _ = rank_signals_v2(
-        candidates,
-        settings,
-        edge_reliability_curve=edge_reliability_curve,
-    )
+    # "Mejores oportunidades" (cambio de filosofia del ranking): el
+    # conteo de "oportunidades detectadas" del resumen de jornada usa el
+    # MISMO criterio real que /top-signals, nunca uno aparte inventado.
+    track_records = market_track_records(db)
+    included, _ = rank_signals_v3(candidates, settings, track_records)
     opportunities = [
         s
         for s in included
@@ -433,27 +464,32 @@ def top_signals(
     quality: str | None = QUALITY_QUERY,
     db: Session = Depends(get_db),
 ) -> list[dict]:
-    """"Mejores señales": ranking transparente que SOLO considera
-    predicciones con mercado real (ver prediction/ranking.py) de la
+    """"Mejores oportunidades" (cambio de filosofia del ranking, pedido
+    real del usuario, 2026-11: antes "mayor EDGE", ahora "mas probable
+    con valor real") -- usa `rank_signals_v3` (ver prediction/ranking.py):
+    SOLO cuotas reales entre `min_opportunity_odds`/`max_opportunity_odds`
+    (1.35-1.90 por defecto, AMBOS limites inclusive, configurable en
+    Configuracion -- ver RankingConfig), EV estimado Y conservador
+    estrictamente positivos, y fiabilidad historica real y suficiente
+    para ese (competicion, mercado). Ordenado por PRIORIDAD (nunca un
+    score con pesos inventados): probabilidad calibrada primero, EV
+    conservador despues, fiabilidad historica, incertidumbre, calidad de
+    datos, y el edge como ultimo criterio informativo. Ademas, UNA sola
+    predicción por partido (la mejor segun ese orden; todas las
+    candidatas siguen guardadas, ver `select_one_per_match`). De la
     JORNADA ACTUAL de cada competicion por defecto (`scope=current_round`,
     ver `services/round_service.py`) -- nunca "un partido de la jornada
-    siguiente porque tiene mas edge" (seccion 1/acceptance criteria 1-2).
-    Usa `scope=all_upcoming` para volver a una ventana de dias, o `date`
-    para un dia concreto. Una prediccion sin cuota de mercado, con cuota
-    invalida (incluida una cuota irrisoria tipo 1.02, ver MIN_SIGNAL_ODDS),
-    sin evidencia de casas de apuestas suficiente, o con edge
-    negativo/ausente NUNCA entra aqui — puede existir (ver
-    `/predictions/model-only`), pero no compite en este ranking (seccion
-    2/7 de la revision de arquitectura).
+    siguiente porque tiene mas edge". Usa `scope=all_upcoming` para volver
+    a una ventana de dias, o `date` para un dia concreto. Si ninguna
+    predicción cumple todos los requisitos, la lista viene vacía (nunca
+    se rellena con algo que no los cumpla).
 
     `sort_by`: el filtro de calidad (que decide QUE entra) es siempre el
     mismo; `sort_by` solo cambia el ORDEN dentro de lo que ya paso el
-    filtro. "score" (por defecto) es el ranking compuesto documentado en
-    prediction/ranking.py (probabilidad al cuadrado x edge x confianza x
-    calidad); "edge" ordena de mayor a menor edge en puntos porcentuales
-    en crudo -- util para ver primero la mayor discrepancia modelo-mercado
-    aunque venga de una senhal con probabilidad mas baja o menos casas
-    respaldando la cuota, que el score compuesto penaliza a proposito.
+    filtro. "score" (por defecto) es el orden de prioridad de arriba;
+    "edge" ordena de mayor a menor edge en puntos porcentuales en
+    crudo -- util para ver la discrepancia modelo-mercado por separado,
+    pero el edge sigue siendo solo informativo (nunca decide que entra).
 
     `min_fair_odds`/`max_fair_odds`: filtro por CUOTA JUSTA del modelo
     (no la de mercado), pedido explicito de usuario para acotar por
@@ -468,7 +504,7 @@ def top_signals(
     (0.10 = EV +10%): un edge grande no implica EV positivo si la cuota es
     baja (ver prediction/edge.py).
     """
-    settings = get_settings()
+    settings = _settings_for_opportunities(db, get_settings())
     candidates = _base_signal_query(
         db,
         market_family,
@@ -485,13 +521,7 @@ def top_signals(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
-    edge_reliability_curve = fit_edge_reliability_curve(db)
-    included, excluded = rank_signals_v2(
-        candidates,
-        settings,
-        track_records,
-        edge_reliability_curve=edge_reliability_curve,
-    )
+    included, excluded = rank_signals_v3(candidates, settings, track_records)
     if excluded:
         logger.info(
             "ranking.top_signals.excluded: total=%d reasons=%s",
@@ -549,7 +579,7 @@ def best_predictions(
     NUNCA aparecen aqui: usa `/predictions/model-only` para mostrarlas por
     separado, etiquetadas explicitamente como "sin mercado".
     """
-    settings = get_settings()
+    settings = _settings_for_opportunities(db, get_settings())
     candidates = _base_signal_query(
         db,
         market_family,
@@ -565,13 +595,7 @@ def best_predictions(
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
-    edge_reliability_curve = fit_edge_reliability_curve(db)
-    included, _ = rank_signals_v2(
-        candidates,
-        settings,
-        track_records,
-        edge_reliability_curve=edge_reliability_curve,
-    )
+    included, _ = rank_signals_v3(candidates, settings, track_records)
     included = _filter_by_quality(included, quality, settings)
     included = [
         s
@@ -613,19 +637,13 @@ def best_of_day(
        no oculto).
     8. Sin contradiccion -- `prediction/anomaly.py::is_strong_signal`.
     """
-    settings = get_settings()
+    settings = _settings_for_opportunities(db, get_settings())
     candidates = _base_signal_query(
         db, None, True, None, None, None, None, "current_round", competition_code, None, None
     ).all()
     by_match = _group_by_match(candidates)
     track_records = market_track_records(db, competition_code)
-    edge_reliability_curve = fit_edge_reliability_curve(db)
-    included, _ = rank_signals_v2(
-        candidates,
-        settings,
-        track_records,
-        edge_reliability_curve=edge_reliability_curve,
-    )
+    included, _ = rank_signals_v3(candidates, settings, track_records)
 
     strict_min_edge = settings.min_edge_pp * 2
     checked: list[dict] = []
@@ -684,14 +702,12 @@ def best_predictions_debug(
     """Observabilidad (seccion 13): por cada prediccion candidata, si entro
     al ranking o no y por que. Pensado para depurar "por que esta senhal no
     aparece" sin tener que adivinar leyendo logs."""
+    settings = _settings_for_opportunities(db, get_settings())
     candidates = _base_signal_query(
         db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
     ).all()
-    edge_reliability_curve = fit_edge_reliability_curve(db)
-    included, excluded = rank_signals_v2(
-        candidates,
-        edge_reliability_curve=edge_reliability_curve,
-    )
+    track_records = market_track_records(db, competition_code)
+    included, excluded = rank_signals_v3(candidates, settings, track_records)
     return {
         "included": [
             {

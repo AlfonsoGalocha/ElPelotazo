@@ -56,7 +56,14 @@ class _FakeProvider(DataProvider):
                     away_corners=int(r.away_corners),
                     odds=[
                         RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.9),
-                        RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+                        # 1.85, no 1.95 (seccion "cambio de filosofia del
+                        # ranking", v3): /predictions/top-signals ahora
+                        # exige cuota dentro de [1.35, 1.90] -- 1.95
+                        # quedaria excluida por el nuevo filtro, rompiendo
+                        # todos los tests de este modulo que asumen que
+                        # "las dos predicciones con mercado real del
+                        # partido sembrado" son over_2_5 Y under_2_5.
+                        RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.85),
                     ],
                 )
             )
@@ -104,7 +111,159 @@ def seeded_competition_code():
         predictions = generate_predictions_for_competition(db, competition_code, fixture_date)
         assert len(predictions) == TOTAL_MVP_MARKETS  # goles + corners
 
+    # Seccion "cambio de filosofia del ranking" (v3, 2026-11):
+    # /predictions/top-signals ahora exige EV estimado Y conservador
+    # POSITIVOS y fiabilidad historica real -- ver `_force_positive_ev`,
+    # llamado mas abajo en `test_attach_odds_matches_by_team_and_
+    # refreshes_predictions` (justo despues de la UNICA vez que este
+    # partido futuro recibe cuota real: antes de eso `market_odds` es
+    # `None`, nada que ajustar todavia).
+    #
+    # Fiabilidad historica real para over_2_5/under_2_5 de esta
+    # competicion: se liquida un lote de partidos FUTUROS-que-se-marcan-
+    # jugados (mismo patron que test_settlement.py), suficiente para
+    # superar MIN_SETTLED_FOR_TRACK_RECORD (30 en evaluation_service.py).
+    _seed_market_track_record(competition_code)
+
     return competition_code
+
+
+def _force_positive_ev(
+    competition_code: str, fixture_date: dt.date, home_team_id: int, away_team_id: int
+) -> None:
+    """Fuerza `calibrated_probability`/`uncertainty_low`/`uncertainty_high`
+    en las predicciones de goles de UN partido ya generado, para que su
+    EV (estimado y conservador, ver prediction/ranking.py) sea
+    POSITIVO con la cuota real que ya tiene -- ver docstring de la
+    llamada en `seeded_competition_code`."""
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=competition_code).one()
+        match = (
+            db.query(Match)
+            .filter(
+                Match.competition_id == comp.id,
+                Match.home_team_id == home_team_id,
+                Match.away_team_id == away_team_id,
+                Match.kickoff_utc >= dt.datetime.combine(fixture_date, dt.time.min),
+                Match.kickoff_utc < dt.datetime.combine(fixture_date, dt.time.min) + dt.timedelta(days=1),
+            )
+            .one()
+        )
+        for market, calibrated, uncertainty_low in (
+            ("over_2_5", 0.65, 0.60),
+            ("under_2_5", 0.60, 0.58),
+        ):
+            db.query(Prediction).filter(Prediction.match_id == match.id, Prediction.market == market).update(
+                {
+                    "calibrated_probability": calibrated,
+                    "uncertainty_low": uncertainty_low,
+                    "uncertainty_high": min(0.95, calibrated + 0.15),
+                },
+                synchronize_session=False,
+            )
+
+
+def _set_safe_calibration(prediction: Prediction) -> None:
+    """Igual proposito que `_force_positive_ev`, pero mutando un objeto
+    `Prediction` YA CARGADO (el llamador hace `db.flush()`) en vez de
+    volver a buscar el partido por equipos/fecha -- para los tests que ya
+    tienen la fila en mano (`valid_predictions[i]`) y solo necesitan
+    garantizar que su EV, con la cuota real que YA tiene, sea positivo
+    (banda de cuotas -- seccion "cambio de filosofia del ranking", v3).
+    Calcula los valores a partir de `market_odds` de la propia fila, para
+    funcionar igual sea cual sea el mercado/cuota concreto que le toque."""
+    implied = 1.0 / prediction.market_odds
+    calibrated = min(0.95, implied + 0.15)
+    prediction.calibrated_probability = calibrated
+    prediction.uncertainty_low = min(0.95, implied + 0.08)
+    prediction.uncertainty_high = min(0.98, calibrated + 0.15)
+
+
+def _two_valid_predictions_from_distinct_matches(db) -> list[Prediction]:
+    """Las 2 primeras predicciones (por id) con mercado real, una por
+    PARTIDO distinto. Nunca dos mercados (p.ej. over_2_5/under_2_5) del
+    mismo partido: `/predictions/top-signals` aplica `select_one_per_match`
+    por defecto (v3, "Mejores oportunidades"), asi que dos candidatas del
+    mismo partido jamas podrian aparecer juntas en la respuesta -- un test
+    que las fuerce a las dos estaria comprobando un escenario imposible en
+    produccion, sea cual sea el filtro que de verdad quiera ejercitar."""
+    candidates = (
+        db.query(Prediction)
+        .filter(Prediction.market_odds.isnot(None))
+        .filter(Prediction.market_probability.isnot(None))
+        .order_by(Prediction.id)
+        .all()
+    )
+    picked: list[Prediction] = []
+    seen_match_ids: set[int] = set()
+    for prediction in candidates:
+        if prediction.match_id in seen_match_ids:
+            continue
+        picked.append(prediction)
+        seen_match_ids.add(prediction.match_id)
+        if len(picked) == 2:
+            break
+    assert len(picked) == 2
+    return picked
+
+
+def _seed_market_track_record(competition_code: str) -> None:
+    """Liquida 35 partidos FUTUROS-que-se-marcan-jugados para dejar
+    fiabilidad historica real (`market_track_records`) en over_2_5/
+    under_2_5 de `competition_code` -- sin esto, v3 ("Mejores
+    oportunidades") excluiria CUALQUIER prediccion de esta competicion
+    por `fiabilidad_historica_insuficiente`, sea cual sea su cuota/EV.
+
+    Deliberadamente SIN cuota real (nunca se les llama
+    `attach_odds_to_scheduled_matches`/no se les crea `MatchOdds`):
+    `market_track_records()` solo necesita (outcome, model_probability),
+    nunca cuota -- anhadir cuota aqui colaria estas 35*15=525
+    predicciones (con ids mas bajos que las de cualquier test posterior)
+    en cualquier query de este modulo que busque "las primeras N
+    predicciones con mercado real" para el partido futuro sembrado,
+    rompiendo esos tests por una razon ajena a lo que de verdad hace
+    falta sembrar aqui."""
+    from backend.app.services.evaluation_service import settle_finished_predictions
+
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=competition_code).one()
+        season = db.query(Season).filter_by(competition_id=comp.id).order_by(Season.id.desc()).first()
+        base_time = dt.datetime.utcnow() + dt.timedelta(days=300)  # bien lejos de cualquier ventana real de /top-signals
+        match_ids: list[int] = []
+        for i in range(35):
+            match = Match(
+                provider="integration_test_track_record",
+                provider_id=f"track-record-fixture-{i}",
+                competition_id=comp.id,
+                season_id=season.id,
+                kickoff_utc=base_time + dt.timedelta(days=i),
+                home_team_id=1,
+                away_team_id=2,
+                status="scheduled",
+            )
+            db.add(match)
+            db.flush()
+            match_ids.append(match.id)
+
+    for i, match_id in enumerate(match_ids):
+        with session_scope() as db:
+            kickoff_date = db.get(Match, match_id).kickoff_utc.date()
+        with session_scope() as db:
+            generate_predictions_for_competition(db, competition_code, kickoff_date)
+        # Resultado alternante (nunca el mismo marcador 35 veces, para no
+        # fingir una certeza perfecta): el VALOR exacto del track record
+        # no importa para el filtro duro de v3 (solo exige que EXISTA,
+        # `market_track_record is not None`), solo que haya liquidaciones
+        # reales de las que calcularlo.
+        home_goals, away_goals = (2, 1) if i % 2 == 0 else (0, 1)
+        with session_scope() as db:
+            db.query(Match).filter_by(id=match_id).update(
+                {"home_goals": home_goals, "away_goals": away_goals, "status": "finished"},
+                synchronize_session=False,
+            )
+
+    with session_scope() as db:
+        settle_finished_predictions(db, competition_code=competition_code)
 
 
 def test_health_endpoint():
@@ -497,7 +656,9 @@ def test_attach_odds_matches_by_team_and_refreshes_predictions(seeded_competitio
             commence_time=match.kickoff_utc.replace(tzinfo=dt.timezone.utc),
             odds=[
                 RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
-                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+                # 1.85, no 1.95 (seccion "cambio de filosofia del
+                # ranking", v3): fuera de [1.35, 1.90].
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.85),
             ],
         )
         provider = _FakeOddsProvider([snapshot])
@@ -515,6 +676,15 @@ def test_attach_odds_matches_by_team_and_refreshes_predictions(seeded_competitio
         assert over_2_5.market_probability is not None
         assert over_2_5.edge is not None
         assert over_2_5.expected_value is not None
+
+    # v3 ("Mejores oportunidades") exige EV estimado/conservador
+    # positivos -- esta regeneracion BORRA y recrea las predicciones del
+    # partido (ver generate_predictions_for_competition), asi que
+    # cualquier ajuste anterior de `seeded_competition_code` quedaria
+    # descartado; se fuerza aqui, justo despues de la regeneracion real,
+    # para que el resto de tests de este modulo (que dependen de que
+    # este partido SIGA pasando el filtro duro) vean un EV garantizado.
+    _force_positive_ev(seeded_competition_code, fixture_date, home_team_id=1, away_team_id=2)
 
 
 def test_prediction_detail_endpoint_shows_bookmaker_breakdown_and_explanation(seeded_competition_code):
@@ -586,7 +756,23 @@ def test_top_signals_only_includes_predictions_with_valid_market(seeded_competit
     (mismo modulo, misma competicion de prueba): tras esa prueba, el
     partido futuro tiene cuota SOLO para over_2_5 (goles), nunca para
     tarjetas/corners. `/predictions/top-signals` ("Mejores señales") NUNCA
-    debe devolver una prediccion sin mercado, sea cual sea su probabilidad."""
+    debe devolver una prediccion sin mercado, sea cual sea su probabilidad.
+
+    `edge >= 0` ya NO es una garantia de v3 (cambio de filosofia del
+    ranking): v3 no exige edge minimo a proposito ("informacion
+    secundaria", nunca sustituye a EV/probabilidad/fiabilidad) -- las
+    garantias reales ahora son EV estimado Y conservador POSITIVOS."""
+    # Varios tests de este modulo regeneran las predicciones del partido
+    # futuro sembrado (cada uno con su propia cuota) -- se fuerza aqui de
+    # nuevo, justo antes de la llamada real, para no depender de que la
+    # ultima regeneracion anterior en el orden del archivo haya sido la
+    # de `test_attach_odds_matches_by_team_and_refreshes_predictions`.
+    _force_positive_ev(
+        seeded_competition_code,
+        (dt.datetime.utcnow() + dt.timedelta(days=1)).date(),
+        home_team_id=1,
+        away_team_id=2,
+    )
     client = TestClient(app)
     response = client.get("/predictions/top-signals", params={"limit": 100})
     assert response.status_code == 200
@@ -596,7 +782,8 @@ def test_top_signals_only_includes_predictions_with_valid_market(seeded_competit
         assert prediction["has_market"] is True
         assert prediction["market_odds"] is not None
         assert prediction["market_probability"] is not None
-        assert prediction["edge"] is not None and prediction["edge"] >= 0
+        assert prediction["ev_calibrated"] is not None and prediction["ev_calibrated"] > 0
+        assert prediction["ev_conservative"] is not None and prediction["ev_conservative"] > 0
         assert not prediction["market"].startswith("cards_")
         assert not prediction["market"].startswith("corners_")
 
@@ -631,13 +818,16 @@ def test_top_signals_default_window_excludes_far_future_matches(seeded_competiti
             commence_time=far_kickoff.replace(tzinfo=dt.timezone.utc),
             odds=[
                 RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
-                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.85),
             ],
         )
         attach_odds_to_scheduled_matches(db, _FakeOddsProvider([snapshot]), seeded_competition_code)
 
     with session_scope() as db:
         generate_predictions_for_competition(db, seeded_competition_code, far_kickoff.date())
+    # v3 ("Mejores oportunidades") exige EV positivo -- ver docstring de
+    # `_force_positive_ev` en `seeded_competition_code`.
+    _force_positive_ev(seeded_competition_code, far_kickoff.date(), home_team_id=3, away_team_id=4)
 
     client = TestClient(app)
     default_response = client.get("/predictions/top-signals", params={"limit": 100})
@@ -713,7 +903,7 @@ def test_top_signals_default_scope_excludes_next_round_even_with_higher_edge(see
                 commence_time=current_round_kickoff.replace(tzinfo=dt.timezone.utc),
                 odds=[
                     RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
-                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.85),
                 ],
             ),
             FixtureOddsSnapshot(
@@ -722,7 +912,7 @@ def test_top_signals_default_scope_excludes_next_round_even_with_higher_edge(see
                 commence_time=next_round_kickoff.replace(tzinfo=dt.timezone.utc),
                 odds=[
                     RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
-                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.85),
                 ],
             ),
         ]
@@ -731,6 +921,10 @@ def test_top_signals_default_scope_excludes_next_round_even_with_higher_edge(see
     with session_scope() as db:
         generate_predictions_for_competition(db, seeded_competition_code, current_round_kickoff.date())
         generate_predictions_for_competition(db, seeded_competition_code, next_round_kickoff.date())
+    # v3 ("Mejores oportunidades") exige EV positivo -- ver docstring de
+    # `_force_positive_ev` en `seeded_competition_code`.
+    _force_positive_ev(seeded_competition_code, current_round_kickoff.date(), home_team_id=5, away_team_id=6)
+    _force_positive_ev(seeded_competition_code, next_round_kickoff.date(), home_team_id=7, away_team_id=8)
 
     # El partido de la jornada SIGUIENTE se fuerza a tener mucho mas edge
     # que el de la jornada actual, para probar que aun asi no aparece por
@@ -806,18 +1000,18 @@ def test_top_signals_sort_by_edge_orders_by_edge_not_score(seeded_competition_co
     ordena de mayor a menor, al margen de como las ordenaria el score
     compuesto (probabilidad^2 x edge x confianza x calidad)."""
     with session_scope() as db:
-        valid_predictions = (
-            db.query(Prediction)
-            .filter(Prediction.market_odds.isnot(None))
-            .filter(Prediction.market_probability.isnot(None))
-            .order_by(Prediction.id)
-            .limit(2)
-            .all()
-        )
-        assert len(valid_predictions) == 2
+        # Distintos PARTIDOS a proposito (ver `_two_valid_predictions_from_distinct_matches`):
+        # v3 aplica `select_one_per_match` por defecto en este endpoint, asi
+        # que dos mercados (over/under) del MISMO partido nunca podrian
+        # aparecer juntos en la respuesta, sea cual sea su edge.
+        valid_predictions = _two_valid_predictions_from_distinct_matches(db)
         low_edge_id, high_edge_id = valid_predictions[0].id, valid_predictions[1].id
         valid_predictions[0].edge = 0.02
         valid_predictions[1].edge = 0.35
+        # v3 ("Mejores oportunidades") exige EV positivo para entrar --
+        # ver `_set_safe_calibration`.
+        _set_safe_calibration(valid_predictions[0])
+        _set_safe_calibration(valid_predictions[1])
         db.flush()
 
     client = TestClient(app)
@@ -843,18 +1037,14 @@ def test_top_signals_filters_by_fair_odds_range(seeded_competition_code):
     (que limita la cuota de MERCADO, pensado para evitar tiros muy
     largos)."""
     with session_scope() as db:
-        valid_predictions = (
-            db.query(Prediction)
-            .filter(Prediction.market_odds.isnot(None))
-            .filter(Prediction.market_probability.isnot(None))
-            .order_by(Prediction.id)
-            .limit(2)
-            .all()
-        )
-        assert len(valid_predictions) == 2
+        valid_predictions = _two_valid_predictions_from_distinct_matches(db)
         low_fair_id, high_fair_id = valid_predictions[0].id, valid_predictions[1].id
         valid_predictions[0].fair_odds = 1.50
         valid_predictions[1].fair_odds = 4.00
+        # v3 ("Mejores oportunidades") exige EV positivo para entrar --
+        # ver `_set_safe_calibration`.
+        _set_safe_calibration(valid_predictions[0])
+        _set_safe_calibration(valid_predictions[1])
         db.flush()
 
     client = TestClient(app)
@@ -874,15 +1064,7 @@ def test_top_signals_filters_by_min_edge_min_bookmakers_and_quality(seeded_compe
     casas, y calidad de mercado -- todos AJUSTES FINOS sobre lo que ya
     paso el filtro duro, nunca lo sustituyen."""
     with session_scope() as db:
-        valid_predictions = (
-            db.query(Prediction)
-            .filter(Prediction.market_odds.isnot(None))
-            .filter(Prediction.market_probability.isnot(None))
-            .order_by(Prediction.id)
-            .limit(2)
-            .all()
-        )
-        assert len(valid_predictions) == 2
+        valid_predictions = _two_valid_predictions_from_distinct_matches(db)
         low_edge_id, high_edge_id = valid_predictions[0].id, valid_predictions[1].id
         valid_predictions[0].edge = 0.02  # 2pp
         valid_predictions[0].bookmakers_used = 1
@@ -890,6 +1072,11 @@ def test_top_signals_filters_by_min_edge_min_bookmakers_and_quality(seeded_compe
         valid_predictions[1].edge = 0.12  # 12pp
         valid_predictions[1].bookmakers_used = 12
         valid_predictions[1].expected_value = 0.20  # EV +20%
+        # v3 ("Mejores oportunidades") exige EV (calibrado/conservador,
+        # distinto del `expected_value` legacy de arriba) positivo para
+        # entrar -- ver `_set_safe_calibration`.
+        _set_safe_calibration(valid_predictions[0])
+        _set_safe_calibration(valid_predictions[1])
         db.flush()
 
     client = TestClient(app)
@@ -1008,7 +1195,11 @@ def test_model_only_endpoint_returns_predictions_without_market(seeded_competiti
 
 def test_best_predictions_debug_explains_exclusions(seeded_competition_code):
     """Observabilidad (seccion 13): tiene que poder saberse POR QUE una
-    prediccion no entro al ranking, no solo que no esta."""
+    prediccion no entro al ranking, no solo que no esta. Desde el cambio
+    de filosofia del ranking (v3, "Mejores oportunidades"), este debug
+    usa el vocabulario de motivos de `evaluate_quality_gate_v3` -- banda
+    de cuotas, EV estimado/conservador, fiabilidad historica -- no el de
+    v1/v2 (que ya no decide que entra aqui)."""
     client = TestClient(app)
     response = client.get("/predictions/best/debug")
     assert response.status_code == 200
@@ -1018,10 +1209,13 @@ def test_best_predictions_debug_explains_exclusions(seeded_competition_code):
     for excluded in body["excluded"]:
         assert excluded["reason"] in {
             "sin_mercado",
-            "cuota_invalida",
-            "edge_invalido",
+            "cuota_fuera_de_banda",
             "pocas_casas",
             "calidad_datos_baja",
+            "cuota_desactualizada",
+            "ev_estimado_no_positivo",
+            "ev_conservador_no_positivo",
+            "fiabilidad_historica_insuficiente",
         }
 
 
@@ -1203,3 +1397,130 @@ def test_predictions_current_round_falls_back_to_next_round_when_current_round_i
     assert body["round"]["is_next_round"] is True
     assert len(body["predictions"]) > 0
     assert all(p["match"]["id"] == next_round_match_id for p in body["predictions"])
+
+
+def test_ranking_config_band_is_actually_applied_to_top_signals(seeded_competition_code):
+    """Seccion 7 del pedido ("cambio de filosofia del ranking"): el filtro
+    de cuotas de 'Mejores oportunidades' debe ser configurable en
+    runtime via `/config/ranking`, y ese valor guardado debe ser el que
+    de verdad usa `/predictions/top-signals` -- guardar una preferencia
+    que el endpoint real ignora (y sigue usando el default de `Settings`)
+    seria la misma preferencia "fantasma" que esta funcionalidad existe
+    para evitar.
+
+    Partido PROPIO (equipos 9/10, fecha +20 dias) en vez de reutilizar
+    "future-fixture-1": ese partido comparte modulo con ~30 tests que lo
+    regeneran repetidamente con sus propias cuotas (ver `_force_positive_ev`
+    y sus docstrings) -- depender de su estado al final del archivo seria
+    tan fragil como los bugs ya corregidos arriba en este mismo modulo."""
+    client = TestClient(app)
+
+    default_config = client.get("/config/ranking")
+    assert default_config.status_code == 200
+    default_body = default_config.json()
+    assert default_body["min_opportunity_odds"] == pytest.approx(1.35)
+    assert default_body["max_opportunity_odds"] == pytest.approx(1.90)
+
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=20)).date()
+    with session_scope() as db:
+        comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
+        # Reutiliza un par de equipos de un partido YA FINALIZADO de esta
+        # misma competicion (en vez de un id de equipo hardcodeado): esos
+        # son los unicos equipos con historico real suficiente para que
+        # el modelo genere features (y por tanto mercado) -- un id
+        # arbitrario (p.ej. 9/10) apunta a equipos distintos segun que
+        # otros modulos de test hayan corrido antes en la misma sesion de
+        # pytest (los ids de equipo son globales, no por competicion).
+        finished_match = (
+            db.query(Match).filter_by(competition_id=comp.id, status="finished").first()
+        )
+        home_team_id = finished_match.home_team_id
+        away_team_id = finished_match.away_team_id
+        home_name = finished_match.home_team.canonical_name
+        away_name = finished_match.away_team.canonical_name
+        season = finished_match.season_id
+        match = Match(
+            provider="integration_test_manual",
+            provider_id="ranking-config-band-fixture",
+            competition_id=comp.id,
+            season_id=season,
+            kickoff_utc=dt.datetime.combine(fixture_date, dt.time(hour=20)),
+            home_team_id=home_team_id,
+            away_team_id=away_team_id,
+            status="scheduled",
+        )
+        db.add(match)
+        db.flush()
+        snapshot = FixtureOddsSnapshot(
+            home_team_raw=home_name,
+            away_team_raw=away_name,
+            commence_time=match.kickoff_utc.replace(tzinfo=dt.timezone.utc),
+            odds=[
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.70),
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.75),
+            ],
+        )
+        attach_odds_to_scheduled_matches(db, _FakeOddsProvider([snapshot]), seeded_competition_code)
+
+    with session_scope() as db:
+        generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+
+    _force_positive_ev(seeded_competition_code, fixture_date, home_team_id=home_team_id, away_team_id=away_team_id)
+
+    with session_scope() as db:
+        over_2_5 = (
+            db.query(Prediction)
+            .join(Match)
+            .filter(Match.provider_id == "ranking-config-band-fixture", Prediction.market == "over_2_5")
+            .one()
+        )
+        over_2_5_id = over_2_5.id
+        market_odds = over_2_5.market_odds
+        assert market_odds == pytest.approx(1.70)
+
+    window_params = {"limit": 100, "days": 30, "scope": "all_upcoming"}
+    try:
+        # Con el default (1.35-1.90), la cuota real del partido (1.70)
+        # esta DENTRO de la banda: debe aparecer.
+        with_default_band = client.get("/predictions/top-signals", params=window_params)
+        assert with_default_band.status_code == 200
+        assert over_2_5_id in {p["id"] for p in with_default_band.json()}
+
+        # Se guarda una banda mas ESTRECHA que excluye esa misma cuota real
+        # (nunca una banda inventada: se calcula justo por debajo de la
+        # cuota real del partido, para que el cambio sea deterministico).
+        narrow_max = round(market_odds - 0.05, 2)
+        assert narrow_max > 1.35
+        put_response = client.put(
+            "/config/ranking", json={"min_opportunity_odds": 1.35, "max_opportunity_odds": narrow_max}
+        )
+        assert put_response.status_code == 200
+        assert put_response.json()["max_opportunity_odds"] == pytest.approx(narrow_max)
+
+        with_narrow_band = client.get("/predictions/top-signals", params=window_params)
+        assert with_narrow_band.status_code == 200
+        assert over_2_5_id not in {p["id"] for p in with_narrow_band.json()}
+        for prediction in with_narrow_band.json():
+            assert prediction["market_odds"] <= narrow_max
+    finally:
+        # Nunca dejar un estado global (RankingConfig es una fila UNICA)
+        # que contamine el resto de tests de este modulo, que asumen la
+        # banda por defecto (1.35-1.90).
+        reset_response = client.put(
+            "/config/ranking", json={"min_opportunity_odds": 1.35, "max_opportunity_odds": 1.90}
+        )
+        assert reset_response.status_code == 200
+
+
+def test_ranking_config_put_rejects_an_invalid_band(seeded_competition_code):
+    client = TestClient(app)
+    response = client.put("/config/ranking", json={"min_opportunity_odds": 1.0, "max_opportunity_odds": 1.90})
+    assert response.status_code == 422
+
+    response = client.put("/config/ranking", json={"min_opportunity_odds": 1.90, "max_opportunity_odds": 1.35})
+    assert response.status_code == 422
+
+    # El rechazo no debe haber dejado nada a medias guardado.
+    unchanged = client.get("/config/ranking")
+    assert unchanged.json()["min_opportunity_odds"] == pytest.approx(1.35)
+    assert unchanged.json()["max_opportunity_odds"] == pytest.approx(1.90)

@@ -32,18 +32,30 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
       </div>
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatTile label="Modelo" value={`${(signal.model_probability * 100).toFixed(1)}%`} />
         <StatTile
-          label="Mercado"
-          value={signal.market_probability !== null ? `${(signal.market_probability * 100).toFixed(1)}%` : "—"}
+          label="Probabilidad calibrada"
+          value={
+            signal.calibrated_probability !== null
+              ? `${(signal.calibrated_probability * 100).toFixed(1)}%`
+              : `${(signal.model_probability * 100).toFixed(1)}% (sin calibrar)`
+          }
+          highlight
         />
         <StatTile label="Cuota" value={signal.market_odds !== null ? signal.market_odds.toFixed(2) : "—"} />
-        <StatTile label="Cuota justa" value={signal.fair_odds.toFixed(2)} />
         <StatTile
-          label="Edge"
-          value={signal.edge !== null ? `${signal.edge >= 0 ? "+" : ""}${(signal.edge * 100).toFixed(1)} pp` : "—"}
+          label="EV estimado"
+          value={signal.ev_calibrated !== null ? `+${(signal.ev_calibrated * 100).toFixed(1)}%` : "—"}
+        />
+        <StatTile
+          label="EV conservador"
+          value={signal.ev_conservative !== null ? `+${(signal.ev_conservative * 100).toFixed(1)}%` : "—"}
+        />
+        <StatTile
+          label="Mercado (prob.)"
+          value={signal.market_probability !== null ? `${(signal.market_probability * 100).toFixed(1)}%` : "—"}
         />
         <StatTile label="Casas" value={String(signal.bookmakers_used ?? "—")} />
+        <StatTile label="Cuota justa" value={signal.fair_odds.toFixed(2)} />
         <StatTile
           label="Dispersión"
           value={
@@ -55,6 +67,11 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
         <StatTile
           label="Actualizado"
           value={signal.odds_age_minutes !== null ? `hace ${Math.round(signal.odds_age_minutes)} min` : "—"}
+        />
+        <StatTile
+          label="Edge (info)"
+          value={signal.edge !== null ? `${signal.edge >= 0 ? "+" : ""}${(signal.edge * 100).toFixed(1)} pp` : "—"}
+          muted
         />
       </div>
 
@@ -123,7 +140,7 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
             </table>
           </div>
           <p className="mt-2 text-xs text-slate-500">
-            La cuota usada para calcular el edge es la MEDIANA del consenso ({signal.market_odds_median?.toFixed(2) ?? "—"}
+            La cuota usada para calcular el EV y el edge es la MEDIANA del consenso ({signal.market_odds_median?.toFixed(2) ?? "—"}
             ), no la mejor cuota disponible ni una casa aislada — ver{" "}
             <code className="rounded bg-black/40 px-1 py-0.5">backend/app/market/consensus.py</code>.
           </p>
@@ -137,11 +154,26 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
   );
 }
 
-function StatTile({ label, value }: { label: string; value: string }) {
+function StatTile({
+  label,
+  value,
+  highlight,
+  muted,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+  muted?: boolean;
+}) {
   return (
-    <div className="rounded-lg border border-surface-border bg-surface-raised p-3">
+    <div
+      className={
+        "rounded-lg border p-3 " +
+        (highlight ? "border-accent/40 bg-accent/5" : "border-surface-border bg-surface-raised")
+      }
+    >
       <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="text-lg font-semibold text-slate-100">{value}</div>
+      <div className={"text-lg font-semibold " + (muted ? "text-slate-500" : "text-slate-100")}>{value}</div>
     </div>
   );
 }

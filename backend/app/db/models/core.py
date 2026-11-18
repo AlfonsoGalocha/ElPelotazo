@@ -123,3 +123,24 @@ class DataSource(Base):
     name: Mapped[str] = mapped_column(String(64), unique=True)
     description: Mapped[str | None] = mapped_column(String(255), nullable=True)
     enabled: Mapped[bool] = mapped_column(default=True)
+
+
+class RankingConfig(Base):
+    """Preferencia de usuario editable EN RUNTIME (pedido real del usuario,
+    "cambio de filosofia del ranking": banda de cuotas configurable en
+    Configuracion) -- la PRIMERA de este tipo en el proyecto; hasta ahora
+    toda configuracion vivia en `Settings` (variables de entorno, fijas
+    hasta reiniciar el proceso, ver api/routes/health.py::data_sources_status).
+
+    Fila UNICA (siempre `id=1`, ver services/ranking_config_service.py):
+    no hace falta mas de una, y asi nunca hay ambiguedad sobre "cual es la
+    vigente". `None` en cualquier campo significa "usar el valor por
+    defecto de `Settings`" (1.35/1.90), nunca un 0 o una cadena vacia --
+    mismo principio de "nunca inventar un valor" que el resto del proyecto.
+    """
+
+    __tablename__ = "ranking_config"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    min_opportunity_odds: Mapped[float | None] = mapped_column(nullable=True)
+    max_opportunity_odds: Mapped[float | None] = mapped_column(nullable=True)

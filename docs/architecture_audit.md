@@ -2545,3 +2545,195 @@ build` limpios, 16 rutas generadas correctamente.
   versiones, para no mezclar "mejor modelo" con "mejor calibración
   disponible en cada una"); corners no entra en la comparación de
   promoción todavía.
+
+## 22. Cambio de filosofía del ranking: "Mejores oportunidades" (v3)
+
+Pedido real del usuario: el ranking de "Mejores señales" premiaba edge
+(discrepancia modelo-mercado) por encima de todo, dejando que cuotas
+altas (2.80-3.50+) con probabilidad baja (44-47%) aparecieran como
+"mejor oportunidad" por delante de favoritos sólidos (p.ej. 72% a cuota
+1.70) con mucho menos edge pero mucho más valor real. Objetivo nuevo:
+"conservador pero rentable" -- probabilidad alta + cuota razonable + EV
+positivo + baja incertidumbre + fiabilidad histórica, con el edge como
+información secundaria, nunca como criterio principal. Instrucción
+explícita: no tocar los modelos predictivos ni sus probabilidades, solo
+la selección/orden de qué se muestra.
+
+### 22.1 Auditoría del ranking v2 (antes de tocar código)
+
+`signal_score_v2`/`rank_signals_v2` (`prediction/ranking.py`) usa
+`model_probability^2 * EV_ajustado_al_riesgo * confianza * calidad *
+market_track_record * factor_incertidumbre`: un score COMBINADO con
+pesos implícitos. El problema real, confirmado leyendo la fórmula: el EV
+crece con la cuota más rápido de lo que `model_probability^2` cae al
+bajar la probabilidad, así que una cuota alta con probabilidad mediocre
+puede superar a un favorito claro con EV modesto. Además, v2 usa SIEMPRE
+`model_probability` cruda (nunca `calibrated_probability`) y trata la
+ausencia de `market_track_record` como neutro (1.0) -- un mercado nuevo
+sin historial real pasa exactamente igual que uno con historial
+excelente.
+
+### 22.2 Diseño v3: orden de prioridad, nunca un score con pesos nuevos
+
+`evaluate_quality_gate_v3` + `ranking_key_v3` + `select_one_per_match` +
+`rank_signals_v3` (mismo fichero, añadidos sin tocar `rank_signals`/
+`rank_signals_v2`, que siguen existiendo para el comparador de
+backtesting). Filtro duro PROPIO de v3 (deliberadamente independiente
+del de v1/v2 -- mezclar las bandas de cuota de ambos rechazaría cuotas
+válidas por error):
+
+1. Cuota de mercado REAL (nunca estimada) dentro de
+   `[min_opportunity_odds, max_opportunity_odds]`, AMBOS límites
+   inclusive (1.35-1.90 por defecto).
+2. EV estimado (con `calibrated_probability`, o `model_probability`
+   como fallback si no hay calibración para ese mercado/competición)
+   estrictamente positivo.
+3. EV conservador (con `conservative_probability` = mínimo entre la
+   calibrada y `uncertainty_low` -- mismo principio de "techo, nunca
+   blend" que ya usaba `reality_capped_expected_value`) estrictamente
+   positivo, como requisito SEPARADO del anterior.
+4. Fiabilidad histórica real del (competición, mercado) -- a diferencia
+   de v1/v2, v3 EXIGE que `market_track_record` exista; sin historial
+   suficiente (`MIN_SETTLED_FOR_TRACK_RECORD`, 30 liquidaciones reales),
+   la predicción queda fuera, nunca se admite con un valor neutro
+   inventado.
+
+Nunca se exige un edge mínimo -- es "información secundaria" a
+propósito (seccion 5 del pedido), un sustituto de las condiciones de
+arriba sería exactamente lo que el usuario pidió evitar.
+
+Orden entre las que pasan el filtro: una TUPLA de 6 componentes
+(`ranking_key_v3`), ordenada con el sort lexicográfico nativo de Python
+-- nunca un score combinado con pesos inventados. Prioridad literal:
+1) probabilidad calibrada, 2) EV conservador, 3) fiabilidad histórica,
+4) incertidumbre (ancho del intervalo, menor = mejor), 5) calidad de
+datos, 6) edge (último criterio, puramente informativo). `select_one_per_match`
+se queda con la mejor señal de cada partido (todas las candidatas
+siguen guardadas en `Prediction`, esto es solo una decisión de qué
+mostrar) -- pedido explícito de la sección 6: evitar varias apuestas
+redundantes del mismo partido como oportunidades independientes.
+
+### 22.3 `RankingConfig`: banda de cuotas configurable en runtime
+
+Primera preferencia de usuario editable en runtime de este proyecto
+(hasta ahora todo lo de "Configuración" era de solo lectura, vía
+variables de entorno). Fila única (`id=1`) en `RankingConfig`
+(`db/models/core.py`), gestionada por `services/ranking_config_service.py`
+(`get_opportunity_odds_band`/`set_opportunity_odds_band`, con
+validación `min_odds > 1.0` y `max_odds > min_odds`) y expuesta en
+`GET`/`PUT /config/ranking`. El frontend la muestra y edita en
+`Configuración` (`RankingConfigForm.tsx`, con botón "Restaurar por
+defecto").
+
+**Dos bugs reales encontrados y corregidos antes de cerrar esta
+sección** (ambos se habrían quedado invisibles sin un test de extremo a
+extremo contra el endpoint real, no solo contra las funciones puras):
+
+1. Los 5 endpoints de "oportunidades" (`top-signals`, `summary`,
+   `best`, `best-of-day`, `best/debug`) llamaban a `rank_signals_v3` con
+   `get_settings()` DIRECTO -- nunca leían `RankingConfig`, así que
+   guardar una banda nueva desde `/config/ranking` no cambiaba nada en
+   producción (la preferencia quedaba "fantasma"). Corregido con
+   `_settings_for_opportunities()` en `api/routes/predictions.py`: una
+   copia (`Settings.model_copy`, nunca se muta el singleton cacheado por
+   `lru_cache`) con la banda guardada aplicada, llamada en los 5 sitios
+   antes de `rank_signals_v3`.
+2. `update_ranking_config` (`PUT /config/ranking`) llamaba a
+   `set_opportunity_odds_band`, que solo hace `db.flush()` (convención
+   del proyecto: el servicio nunca decide cuándo confirmar la
+   transacción, ver `promotion_service.py`) -- pero la ruta nunca hacía
+   `db.commit()`, y `get_db()` tampoco (solo `db.close()` al terminar la
+   request). El cambio se perdía en silencio en cuanto la request
+   terminaba. Corregido añadiendo `db.commit()` explícito en la ruta,
+   igual que ya hacían las rutas de `backtesting.py`.
+
+### 22.4 Backtesting walk-forward extendido con v3
+
+`backtesting/ranking_comparison.py::compare_ranking_strategies_walk_forward`
+construye ahora, además de los pools de v1/v2/edge_cap/longshot, un pool
+independiente `v3_probability_first` (`_track_records_from_observations`
+reconstruye el track record SOLO con liquidaciones estrictamente
+anteriores a cada punto evaluado, mismo cuidado anti-leakage que ya
+tenía el resto del comparador). Expuesto en el CLI
+(`compare-ranking-strategies-walk-forward`). **No se ejecutó contra la
+base de datos de producción real del usuario** (esta sesión solo tiene
+acceso a un SQLite de pruebas sintético) -- se recomienda explícitamente
+al usuario correr ese comando contra sus datos reales antes de confiar
+en que v3 mejora el ROI/yield real frente a v2; los tests sintéticos de
+este repo verifican que el MECANISMO es correcto (gate, orden, dedup),
+nunca que el resultado en producción sea mejor.
+
+### 22.5 Wiring API y esquema
+
+`PredictionOut`/`serialize_prediction` ganan `ev_calibrated`/
+`ev_conservative` (calculados al vuelo, nunca persistidos -- esta
+implementación no toca los modelos predictivos ni sus probabilidades,
+tal como pidió explícitamente el usuario). `top_signals`, `best`,
+`best-of-day`, `best/debug` y el conteo de "oportunidades" de `summary`
+pasan de `rank_signals_v2` a `rank_signals_v3`; `predictions_current_round`
+(mecanismo distinto, más amplio) queda sin tocar a propósito.
+
+### 22.6 Frontend: de "mayor EDGE" a "mejores oportunidades"
+
+- **Oportunidades** (`/top-signals`): título y descripción reescritos
+  (orden de prioridad explícito, banda de cuotas real leída de
+  `RankingConfig`); tabla con "Prob. calibrada" y "EV estimado"/"EV
+  conservador" como columnas principales, "Edge (info)" demovido a
+  columna gris/secundaria; mensaje vacío EXACTO pedido: "No hay
+  oportunidades de alta fiabilidad para los criterios actuales".
+- **Dashboard** (`DashboardBoard.tsx`/`MatchCard.tsx`): la tarjeta
+  destaca ahora la probabilidad calibrada (grande, en vez de "Modelo: X%"
+  en gris) y el EV conservador (en vez del edge, que pasa a una línea
+  pequeña y gris); mismo mensaje vacío exacto que Oportunidades.
+- **Detalle de señal** (`/signals/[id]`): tiles nuevos de probabilidad
+  calibrada (resaltado), EV estimado y EV conservador; edge queda como
+  tile atenuado ("Edge (info)").
+- **Configuración**: nuevo `RankingConfigForm.tsx` (cliente), banda
+  mín./máx. editable con feedback real de guardado/error, botón
+  "Restaurar por defecto".
+
+### 22.7 Tests nuevos
+
+- `backend/tests/unit/test_ranking_v3.py` (37 tests): helpers puros
+  (`calibrated_probability_or_fallback`/`conservative_probability`/
+  `ev_with_probability`), `evaluate_quality_gate_v3` (cada motivo de
+  exclusión, límites de la banda de cuotas INCLUSIVE, independencia de
+  `min_signal_odds`, ningún edge mínimo exigido), `ranking_key_v3`
+  (orden lexicográfico real con el caso literal del pedido: 44%/cuota
+  3.50 nunca por delante de 72%/cuota 1.70), `select_one_per_match`, y
+  `rank_signals_v3` end-to-end (vacío cuando nada cumple, deduplicación
+  por defecto, `one_per_match=False`, nada fuera de la banda de cuotas
+  nunca aparece).
+- `backend/tests/unit/test_ranking_config_service.py` (7 tests):
+  default sin preferencia guardada, fila única, persistencia real,
+  validación de ambos campos, ninguna escritura a medias en un rechazo.
+- `backend/tests/integration/test_api.py`: 2 tests nuevos de extremo a
+  extremo contra el API real (`GET`/`PUT /config/ranking` +
+  `/predictions/top-signals`) -- estos son los que encontraron los dos
+  bugs reales de la sección 22.3; además se corrigieron 3 tests
+  preexistentes que dependían de "las 2 primeras predicciones con
+  mercado real, por id" para simular senhales -- con `select_one_per_match`
+  activo por defecto, dos mercados (over/under) del MISMO partido
+  colapsan a una sola fila, así que ese patrón podía coger dos
+  candidatas del mismo partido y romper la prueba sin que fuera un bug
+  real del ranking; nuevo helper `_two_valid_predictions_from_distinct_matches`
+  garantiza partidos distintos.
+- **Verificación**: 543 tests de backend pasan (497 antes de esta
+  sección + 46 nuevos); `npx tsc --noEmit` y `npm run build` del
+  frontend limpios, 16 rutas generadas.
+
+### 22.8 Limitaciones conocidas
+
+- El backtest walk-forward comparando v2 vs. v3 con ROI/yield/Brier/Log
+  Loss/Max Drawdown reales **no se ejecutó contra producción** (sección
+  22.4) -- el mecanismo está construido y probado, pero la evidencia de
+  que v3 es mejor en la práctica depende de que el usuario lo corra
+  contra su base de datos real.
+- `calibrated_probability` sigue siendo `None` para competiciones/
+  mercados sin holdout suficiente (`MIN_CALIBRATION_MATCHES`, 60
+  partidos) -- v3 cae a `model_probability` en ese caso (nunca inventa
+  una calibración), pero eso significa que ligas muy nuevas pueden
+  quedar con "Mejores oportunidades" vacío más tiempo que las ya
+  establecidas, hasta acumular suficiente historial liquidado real
+  (`MIN_SETTLED_FOR_TRACK_RECORD`, 30) para pasar el requisito de
+  fiabilidad histórica.
