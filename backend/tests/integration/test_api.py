@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.db.database import session_scope
-from backend.app.db.models.core import Competition, Season
+from backend.app.db.models.core import Competition, OddsIngestionRun, Season
 from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory
 from backend.app.db.models.modeling import Prediction
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
@@ -1524,3 +1524,108 @@ def test_ranking_config_put_rejects_an_invalid_band(seeded_competition_code):
     unchanged = client.get("/config/ranking")
     assert unchanged.json()["min_opportunity_odds"] == pytest.approx(1.35)
     assert unchanged.json()["max_opportunity_odds"] == pytest.approx(1.90)
+
+
+def test_odds_diagnostics_endpoint_reports_the_latest_real_ingestion_attempts():
+    """Panel tecnico de "Configuracion" (pedido real del usuario tras
+    investigar cuotas desactualizadas): `/config/odds-diagnostics` debe
+    devolver el ULTIMO intento real de cada (provider, operation,
+    competicion) -- exito o fallo -- y la frescura real ya guardada en
+    `MatchOdds`, nunca nada inventado."""
+    older = dt.datetime(2026, 11, 18, 6, 0, 0)
+    newer = dt.datetime(2026, 11, 18, 12, 0, 0)
+    with session_scope() as db:
+        # Partido + cuota PROPIOS de este test (nunca depender de que
+        # otro test anterior del modulo haya dejado algo en MatchOdds --
+        # este test debe poder correr solo, en cualquier orden).
+        comp = Competition(code="odds_diag_test_comp", name="Odds Diag Test Comp", country="Testland")
+        db.add(comp)
+        db.flush()
+        season = Season(competition_id=comp.id, label="2026/27")
+        db.add(season)
+        db.flush()
+        match = Match(
+            provider="odds_diag_test",
+            provider_id="odds-diag-fixture-1",
+            competition_id=comp.id,
+            season_id=season.id,
+            kickoff_utc=dt.datetime.utcnow() + dt.timedelta(days=1),
+            home_team_id=1,
+            away_team_id=2,
+            status="scheduled",
+        )
+        db.add(match)
+        db.flush()
+        db.add(
+            MatchOdds(
+                match_id=match.id,
+                bookmaker="Bet365",
+                market="over_under_goals",
+                line=2.5,
+                selection="over",
+                price=1.73,
+                snapshot_type="pre_match",
+                recorded_at=newer,
+            )
+        )
+        db.add_all(
+            [
+                OddsIngestionRun(
+                    provider="api_football",
+                    operation="update_odds",
+                    competition_code="laliga_integration_test",
+                    started_at=older,
+                    finished_at=older,
+                    fixtures_fetched=5,
+                    matched=5,
+                ),
+                OddsIngestionRun(
+                    provider="api_football",
+                    operation="update_odds",
+                    competition_code="laliga_integration_test",
+                    started_at=newer,
+                    finished_at=newer,
+                    fixtures_fetched=20,
+                    matched=18,
+                ),
+                OddsIngestionRun(
+                    provider="api_football",
+                    operation="update_secondary_odds",
+                    competition_code="premier_league_integration_test",
+                    started_at=newer,
+                    finished_at=newer,
+                    error="API-Football rate limit: Too many requests.",
+                ),
+            ]
+        )
+
+    client = TestClient(app)
+    response = client.get("/config/odds-diagnostics")
+    assert response.status_code == 200
+    body = response.json()
+
+    runs_by_key = {(r["operation"], r["competition_code"]): r for r in body["latest_runs"]}
+    laliga_run = runs_by_key[("update_odds", "laliga_integration_test")]
+    # Solo el intento MAS RECIENTE de esa (provider, operation, competicion)
+    # -- nunca los dos, aunque ambos siguen en la tabla (append-only).
+    assert laliga_run["fixtures_fetched"] == 20
+    assert laliga_run["matched"] == 18
+    assert laliga_run["error"] is None
+
+    failed_run = runs_by_key[("update_secondary_odds", "premier_league_integration_test")]
+    assert failed_run["error"] == "API-Football rate limit: Too many requests."
+    # Nunca 0 inventado para un intento que fallo antes de contar nada.
+    assert failed_run["fixtures_fetched"] is None
+    assert failed_run["matched"] is None
+
+    # `>=`, no `==`: comparte BD con el resto de tests del modulo, que
+    # pueden haber guardado cuotas aun mas recientes/otras casas -- esta
+    # prueba solo comprueba que SU PROPIA cuota real quedo reflejada.
+    # El backend expone esto con zona UTC explicita (ver UtcDatetime en
+    # health.py) -- comparar contra `newer` (naive) requiere darle la
+    # misma zona, nunca comparar aware con naive directamente.
+    assert dt.datetime.fromisoformat(body["most_recent_odds_recorded_at"]) >= newer.replace(
+        tzinfo=dt.timezone.utc
+    )
+    assert "Bet365" in body["bookmakers_seen"]
+    assert body["scheduled_matches_with_odds"] >= 1

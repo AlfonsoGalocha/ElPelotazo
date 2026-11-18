@@ -159,7 +159,16 @@ class ApiFootballOddsProvider(ApiFootballClient):
 
     name = "api_football"
 
-    DEFAULT_WINDOW_DAYS = 45  # cuanto hacia el futuro se piden cuotas por defecto en fetch_odds()
+    # Bug real investigado por el usuario (cuotas desactualizadas): la
+    # documentacion oficial de API-Football dice que las cuotas
+    # prepartido solo estan disponibles entre 1 y 14 dias antes del
+    # encuentro -- con una ventana de 45 dias (el valor de antes), CADA
+    # `update-odds` pedia `/odds?fixture=X` para partidos de entre 15 y
+    # 45 dias vista que NUNCA van a tener cuota todavia, desperdiciando
+    # peticiones (y cupo del limite por minuto) que hacian falta para los
+    # partidos que si tienen cuota real que traer. 15 dias (no 14 exacto)
+    # como margen de seguridad por husos horarios/redondeo de fecha.
+    DEFAULT_WINDOW_DAYS = 15
 
     def fetch_odds(self, competition_code: str) -> list[FixtureOddsSnapshot]:
         """Interfaz esperada por `data_service.attach_odds_to_scheduled_matches`

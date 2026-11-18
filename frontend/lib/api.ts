@@ -283,6 +283,34 @@ export function getDataSourcesStatus(): Promise<DataSourcesStatus> {
   return apiFetch<DataSourcesStatus>("/config/data-sources");
 }
 
+// Panel tecnico de diagnostico de cuotas (seccion "Configuracion", pedido
+// real del usuario tras investigar por que la app mostraba cuotas
+// desactualizadas): el ULTIMO intento real de cada
+// (provider, operation, competicion) -- exito o fallo -- mas la frescura
+// ya guardada en MatchOdds. Nunca inventado: `fixtures_fetched`/`matched`
+// quedan `null` cuando el intento fallo antes de contar nada.
+export interface OddsIngestionRun {
+  provider: string;
+  operation: string;
+  competition_code: string;
+  started_at: string;
+  finished_at: string;
+  fixtures_fetched: number | null;
+  matched: number | null;
+  error: string | null;
+}
+
+export interface OddsDiagnostics {
+  latest_runs: OddsIngestionRun[];
+  most_recent_odds_recorded_at: string | null;
+  bookmakers_seen: string[];
+  scheduled_matches_with_odds: number;
+}
+
+export function getOddsDiagnostics(): Promise<OddsDiagnostics> {
+  return apiFetch<OddsDiagnostics>("/config/odds-diagnostics");
+}
+
 // "Mejores oportunidades" (cambio de filosofia del ranking, seccion 7 del
 // pedido): primera preferencia de usuario editable en RUNTIME de esta
 // app (ver backend/app/services/ranking_config_service.py) -- el resto

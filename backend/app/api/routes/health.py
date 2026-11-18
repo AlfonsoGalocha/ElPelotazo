@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from backend.app.config.settings import get_settings
 from backend.app.db.database import get_db
+from backend.app.schemas.match import UtcDatetime
+from backend.app.services.odds_diagnostics_service import latest_runs_by_competition, market_odds_freshness
 from backend.app.services.ranking_config_service import get_opportunity_odds_band, set_opportunity_odds_band
 
 router = APIRouter(tags=["health"])
@@ -82,4 +84,51 @@ def update_ranking_config(payload: RankingConfigIn, db: Session = Depends(get_db
         max_opportunity_odds=max_odds,
         default_min_opportunity_odds=settings.min_opportunity_odds,
         default_max_opportunity_odds=settings.max_opportunity_odds,
+    )
+
+
+class OddsIngestionRunOut(BaseModel):
+    provider: str
+    operation: str
+    competition_code: str
+    # `UtcDatetime` (nunca `dt.datetime` a secas): estos timestamps son
+    # naive-pero-UTC por convencion del backend (ver `started_at`/
+    # `finished_at` en cli.py, siempre `dt.datetime.utcnow()`) -- sin
+    # anhadir la zona explicita en la serializacion, `new Date(...)` en
+    # el navegador los interpretaria como hora LOCAL, no UTC (mismo bug
+    # real ya corregido una vez para `kickoff_utc`, ver schemas/match.py).
+    started_at: UtcDatetime
+    finished_at: UtcDatetime
+    fixtures_fetched: int | None
+    matched: int | None
+    error: str | None
+
+    model_config = {"from_attributes": True}
+
+
+class OddsDiagnosticsOut(BaseModel):
+    # Una fila por (provider, operation, competition_code) -- el ultimo
+    # intento REAL de cada una, exito o fallo (ver OddsIngestionRun).
+    latest_runs: list[OddsIngestionRunOut]
+    # Evidencia ya guardada en MatchOdds (nunca inventada): cuando se
+    # registro la cuota mas reciente de verdad, y que casas tenemos.
+    most_recent_odds_recorded_at: UtcDatetime | None
+    bookmakers_seen: list[str]
+    scheduled_matches_with_odds: int
+
+
+# Panel tecnico de diagnostico (seccion "Configuracion", pedido real del
+# usuario tras investigar por que la app mostraba cuotas desactualizadas):
+# "por que esta cuota no se actualizo" sin tener que volver a ejecutar un
+# comando a mano y mirar la terminal en directo -- ver
+# services/odds_diagnostics_service.py.
+@router.get("/config/odds-diagnostics", response_model=OddsDiagnosticsOut)
+def odds_diagnostics(db: Session = Depends(get_db)) -> OddsDiagnosticsOut:
+    runs = latest_runs_by_competition(db)
+    freshness = market_odds_freshness(db)
+    return OddsDiagnosticsOut(
+        latest_runs=[OddsIngestionRunOut.model_validate(run) for run in runs],
+        most_recent_odds_recorded_at=freshness["most_recent_odds_recorded_at"],
+        bookmakers_seen=freshness["bookmakers_seen"],
+        scheduled_matches_with_odds=freshness["scheduled_matches_with_odds"],
     )
