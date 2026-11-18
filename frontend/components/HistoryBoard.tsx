@@ -6,6 +6,7 @@ import { CheckCircle2, XCircle } from "lucide-react";
 import type { HistoryPrediction, MatchHistory } from "@/types";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import { formatMatchDateOnly } from "@/lib/dates";
+import { isInternationalCompetition } from "@/lib/internationalCompetitions";
 import TeamLogo from "./TeamLogo";
 import { EmptyState } from "./EmptyState";
 
@@ -72,37 +73,63 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
 
   const allSelected = selected.length === allCodes.length;
   const visibleGroups = groups.filter((g) => selected.includes(g.code));
+  // Pedido real del usuario: mismo filtro que en "Oportunidades" -- las
+  // ligas de club quedan como fila principal, las competiciones de
+  // selecciones en su propia fila separada (nunca mezcladas en una sola).
+  const clubGroups = groups.filter((g) => !isInternationalCompetition(g.code));
+  const internationalGroups = groups.filter((g) => isInternationalCompetition(g.code));
 
   return (
     <div className="flex flex-col gap-6">
       {groups.length > 1 && (
-        <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-slate-500">Ligas:</span>
-          <button
-            onClick={() => setSelected(allCodes)}
-            className={
-              "rounded-full border px-3 py-1 transition-colors " +
-              (allSelected
-                ? "border-accent/50 bg-accent/15 text-slate-100"
-                : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
-            }
-          >
-            Todas
-          </button>
-          {groups.map((g) => (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-slate-500">Ligas:</span>
             <button
-              key={g.code}
-              onClick={() => toggle(g.code)}
+              onClick={() => setSelected(allCodes)}
               className={
                 "rounded-full border px-3 py-1 transition-colors " +
-                (selected.includes(g.code)
+                (allSelected
                   ? "border-accent/50 bg-accent/15 text-slate-100"
-                  : "border-surface-border text-slate-500 hover:bg-surface-alt/60")
+                  : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
               }
             >
-              {g.name}
+              Todas
             </button>
-          ))}
+            {clubGroups.map((g) => (
+              <button
+                key={g.code}
+                onClick={() => toggle(g.code)}
+                className={
+                  "rounded-full border px-3 py-1 transition-colors " +
+                  (selected.includes(g.code)
+                    ? "border-accent/50 bg-accent/15 text-slate-100"
+                    : "border-surface-border text-slate-500 hover:bg-surface-alt/60")
+                }
+              >
+                {g.name}
+              </button>
+            ))}
+          </div>
+          {internationalGroups.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <span className="text-slate-500">Selecciones:</span>
+              {internationalGroups.map((g) => (
+                <button
+                  key={g.code}
+                  onClick={() => toggle(g.code)}
+                  className={
+                    "rounded-full border px-3 py-1 transition-colors " +
+                    (selected.includes(g.code)
+                      ? "border-accent/50 bg-accent/15 text-slate-100"
+                      : "border-surface-border text-slate-500 hover:bg-surface-alt/60")
+                  }
+                >
+                  {g.name}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

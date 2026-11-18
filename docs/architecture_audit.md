@@ -2255,3 +2255,58 @@ documentada en 18.1).
   dice el numero exacto) -- si sigue rate-limitando con muchas
   competiciones de golpe, subir la pausa o anhadir un backoff mas largo
   entre COMPETICIONES (no solo entre ediciones) seria el siguiente paso.
+
+## 19. Fase 18 (sesion 2026-11, continuacion): pulido tras ver las 14 competiciones en vivo
+
+El usuario confirmo las 14 competiciones nuevas funcionando (capturas
+reales de `/matches`) y pidio tres ajustes directos.
+
+### 19.1 Oportunidades/Histórico: ligas primero, selecciones en su propio grupo
+
+"lo importante son las ligas" -- con 15 competiciones de selecciones a la
+vez, mezclarlas en la misma lista plana que las 5 ligas de club (ya
+visible en el selector de "Oportunidades") las ahogaba. Nunca se quita
+nada, solo se separa:
+
+- `frontend/app/top-signals/page.tsx` (Oportunidades, Server Component
+  con `<select>` + formulario GET): el `<select>` de Competicion ahora
+  tiene dos `<optgroup>` -- "Ligas" (las 5 de club) y "Selecciones" (las
+  15 nuevas) -- en vez de una lista plana.
+- `frontend/components/HistoryBoard.tsx` (Histórico, Client Component con
+  pills multi-seleccion): misma idea, adaptada a su propio patron -- fila
+  "Ligas:" (como ya existia) y una fila nueva separada "Selecciones:"
+  (solo se muestra si hay alguna con partidos liquidados), misma
+  mecanica de toggle multi-seleccion para ambas.
+- Ambos reutilizan `isInternationalCompetition` (ya existente en
+  `frontend/lib/internationalCompetitions.ts`, construido en la seccion
+  17) para decidir el grupo -- nunca una lista duplicada.
+
+`/matches` (Partidos) NO se toco -- el usuario no lo pidio ahi, y esa
+pagina es explicitamente para ver CUALQUIER partido, selecciones
+incluidas, sin distincion.
+
+### 19.2 "Selecciones": partidos de 2018 como "proximo partido"
+
+Bug real reportado con captura: al ingerir el historial COMPLETO de las
+nuevas competiciones (incluidas ediciones de 2018 en clasificatorios),
+algunos partidos quedaron con `status="scheduled"` atascado en la fuente
+real aunque su fecha de kickoff sea de hace anhos (misma clase de
+problema que el bug de Russia de la seccion 17.11, pero generico: no
+hace falta que sea un equipo excluido, cualquier partido viejo con
+estado mal reportado por la API cae en el mismo caso).
+
+`/matches` (Partidos) ya evita esto por una razon distinta: su filtro
+`dateFrom = currentSeasonStartDate()` (pensado para ligas de club)
+excluye de paso cualquier fecha anterior a la temporada actual. La pagina
+nueva "Selecciones" no tenia ese filtro. Fix (`frontend/app/selecciones
+/page.tsx`): nueva funcion `todayDateOnly()` (fecha de HOY, sin concepto
+de "temporada" -- las selecciones no lo tienen limpio) pasada como
+`dateFrom` a la consulta de partidos "scheduled" -- nunca se fia solo del
+`status` que devuelve la fuente. La consulta de "ultimos resultados"
+(`finished`) no lleva este filtro, a proposito (sigue mostrando
+resultados reales recientes sin restriccion de fecha).
+
+### 19.3 Verificacion
+
+`npx tsc --noEmit` y `npm run build` limpios (`/selecciones` sigue
+generandose como pagina estatica, 2.27 kB).
