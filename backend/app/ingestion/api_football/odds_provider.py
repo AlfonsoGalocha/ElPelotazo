@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import time
 
 from backend.app.ingestion.api_football.client import LEAGUE_IDS, ApiFootballClient
 from backend.app.ingestion.base import FixtureOddsSnapshot, RawOddsRecord
@@ -199,7 +200,20 @@ class ApiFootballOddsProvider(ApiFootballClient):
 
         snapshots: list[FixtureOddsSnapshot] = []
         market_names_seen: set[str] = set()
-        for fixture_payload in fixtures:
+        # Bug real reportado por el usuario (cuota real movida a 1.35,
+        # la app seguia mostrando 1.70): este bucle hace UNA peticion HTTP
+        # por partido de la ventana (hasta 45 dias, puede ser 10-15
+        # partidos por liga) sin ninguna pausa -- si el limite de
+        # peticiones por minuto de API-Football se agota a mitad de la
+        # lista, `_get` agota sus 3 reintentos (ver ApiFootballRateLimitError
+        # en client.py) y la excepcion se propaga, cancelando TODOS los
+        # partidos restantes de esa liga para este ciclo, no solo el que
+        # la disparo -- asi se queda una cuota vieja varios ciclos. Mismo
+        # remedio ya usado en `cli.py::update_international` para el mismo
+        # problema real (ahi entre competiciones, aqui entre partidos).
+        for i, fixture_payload in enumerate(fixtures):
+            if i > 0:
+                time.sleep(1)
             fixture_id = fixture_payload["fixture"]["id"]
             home_name = fixture_payload["teams"]["home"]["name"]
             away_name = fixture_payload["teams"]["away"]["name"]
