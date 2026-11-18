@@ -125,6 +125,43 @@ def test_main_prints_odds_for_a_specific_fixture_when_requested(capsys, monkeypa
     assert "Bet365" in output
 
 
+def test_main_prints_full_season_history_for_mens_absolute_candidates(capsys, monkeypatch):
+    """La seccion "ABSOLUTA MASCULINA" (pedido real del usuario tras ver
+    que 'Selecciones' solo tenia Nations League) imprime el HISTORIAL
+    COMPLETO de temporadas (no solo la ultima) de cada candidata real --
+    aqui, World Cup (id=1) con 2 ediciones -- y avisa explicitamente
+    de un ID que falte en la respuesta real (nunca lo oculta en
+    silencio) en vez de fallar o inventar datos."""
+    world_cup_two_editions = {
+        "league": {"id": 1, "name": "World Cup", "type": "Cup"},
+        "country": {"name": "World"},
+        "seasons": [
+            {"year": 2022, "coverage": {"fixtures": True, "odds": False, "standings": True}},
+            {"year": 2026, "coverage": {"fixtures": True, "odds": False, "standings": False}},
+        ],
+    }
+
+    def fake_get(self, path, params):
+        if path == "/leagues":
+            return [world_cup_two_editions]
+        if path == "/fixtures":
+            return []
+        raise AssertionError(f"unexpected path {path}")
+
+    monkeypatch.setattr(ApiFootballClient, "_get", fake_get)
+
+    main()
+
+    output = capsys.readouterr().out
+    assert "ABSOLUTA MASCULINA" in output
+    assert "id=1  nombre='World Cup'  (2 temporadas reales listadas)" in output
+    assert "year=2022" in output
+    assert "year=2026" in output
+    # Euro Championship (id=4) no esta en la respuesta canned -- debe
+    # avisar, nunca callarse ni inventar una temporada.
+    assert "id=4  'Euro Championship': NO aparece en la respuesta real" in output
+
+
 def test_main_reports_when_api_football_is_not_configured(capsys, monkeypatch):
     monkeypatch.setenv("API_FOOTBALL_ENABLED", "false")
     from backend.app.config.settings import get_settings
