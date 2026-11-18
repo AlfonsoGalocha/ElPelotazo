@@ -153,3 +153,27 @@ def test_different_lines_never_mixed():
     result_3_5 = compute_market_consensus(rows, "over_under_goals", 3.5, "over")
     assert result_2_5.market_odds == 1.80
     assert result_3_5.market_odds == 3.50
+
+
+def test_double_chance_market_always_treated_as_single_sided():
+    """Bug real corregido (ver ingestion/api_football/odds_provider.py):
+    "Doble Oportunidad 1X" se guarda como su propio mercado
+    ("double_chance_1x"), nunca como una de 3 selecciones de un unico
+    "double_chance" -- sus 3 variantes (1X/X2/12) se SOLAPAN (cada una
+    cubre 2 de los 3 resultados de 1X2, sus probabilidades reales suman 2,
+    no 1), asi que mezclarlas en el mismo mercado y pasarlas juntas a
+    `no_vig_probabilities` normalizaria mal (aprox. a la mitad de la
+    probabilidad real). Con el diseño correcto (mercados separados), cada
+    bookmaker SOLO cotiza "yes" para "double_chance_1x" -- nunca hay una
+    seleccion complementaria real en el mismo mercado, asi que SIEMPRE cae
+    en la rama de probabilidad implicita CRUDA (con vig), nunca en un
+    "no vig" inventado."""
+    rows = [
+        _FakeOddsRow("bet365", "double_chance_1x", None, "yes", 1.57),
+        _FakeOddsRow("sportium", "double_chance_1x", None, "yes", 1.55),
+        _FakeOddsRow("1xbet", "double_chance_1x", None, "yes", 1.61),
+    ]
+    result = compute_market_consensus(rows, "double_chance_1x", None, "yes")
+    assert result.market_probability_source == "consensus_raw"
+    assert result.bookmakers_count == 3
+    assert result.market_odds == 1.57  # mediana de 1.55/1.57/1.61
