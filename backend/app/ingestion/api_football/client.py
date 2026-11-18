@@ -209,11 +209,24 @@ class ApiFootballClient:
         paginas (solo cuando hace falta pedir una segunda, nunca en el
         caso normal de una sola pagina) evita agotar el limite de
         peticiones por minuto, mismo principio que ya se aplica entre
-        partidos en `fetch_odds_for_window`/`update_international`."""
+        partidos en `fetch_odds_for_window`/`update_international`.
+
+        REGRESION REAL vista en produccion (el usuario corrio
+        `update-odds` de verdad, 2026-11-18): la primera version de este
+        metodo anhadia `page=1` explicitamente incluso en la PRIMERA
+        peticion -- `/fixtures` (que nunca pagina, siempre devuelve
+        `paging: {current: 1, total: 1}`) rechazo ese parametro con
+        `errors={'page': 'The Page field do not exist.'}` en TODAS las
+        ligas, dejando `fixtures_fetched=0` en todas partes (el mensaje
+        de la CLI lo atribuia erroneamente a "el plan gratuito"). La
+        `page` query param solo se envia a partir de la SEGUNDA peticion
+        -- la primera pagina se pide sin ella (equivalente documentado a
+        `page=1` en la API, y el unico que `/fixtures` acepta)."""
         combined: list[dict] = []
         page = 1
         while True:
-            page_response, paging = self._get_page(path, {**params, "page": page})
+            page_params = params if page == 1 else {**params, "page": page}
+            page_response, paging = self._get_page(path, page_params)
             combined.extend(page_response)
             total_pages = (paging or {}).get("total") or 1
             current_page = (paging or {}).get("current") or page
