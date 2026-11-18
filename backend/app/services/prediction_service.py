@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
-from backend.app.db.models.modeling import ModelVersion, Prediction
+from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionSnapshot
 from backend.app.features.goals import build_match_feature_table
 from backend.app.market.consensus import compute_market_consensus
 from backend.app.prediction.market_labels import DOUBLE_CHANCE_COMPONENTS
@@ -221,9 +221,59 @@ def generate_predictions_for_competition(
     # mismo partido apareciendo duplicado (a veces triplicado) en "Las 5
     # mejores predicciones" o en el detalle de partido. Como estos partidos
     # aun no se han jugado, no hay ninguna razon para conservar la
-    # prediccion vieja: se borra y se sustituye siempre por la mas reciente.
+    # prediccion vieja COMO "LA ACTUAL": se borra y se sustituye siempre
+    # por la mas reciente.
+    #
+    # Pero "no conservarla como la actual" no es lo mismo que "perderla
+    # para siempre" (pedido real del usuario, mision "historico inmutable
+    # propio"): antes de borrarla, se archiva tal cual en
+    # `PredictionSnapshot` (append-only, nunca se borra ni se actualiza --
+    # ver ese modelo). Asi, si la cuota se mueve de 1.65 a 1.52 entre el
+    # lunes y el viernes, la prediccion del lunes sigue consultable
+    # despues (que probabilidad, que cuota, que version de modelo) aunque
+    # ya no sea "la actual" -- nunca se inventa ni se reconstruye a partir
+    # de informacion posterior, es una copia exacta de como estaba en ese
+    # momento.
     target_match_ids = target_matches["match_id"].tolist()
     if target_match_ids:
+        superseded = (
+            db.query(Prediction).filter(Prediction.match_id.in_(target_match_ids)).all()
+        )
+        for old in superseded:
+            db.add(
+                PredictionSnapshot(
+                    original_prediction_id=old.id,
+                    match_id=old.match_id,
+                    market=old.market,
+                    line=old.line,
+                    selection=old.selection,
+                    model_version_id=old.model_version_id,
+                    model_probability=old.model_probability,
+                    calibrated_probability=old.calibrated_probability,
+                    uncertainty_low=old.uncertainty_low,
+                    uncertainty_high=old.uncertainty_high,
+                    market_probability=old.market_probability,
+                    market_odds=old.market_odds,
+                    fair_odds=old.fair_odds,
+                    edge=old.edge,
+                    expected_value=old.expected_value,
+                    risk_adjusted_expected_value=old.risk_adjusted_expected_value,
+                    confidence=old.confidence,
+                    data_quality=old.data_quality,
+                    explanation=old.explanation,
+                    features_used=old.features_used,
+                    market_probability_source=old.market_probability_source,
+                    bookmakers_count=old.bookmakers_count,
+                    bookmakers_used=old.bookmakers_used,
+                    market_odds_min=old.market_odds_min,
+                    market_odds_max=old.market_odds_max,
+                    market_odds_median=old.market_odds_median,
+                    market_odds_average=old.market_odds_average,
+                    signal_score=old.signal_score,
+                    created_at=old.created_at,
+                )
+            )
+        db.flush()
         db.query(Prediction).filter(Prediction.match_id.in_(target_match_ids)).delete(
             synchronize_session=False
         )

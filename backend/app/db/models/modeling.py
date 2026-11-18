@@ -133,6 +133,78 @@ class Prediction(Base):
     match = relationship("Match", foreign_keys=[match_id])
 
 
+class PredictionSnapshot(Base):
+    """Copia INMUTABLE de una fila de `Prediction` justo antes de que
+    `generate_predictions_for_competition` la borre para sustituirla por
+    una nueva (partido aun no jugado, cuota/modelo actualizados) -- ver
+    services/prediction_service.py.
+
+    Bug real de diseño confirmado (pedido explicito del usuario,
+    "mision historico"): `Prediction` nunca fue pensada como inmutable --
+    el comentario original de `generate_predictions_for_competition` dice
+    literalmente "como estos partidos aun no se han jugado, no hay ninguna
+    razon para conservar la prediccion vieja: se borra y se sustituye
+    siempre por la mas reciente". Eso es correcto para la UI en vivo (solo
+    debe existir UNA prediccion "actual" por partido/mercado, nunca
+    duplicados -- ver el comentario de esa funcion), pero significa que
+    si la cuota se mueve de 1.65 a 1.52 entre el lunes y el viernes, la
+    prediccion del lunes desaparece sin dejar rastro: no hay forma de
+    saber despues que probabilidad/cuota/version de modelo se uso en cada
+    momento. Esta tabla NUNCA se borra ni se actualiza (append-only, mismo
+    patron ya usado en `MatchOddsHistory` para cuotas) -- cada vez que una
+    `Prediction` esta a punto de ser reemplazada, se archiva aqui tal cual
+    estaba, ANTES del delete. `Prediction` (la fila "actual") y su
+    comportamiento no cambian en nada: esta tabla es puramente aditiva.
+
+    `original_prediction_id` NO es una foreign key real (el id que
+    referencia se borra en el mismo paso que crea este snapshot) -- es
+    solo un entero de trazabilidad, para poder decir "esto fue la
+    Prediction #1234 antes de ser reemplazada", nunca para hacer join
+    relacional (esa fila ya no existe)."""
+
+    __tablename__ = "prediction_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    original_prediction_id: Mapped[int] = mapped_column(Integer)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"))
+    market: Mapped[str] = mapped_column(String(64))
+    line: Mapped[float | None] = mapped_column(Float, nullable=True)
+    selection: Mapped[str] = mapped_column(String(32))
+    model_version_id: Mapped[int] = mapped_column(ForeignKey("model_versions.id"))
+
+    # Idéntico a como estaba en `Prediction` en el momento de archivar --
+    # ver esa clase para el significado de cada campo.
+    model_probability: Mapped[float] = mapped_column(Float)
+    calibrated_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uncertainty_low: Mapped[float | None] = mapped_column(Float, nullable=True)
+    uncertainty_high: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_odds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fair_odds: Mapped[float] = mapped_column(Float)
+    edge: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expected_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    risk_adjusted_expected_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence: Mapped[float] = mapped_column(Float)
+    data_quality: Mapped[float] = mapped_column(Float)
+    explanation: Mapped[dict] = mapped_column(JSON)
+    features_used: Mapped[dict] = mapped_column(JSON)
+    market_probability_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    bookmakers_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bookmakers_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    market_odds_min: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_odds_max: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_odds_median: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_odds_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    signal_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Momento ORIGINAL en que se genero esa prediccion (copiado de
+    # `Prediction.created_at`, nunca reescrito) -- junto con `archived_at`
+    # (cuando se reemplazo) define el intervalo de validez real de ese
+    # snapshot concreto.
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    archived_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
 class PredictionResult(Base):
     """Resultado observado de una prediccion, para backtesting/monitorizacion."""
 

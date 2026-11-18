@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, OddsIngestionRun, Season
 from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory
-from backend.app.db.models.modeling import Prediction
+from backend.app.db.models.modeling import Prediction, PredictionSnapshot
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.ingestion.odds.provider import FixtureOddsSnapshot
 from backend.app.main import app
@@ -616,6 +616,52 @@ def test_regenerating_predictions_does_not_duplicate_rows(seeded_competition_cod
     assert len(body) == TOTAL_MVP_MARKETS
     markets = [p["market"] for p in body]
     assert len(markets) == len(set(markets))
+
+
+def test_regenerating_predictions_archives_the_superseded_ones_in_prediction_snapshot(
+    seeded_competition_code,
+):
+    """Mision "historico inmutable propio" (pedido real del usuario): la
+    fila `Prediction` de arriba se borra y sustituye en cada regeneracion
+    (comportamiento correcto para la UI en vivo, ver el test de arriba),
+    pero eso NO debe significar perder para siempre que se predijo antes
+    de esa sustitucion. Cada regeneracion debe archivar en
+    `PredictionSnapshot` (append-only) una copia exacta de lo que habia
+    ANTES de borrarlo -- la primera generacion no tiene nada que archivar
+    (no hay prediccion previa), la segunda si."""
+    # `seeded_competition_code` ya genera predicciones propias durante su
+    # propio setup (fixture compartida por todo el fichero) -- nunca se
+    # asume un conteo ABSOLUTO de partida (0), solo el INCREMENTO real que
+    # produce la regeneracion de este test, mismo principio de robustez
+    # ya aplicado al resto de tests de este fichero que comparten fixtures.
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
+    with session_scope() as db:
+        first_run = generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+        match_id = first_run[0].match_id
+        first_probabilities = {p.market: p.model_probability for p in first_run}
+
+    with session_scope() as db:
+        snapshots_before = (
+            db.query(PredictionSnapshot).filter(PredictionSnapshot.match_id == match_id).count()
+        )
+
+    with session_scope() as db:
+        generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+
+    with session_scope() as db:
+        snapshots_after = (
+            db.query(PredictionSnapshot)
+            .filter(PredictionSnapshot.match_id == match_id)
+            .order_by(PredictionSnapshot.archived_at)
+            .all()
+        )
+        assert len(snapshots_after) == snapshots_before + TOTAL_MVP_MARKETS
+        newest = snapshots_after[-TOTAL_MVP_MARKETS:]
+        by_market = {s.market: s for s in newest}
+        for market, probability in first_probabilities.items():
+            assert by_market[market].model_probability == probability
+            assert by_market[market].original_prediction_id is not None
+            assert by_market[market].archived_at is not None
 
 
 class _FakeOddsProvider:
