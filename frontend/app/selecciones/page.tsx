@@ -20,6 +20,24 @@ import { MatchCardSkeletonGrid } from "@/components/Skeleton";
 // desglose completo de cada partido (prediccion, comparativa
 // modelo-vs-mercado) sigue viviendo en /matches/[id] -- esta pagina NUNCA
 // duplica esa logica, solo enlaza a ella.
+
+// Bug real reportado por el usuario: "Proximos partidos" mostraba
+// partidos de 2018 (ediciones historicas de clasificatorios recien
+// registradas, seccion 18 de architecture_audit.md) con `status`
+// atascado en "scheduled" en la fuente real -- nunca pasan a "finished"
+// aunque ya se jugaran hace anhos. Mismo patron que ya usa
+// `currentSeasonStartDate()` en /matches/page.tsx (filtrar por fecha,
+// nunca fiarse solo del `status`), aqui con la fecha de HOY en vez de un
+// inicio de temporada de club (las selecciones no tienen ese concepto
+// limpio).
+function todayDateOnly(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 function groupByDate(matches: Match[]): [string, Match[]][] {
   const groups = new Map<string, Match[]>();
   for (const match of matches) {
@@ -101,10 +119,16 @@ export default function SeleccionesPage() {
     setError(null);
     const codes = competitionCode ? [competitionCode] : INTERNATIONAL_COMPETITION_CODES;
 
+    const todayIso = todayDateOnly();
     Promise.all(
       codes.map((code) =>
         Promise.all([
-          getMatchesList({ competitionCode: code, status: "scheduled", limit: 100 }),
+          getMatchesList({
+            competitionCode: code,
+            status: "scheduled",
+            dateFrom: todayIso,
+            limit: 100,
+          }),
           getMatchesList({ competitionCode: code, status: "finished", limit: 10 }),
         ])
       )

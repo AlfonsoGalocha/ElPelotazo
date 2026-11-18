@@ -3,6 +3,7 @@ import { AlertTriangle, TrendingUp } from "lucide-react";
 import { getCompetitions, getTopSignals } from "@/lib/api";
 import type { SignalScope } from "@/lib/api";
 import { formatMatchDateOnly } from "@/lib/dates";
+import { isInternationalCompetition } from "@/lib/internationalCompetitions";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
 import MarketQualityBadge from "@/components/MarketQualityBadge";
@@ -86,6 +87,13 @@ export default async function TopSignalsPage({
     }).catch(() => []),
     getCompetitions().catch(() => []),
   ]);
+  // Pedido real del usuario: "lo importante son las ligas" -- las ligas
+  // de club quedan como opciones principales del selector, las
+  // competiciones de selecciones (15 a la vez, seccion 18 de
+  // architecture_audit.md) en su propio grupo separado dentro del MISMO
+  // desplegable (nunca mezcladas en una sola lista plana).
+  const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code));
+  const internationalCompetitions = competitions.filter((c) => isInternationalCompetition(c.code));
 
   return (
     <div>
@@ -140,11 +148,22 @@ export default async function TopSignalsPage({
           className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
         >
           <option value="">Todas</option>
-          {competitions.map((c) => (
-            <option key={c.code} value={c.code}>
-              {c.name}
-            </option>
-          ))}
+          <optgroup label="Ligas">
+            {clubCompetitions.map((c) => (
+              <option key={c.code} value={c.code}>
+                {c.name}
+              </option>
+            ))}
+          </optgroup>
+          {internationalCompetitions.length > 0 && (
+            <optgroup label="Selecciones">
+              {internationalCompetitions.map((c) => (
+                <option key={c.code} value={c.code}>
+                  {c.name}
+                </option>
+              ))}
+            </optgroup>
+          )}
         </select>
         <button type="submit" className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-1 font-medium text-slate-100 transition-colors hover:bg-accent/20">
           Aplicar
