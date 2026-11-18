@@ -14,11 +14,25 @@ const GROUPS: { label: string; markets: string[] }[] = [
   { label: "Córners", markets: CORNERS_MARKETS },
 ];
 
+// Bug real reportado por el usuario (mismo partido, misma seleccion: esta
+// tarjeta decia 83%, la del Dashboard -- MatchCard.tsx -- decia 93.5%):
+// MatchCard SI usa `calibrated_probability` (con fallback a la cruda del
+// modelo solo si aun no hay calibracion), pero esta tarjeta usaba
+// `model_probability` a secas en los dos sitios (para elegir "lo mas
+// probable" de cada categoria Y para el porcentaje mostrado) -- la MISMA
+// prediccion mostraba dos numeros distintos segun la pagina, sin ninguna
+// etiqueta que diferenciara "calibrada" de "cruda". Ahora usa la misma
+// regla que MatchCard en los dos sitios, para que el numero que ve el
+// usuario sea siempre el mismo pase por donde pase.
+function calibratedOrRaw(p: Prediction): number {
+  return p.calibrated_probability ?? p.model_probability;
+}
+
 function pickMostLikely(predictions: Prediction[]): Prediction | null {
   if (predictions.length === 0) return null;
   const withMarket = predictions.filter((p) => p.has_market);
   const pool = withMarket.length > 0 ? withMarket : predictions;
-  return pool.reduce((best, p) => (p.model_probability > best.model_probability ? p : best));
+  return pool.reduce((best, p) => (calibratedOrRaw(p) > calibratedOrRaw(best) ? p : best));
 }
 
 export default function MatchTopPicks({ predictions }: { predictions: Prediction[] }) {
@@ -39,7 +53,7 @@ export default function MatchTopPicks({ predictions }: { predictions: Prediction
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
       {picks.map(({ label, pick }) => {
         const p = pick!;
-        const pct = Math.round(p.model_probability * 100);
+        const pct = Math.round(calibratedOrRaw(p) * 100);
         return (
           <div key={label} className="rounded-lg border border-surface-border bg-surface-raised p-4">
             <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
