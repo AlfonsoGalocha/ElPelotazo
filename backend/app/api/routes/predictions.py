@@ -33,6 +33,7 @@ from backend.app.schemas.prediction import (
 from backend.app.services.evaluation_service import (
     fit_edge_reliability_curve,
     market_track_records,
+    market_track_records_with_provenance,
 )
 from backend.app.services.ranking_config_service import get_opportunity_odds_band
 from backend.app.services.round_service import get_current_round, get_next_round
@@ -707,6 +708,24 @@ def best_predictions_debug(
         db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
     ).all()
     track_records = market_track_records(db, competition_code)
+    # Procedencia de la fiabilidad (seccion 2.2, "fiabilidad jerarquica"):
+    # `track_records` (arriba) sigue siendo el dict plano que ya consumia
+    # `rank_signals_v3` (nunca se toca su contrato) -- esto es SOLO para
+    # que la respuesta de depuracion diga de donde sale cada fiabilidad
+    # (especifica de la competicion, de su tier, o global de ese mercado),
+    # nunca presentando un nivel generico como si fuera especifico.
+    provenance = market_track_records_with_provenance(db, competition_code)
+
+    def _reliability_info(prediction: Prediction) -> dict | None:
+        estimate = provenance.get((prediction.match.competition.code, prediction.market))
+        if estimate is None:
+            return None
+        return {
+            "value": estimate.value,
+            "source_level": estimate.source_level,
+            "n_observations": estimate.n_observations,
+        }
+
     included, excluded = rank_signals_v3(candidates, settings, track_records)
     return {
         "included": [
@@ -720,6 +739,7 @@ def best_predictions_debug(
                 "market_odds": s.prediction.market_odds,
                 "edge": s.prediction.edge,
                 "bookmakers_used": s.prediction.bookmakers_used,
+                "reliability": _reliability_info(s.prediction),
             }
             for s in included
         ],
@@ -734,6 +754,7 @@ def best_predictions_debug(
                 "market_odds": e.prediction.market_odds,
                 "edge": e.prediction.edge,
                 "bookmakers_used": e.prediction.bookmakers_used,
+                "reliability": _reliability_info(e.prediction),
             }
             for e in excluded
         ],

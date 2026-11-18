@@ -22,6 +22,7 @@ from backend.app.normalization.competitions import COMPETITIONS
 from backend.app.services.data_service import ingest_matches
 from backend.app.services.evaluation_service import (
     market_track_records,
+    market_track_records_with_provenance,
     real_performance_report,
     void_cancelled_predictions,
 )
@@ -181,12 +182,18 @@ def test_void_predictions_are_excluded_from_real_performance_report():
 
 
 def test_void_predictions_are_excluded_from_market_track_records():
+    """Con una sola liquidacion (void, excluida) para esta competicion, su
+    propio nivel EXACTO ("competition_market") nunca puede aparecer -- si
+    "void" se contase como real, podria aparecer con n=1.
+
+    No se afirma que el dict quede vacio del todo (fiabilidad jerarquica,
+    seccion 2.2): un nivel mas general (tier/mercado global) SI puede
+    rellenar la clave con historico real de OTRAS competiciones -- eso es
+    correcto, lo unico que esta liga void nunca debe aportar es su propia
+    evidencia al nivel exacto."""
     competition_code = "void_test_league_d"
     _setup_cancelled_match(competition_code, seed=14)
     with session_scope() as db:
         void_cancelled_predictions(db, competition_code=competition_code)
-        # Con una sola liquidacion (void, excluida), nunca hay suficiente
-        # muestra real para ningun (competicion, mercado) de esta liga --
-        # si "void" se contase como real, esto podria aparecer con n=1.
-        records = market_track_records(db, competition_code=competition_code)
-        assert records == {}
+        records = market_track_records_with_provenance(db, competition_code=competition_code)
+        assert all(estimate.source_level != "competition_market" for estimate in records.values())
