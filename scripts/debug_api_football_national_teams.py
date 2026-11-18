@@ -58,6 +58,35 @@ INTEREST_KEYWORDS = (
     "africa cup of nations",
 )
 
+# IDs reales (confirmados contra /leagues?country=World, nunca de
+# memoria) de las competiciones de selecciones ABSOLUTA MASCULINA que el
+# usuario pidio anhadir a "Selecciones" ademas de Nations League (id=5,
+# ya registrada): Mundial + sus 6 clasificatorios por confederacion,
+# Eurocopa + clasificatorio, Copa America, Copa Africa de Naciones +
+# clasificatorio, y CONCACAF Nations League. Deliberadamente SIN
+# femenino/categorias inferiores/amistosos (pedido explicito del
+# usuario). Se imprime el HISTORIAL COMPLETO de temporadas de cada una
+# (no solo la ultima, a diferencia de `_print_league_summary`) para
+# construir `INTERNATIONAL_COMPETITION_EDITIONS` con anhos reales, nunca
+# adivinados -- el ciclo de estas competiciones no es anual (Mundial/
+# Eurocopa cada 4 anhos, Copa America/Copa Africa con ciclos irregulares).
+MENS_ABSOLUTE_CANDIDATE_IDS: dict[int, str] = {
+    1: "World Cup",
+    32: "World Cup - Qualification Europe",
+    34: "World Cup - Qualification South America",
+    31: "World Cup - Qualification CONCACAF",
+    29: "World Cup - Qualification Africa",
+    30: "World Cup - Qualification Asia",
+    33: "World Cup - Qualification Oceania",
+    37: "World Cup - Qualification Intercontinental Play-offs",
+    4: "Euro Championship",
+    960: "Euro Championship - Qualification",
+    9: "Copa America",
+    6: "Africa Cup of Nations",
+    36: "Africa Cup of Nations - Qualification",
+    536: "CONCACAF Nations League",
+}
+
 
 def _print_league_summary(league_entry: dict) -> None:
     league = league_entry["league"]
@@ -125,6 +154,37 @@ def main(odds_for_fixture: int | None = None) -> None:
     print(f"\n=== De interés para 'Selecciones' ({len(of_interest)} de {len(leagues)}) ===")
     for entry in of_interest:
         _print_league_summary(entry)
+
+    print(
+        "\n=== ABSOLUTA MASCULINA, candidatas a anhadir a 'Selecciones' "
+        "(historial COMPLETO de temporadas, nunca solo la ultima) ==="
+    )
+    leagues_by_id = {entry["league"]["id"]: entry for entry in leagues}
+    for league_id, expected_name in MENS_ABSOLUTE_CANDIDATE_IDS.items():
+        entry = leagues_by_id.get(league_id)
+        if entry is None:
+            print(
+                f"\nid={league_id}  {expected_name!r}: NO aparece en la respuesta "
+                "real -- revisar el ID."
+            )
+            continue
+        league = entry["league"]
+        if league["name"] != expected_name:
+            print(
+                f"\nid={league_id}: nombre real {league['name']!r} no coincide con lo esperado "
+                f"{expected_name!r} -- revisar antes de usar este ID."
+            )
+        seasons = entry.get("seasons", [])
+        print(
+            f"\nid={league_id}  nombre={league['name']!r}  "
+            f"({len(seasons)} temporadas reales listadas)"
+        )
+        for season in seasons:
+            coverage = season.get("coverage", {})
+            print(
+                f"  year={season.get('year')}  fixtures={coverage.get('fixtures')}  "
+                f"odds={coverage.get('odds')}  standings={coverage.get('standings')}"
+            )
 
     print("\n=== Resto del catalogo real (para no asumir que la lista de interés es completa) ===")
     rest = [entry for entry in leagues if entry not in of_interest]

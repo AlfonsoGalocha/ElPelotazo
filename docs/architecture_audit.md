@@ -2037,3 +2037,51 @@ estatica) y `tsc --noEmit` sin errores.
 **Pendiente**: el usuario aun no ha visto esta pagina en vivo -- pedirle
 que la abra y confirme que el agrupado por fecha/el proximo partido se
 ven como se espera.
+
+### 17.10 Feedback real: falta en el menu + "solo Nations League"
+
+El usuario reporto dos cosas con una captura real:
+
+1. "Selecciones" no aparecia en el menu lateral -- el codigo es correcto
+   (`npm run build` ya lo generaba como ruta), asi que es un contenedor
+   desactualizado en su maquina (falta `git pull` + reconstruccion
+   completa del frontend). Pendiente de confirmacion del usuario tras
+   repetirlo.
+2. "yo quiero cualquier partido de selecciones de cualquier competicion"
+   -- correcto, solo UEFA Nations League estaba registrada. Pedido al
+   usuario que decida el alcance (el catalogo real tiene ~180
+   competiciones, la mayoria femenino/categorias inferiores/sin cuotas):
+   eligio **solo absoluta masculina** -- Mundial + sus clasificatorios
+   por confederacion, Eurocopa + clasificatorio, Copa America, Copa
+   Africa de Naciones + clasificatorio, y CONCACAF Nations League. Deja
+   fuera femenino, categorias inferiores y amistosos.
+
+`scripts/debug_api_football_national_teams.py` ampliado (nueva seccion
+"ABSOLUTA MASCULINA"): para los IDs reales ya confirmados en la seccion
+17.2 (Mundial=1, sus 6 clasificatorios por confederacion, Eurocopa=4 +
+clasificatorio=960, Copa America=9, Copa Africa de Naciones=6 +
+clasificatorio=36, CONCACAF Nations League=536), imprime el HISTORIAL
+COMPLETO de temporadas (no solo la ultima, a diferencia del resto del
+script) -- necesario porque estas competiciones NO son anuales (Mundial/
+Eurocopa cada 4 anhos, Copa America/Copa Africa con ciclos irregulares),
+asi que `INTERNATIONAL_COMPETITION_EDITIONS` necesita anhos reales por
+competicion, nunca adivinados. Si un ID no aparece en la respuesta real,
+lo avisa explicitamente en vez de callarse o inventar una temporada.
+Reutiliza el mismo `/leagues?country=World` ya en memoria -- ningun
+request adicional. 1 test nuevo (respuesta canned con 2 ediciones reales
+de un ID + un ID ausente, verifica ambos casos). Suite completa: 459/459.
+
+**Pendiente**: pedir al usuario que ejecute
+
+```
+docker compose exec backend python scripts/debug_api_football_national_teams.py
+```
+
+de nuevo y pegue el resultado completo (incluida la seccion nueva
+"ABSOLUTA MASCULINA") -- con los anhos reales de cada competicion se
+registra `INTERNATIONAL_COMPETITION_EDITIONS` para todas, se ingieren, y
+se anhaden a `INTERNATIONAL_COMPETITION_CODES` del frontend. Las que no
+tengan `coverage.odds=True` (la mayoria, segun lo ya visto en la seccion
+17.2) apareceran en el calendario de "Selecciones" pero SIN predicciones/
+señales -- igual que ya pasa con cualquier partido "solo modelo" sin
+cuota real en el resto de la app, nunca una excepcion nueva.
