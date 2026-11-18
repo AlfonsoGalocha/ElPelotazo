@@ -24,6 +24,7 @@ tenido ninguna oportunidad de "hacer trampa" mirando el futuro.
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -427,6 +428,109 @@ MIN_SETTLED_FOR_TRACK_RECORD = 30  # mismo criterio que MIN_CALIBRATION_MATCHES
 # insuficiente.
 
 
+@dataclass
+class TrackRecordEstimate:
+    """Fiabilidad historica con PROCEDENCIA explicita -- nunca se debe
+    mostrar/tratar un valor de `source_level` distinto de
+    "competition_market" como si fuera especifico de esa competicion
+    exacta (pedido real del usuario, mision "fiabilidad jerarquica")."""
+
+    value: float
+    # "competition_market" | "market_tier" | "market_global"
+    source_level: str
+    n_observations: int
+
+
+def _track_record_from_observations(pairs: list[tuple[bool, float]]) -> tuple[float, int] | None:
+    if len(pairs) < MIN_SETTLED_FOR_TRACK_RECORD:
+        return None
+    y_true = np.array([outcome for outcome, _ in pairs])
+    y_prob = np.array([prob for _, prob in pairs])
+    ece = expected_calibration_error(y_true, y_prob)
+    return float(np.clip(1.0 - ece, 0.0, 1.0)), len(pairs)
+
+
+def market_track_records_with_provenance(
+    db: Session, competition_code: str | None = None
+) -> dict[tuple[str, str], TrackRecordEstimate]:
+    """Fiabilidad historica JERARQUICA por (competicion, mercado) (pedido
+    real del usuario, mision "oportunidades" seccion 2.2): antes, una
+    combinacion con menos de `MIN_SETTLED_FOR_TRACK_RECORD` liquidaciones
+    EXACTAS desaparecia del todo del ranking (`ExclusionReason.
+    INSUFFICIENT_TRACK_RECORD`), aunque ese mismo mercado tuviera muchisimo
+    historico en OTRAS competiciones de perfil similar -- causa real
+    confirmada de que "Oportunidades" se quedara vacio en ligas/mercados
+    con menos recorrido (ver docs/mission_continuity.md, Bloque 2.2).
+
+    Jerarquia (el PRIMER nivel que llegue al minimo de observaciones gana
+    -- nunca se mezclan/promedian niveles distintos):
+      1. (competicion, mercado) exacto -- el mas especifico y fiable.
+      2. (tier de competicion, mercado) -- ver `Competition.tier`
+         ("CORE"/"EXPERIMENTAL", ya existente, seccion 26): agrupa
+         competiciones de perfil similar en vez de inventar una
+         taxonomia nueva.
+      3. (mercado) global, todas las competiciones.
+      4. Ninguno disponible: la clave no aparece en el resultado (mismo
+         comportamiento que antes -- nunca se inventa un valor).
+
+    Usa SIEMPRE el historico COMPLETO de TODAS las competiciones para
+    calcular los niveles 2/3 (nunca filtrado por `competition_code`):
+    filtrar esa evidencia reduciria artificialmente la muestra de "mercado
+    global" sin ninguna razon real. `competition_code` solo decide que
+    CLAVES de salida se calculan, nunca que evidencia se usa.
+
+    Cada estimacion guarda `source_level`/`n_observations` explicitos --
+    quien consuma esto (p.ej. `/predictions/best/debug`) puede mostrar de
+    donde sale la fiabilidad en vez de presentarla como si fuera siempre
+    especifica de esa competicion exacta."""
+    query = (
+        db.query(Prediction, PredictionResult, Competition)
+        .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
+        .join(Match, Match.id == Prediction.match_id)
+        .join(Competition, Competition.id == Match.competition_id)
+    )
+    by_exact: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
+    by_tier: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
+    by_market: dict[str, list[tuple[bool, float]]] = defaultdict(list)
+    for prediction, result, competition in query.all():
+        if _is_void(result):
+            continue  # partido cancelado: no es evidencia de calibracion del mercado
+        pair = (bool(result.outcome), prediction.model_probability)
+        by_exact[(competition.code, prediction.market)].append(pair)
+        tier = competition.tier or "CORE"
+        by_tier[(tier, prediction.market)].append(pair)
+        by_market[prediction.market].append(pair)
+
+    competitions_query = db.query(Competition)
+    if competition_code:
+        competitions_query = competitions_query.filter(Competition.code == competition_code)
+    all_market_keys = list(MARKET_DEFINITIONS) + list(SECONDARY_MARKET_DEFINITIONS)
+
+    records: dict[tuple[str, str], TrackRecordEstimate] = {}
+    for competition in competitions_query.all():
+        tier = competition.tier or "CORE"
+        for market_key in all_market_keys:
+            exact = _track_record_from_observations(by_exact.get((competition.code, market_key), []))
+            if exact is not None:
+                value, n = exact
+                records[(competition.code, market_key)] = TrackRecordEstimate(
+                    value, "competition_market", n
+                )
+                continue
+            tier_level = _track_record_from_observations(by_tier.get((tier, market_key), []))
+            if tier_level is not None:
+                value, n = tier_level
+                records[(competition.code, market_key)] = TrackRecordEstimate(value, "market_tier", n)
+                continue
+            global_level = _track_record_from_observations(by_market.get(market_key, []))
+            if global_level is not None:
+                value, n = global_level
+                records[(competition.code, market_key)] = TrackRecordEstimate(
+                    value, "market_global", n
+                )
+    return records
+
+
 def market_track_records(
     db: Session, competition_code: str | None = None
 ) -> dict[tuple[str, str], float]:
@@ -437,42 +541,17 @@ def market_track_records(
     parametro desde esa sesion, pero nada lo calculaba con datos reales
     hasta ahora.
 
-    Usa SOLO predicciones ya liquidadas (`PredictionResult`), igual fuente
-    de verdad que `/models/performance`, agregado aqui sobre TODAS las
-    versiones de modelo de ese mercado: el track record es del TIPO de
-    mercado (p.ej. "over_2_5" en general), no de una version concreta --
-    coincide con como `signal_score` lo documenta ("rendimiento historico
-    observado de ESTE TIPO de mercado").
-
-    `ranking.py::rank_signals` sigue siendo una funcion PURA (sin acceso a
-    BD): esta es la unica funcion que toca la BD, el llamador (capa de
-    API/servicio) la invoca una vez por request y pasa el dict resultante.
-    """
-    query = (
-        db.query(Prediction, PredictionResult, Competition)
-        .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
-        .join(Match, Match.id == Prediction.match_id)
-        .join(Competition, Competition.id == Match.competition_id)
-    )
-    if competition_code:
-        query = query.filter(Competition.code == competition_code)
-
-    observations: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
-    for prediction, result, competition in query.all():
-        if _is_void(result):
-            continue  # partido cancelado: no es evidencia de calibracion del mercado
-        key = (competition.code, prediction.market)
-        observations[key].append((bool(result.outcome), prediction.model_probability))
-
-    records: dict[tuple[str, str], float] = {}
-    for key, pairs in observations.items():
-        if len(pairs) < MIN_SETTLED_FOR_TRACK_RECORD:
-            continue
-        y_true = np.array([outcome for outcome, _ in pairs])
-        y_prob = np.array([prob for _, prob in pairs])
-        ece = expected_calibration_error(y_true, y_prob)
-        records[key] = float(np.clip(1.0 - ece, 0.0, 1.0))
-    return records
+    Mismo CONTRATO de siempre (`dict[(competicion, mercado)] -> float`,
+    sin procedencia) para no tocar ningun llamador existente
+    (`prediction/ranking.py`, las rutas de `/predictions`) -- ahora el
+    valor viene de la jerarquia de `market_track_records_with_provenance`
+    en vez de exigir siempre el nivel mas especifico. Ver esa funcion para
+    la version CON `source_level`/`n_observations` (usada por
+    `/predictions/best/debug`)."""
+    return {
+        key: estimate.value
+        for key, estimate in market_track_records_with_provenance(db, competition_code).items()
+    }
 
 
 MIN_SETTLED_FOR_EDGE_RELIABILITY = 30  # mismo criterio que MIN_SETTLED_FOR_TRACK_RECORD

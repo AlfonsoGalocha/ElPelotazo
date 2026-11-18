@@ -23,6 +23,7 @@ from backend.app.services.evaluation_service import (
     fit_longshot_calibration_curve,
     fit_odds_reliability_curve,
     market_track_records,
+    market_track_records_with_provenance,
     settle_finished_predictions,
 )
 from backend.app.services.model_service import train_competition_models
@@ -293,15 +294,20 @@ def test_settle_never_fabricates_a_corners_outcome_for_a_match_without_real_corn
 
 
 def _seed_settled_predictions(
-    db, competition_code: str, market: str, pairs: list[tuple[float, bool]]
+    db, competition_code: str, market: str, pairs: list[tuple[float, bool]], tier: str | None = None
 ) -> None:
     """Inserta directamente N (Prediction, PredictionResult) ya liquidados
     para (competition_code, market), sin pasar por el pipeline completo de
     entrenamiento/prediccion -- aqui solo interesa la consulta de
     `market_track_records`, no reprobar el settlement end-to-end (ya
-    cubierto en test_settlement.py)."""
+    cubierto en test_settlement.py). `tier` opcional (nunca se pasa `None`
+    explicito al modelo, para no pisar su default real "CORE") -- usado
+    por los tests de fiabilidad jerarquica (seccion 2.2) para simular
+    competiciones de un tier concreto."""
     COMPETITIONS.setdefault(competition_code, (competition_code, "Testland"))
     comp = Competition(code=competition_code, name=competition_code, country="Testland")
+    if tier is not None:
+        comp.tier = tier
     db.add(comp)
     db.flush()
     season = Season(competition_id=comp.id, label="2024-2025")
@@ -358,17 +364,31 @@ def _seed_settled_predictions(
 
 
 def test_market_track_records_empty_below_minimum_settled_sample():
-    """Menos liquidaciones que MIN_SETTLED_FOR_TRACK_RECORD: nunca se
-    inventa un numero sobre una muestra insuficiente, el mercado queda
-    AUSENTE del dict (no en 0.0 ni en 1.0)."""
+    """Menos liquidaciones EXACTAS que MIN_SETTLED_FOR_TRACK_RECORD: nunca
+    se inventa un numero de nivel "competition_market" sobre una muestra
+    insuficiente -- nunca en 0.0 ni en 1.0.
+
+    Bug real de diseño confirmado: antes esto significaba que la clave
+    desaparecia del TODO el dict; ahora la jerarquia (seccion 2.2,
+    "fiabilidad jerarquica") puede rellenarla con un nivel mas general
+    (tier/global) SI otras competiciones/tiers tienen suficiente historico
+    real para ese mismo mercado -- eso es el comportamiento CORRECTO, no
+    un bug (ver market_track_records_with_provenance). Lo que nunca debe
+    pasar es que esta muestra insuficiente, por si sola, produzca un nivel
+    "competition_market" -- se verifica la PROCEDENCIA, no la ausencia
+    total (que ya no se puede garantizar: otros tests de este mismo
+    fichero siembran el mismo mercado real "over_2_5" en otras
+    competiciones, y es correcto que ese historico SI alimente el nivel
+    global)."""
     competition_code = "track-record-too-few"
     pairs = [(0.8, True)] * (MIN_SETTLED_FOR_TRACK_RECORD - 1)
     with session_scope() as db:
         _seed_settled_predictions(db, competition_code, "over_2_5", pairs)
 
     with session_scope() as db:
-        records = market_track_records(db, competition_code=competition_code)
-    assert (competition_code, "over_2_5") not in records
+        records = market_track_records_with_provenance(db, competition_code=competition_code)
+    estimate = records.get((competition_code, "over_2_5"))
+    assert estimate is None or estimate.source_level != "competition_market"
 
 
 def test_market_track_records_well_calibrated_market_scores_near_one():
@@ -408,6 +428,58 @@ def test_market_track_records_is_per_competition_and_market():
         scoped = market_track_records(db, competition_code="track-record-scope-a")
     assert ("track-record-scope-a", "over_2_5") in scoped
     assert ("track-record-scope-b", "btts") not in scoped
+
+
+def test_market_track_records_falls_back_to_tier_when_exact_competition_is_insufficient():
+    """Fiabilidad jerarquica (seccion 2.2, "mision oportunidades"): una
+    competicion con pocas liquidaciones EXACTAS para un mercado real
+    "corners_over_10_5" (mercado poco usado en el resto de este fichero,
+    para no mezclarse con el historico global de otros tests) hereda la
+    fiabilidad de OTRA competicion del MISMO tier con historico real
+    suficiente -- nunca queda vacia solo por falta de recorrido propio."""
+    rich_pairs = [(0.75, True)] * 24 + [(0.75, False)] * 8  # 32 >= minimo, bien calibrado
+    thin_pairs = [(0.75, True)] * 5  # muy por debajo del minimo
+    with session_scope() as db:
+        _seed_settled_predictions(
+            db, "track-record-tier-rich", "corners_over_10_5", rich_pairs, tier="EXPERIMENTAL"
+        )
+        _seed_settled_predictions(
+            db, "track-record-tier-thin", "corners_over_10_5", thin_pairs, tier="EXPERIMENTAL"
+        )
+
+    with session_scope() as db:
+        records = market_track_records_with_provenance(db, competition_code="track-record-tier-thin")
+
+    estimate = records[("track-record-tier-thin", "corners_over_10_5")]
+    assert estimate.source_level == "market_tier"
+    assert estimate.n_observations == len(rich_pairs) + len(thin_pairs)
+    assert estimate.value > 0.9  # heredado del historico bien calibrado
+
+
+def test_market_track_records_falls_back_to_global_when_tier_is_also_insufficient():
+    """Ultimo nivel de la jerarquia: si ni la competicion exacta ni su tier
+    tienen historico suficiente, se usa el mercado GLOBAL (todas las
+    competiciones/tiers). Mercado real poco comun ("corners_under_9_5")
+    para que el historico global de este test sea el UNICO contribuyente
+    real en la suite."""
+    rich_pairs = [(0.75, True)] * 24 + [(0.75, False)] * 8
+    thin_pairs = [(0.75, True)] * 3
+    with session_scope() as db:
+        _seed_settled_predictions(
+            db, "track-record-global-rich", "corners_under_9_5", rich_pairs, tier="CORE"
+        )
+        _seed_settled_predictions(
+            db, "track-record-global-thin", "corners_under_9_5", thin_pairs, tier="EXPERIMENTAL"
+        )
+
+    with session_scope() as db:
+        records = market_track_records_with_provenance(
+            db, competition_code="track-record-global-thin"
+        )
+
+    estimate = records[("track-record-global-thin", "corners_under_9_5")]
+    assert estimate.source_level == "market_global"
+    assert estimate.n_observations == len(rich_pairs) + len(thin_pairs)
 
 
 def test_evaluate_settled_predictions_empty_db_returns_no_competitions():
