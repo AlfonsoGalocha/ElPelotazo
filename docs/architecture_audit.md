@@ -1999,3 +1999,41 @@ REAL de la fuente de datos, no un bug nuevo.
 League" aparece en el selector de competiciones de la app y que las 210
 predicciones se ven correctamente en Partidos/Oportunidades -- antes de
 construir la seccion de frontend dedicada "Selecciones".
+
+### 17.9 Verificado y seccion de frontend "Selecciones" construida
+
+El usuario confirmo con una captura real: "UEFA Nations League" aparece
+en el selector de competiciones, y el Historico de jornadas muestra sus
+partidos con "mejor prediccion" congelada vs resultado real -- el mismo
+mecanismo que ya usan las 5 ligas de club (nada especifico de club
+estaba hardcodeado en ese flujo, como ya se habia verificado en la
+seccion 17.5).
+
+Pedido explicito: una pagina DEDICADA (no solo un filtro dentro de
+"Partidos"), porque los partidos de selecciones se concentran en pocos
+parones al año (a diferencia de una liga de club, con partidos casi cada
+semana) -- lo que el usuario quiere ver es CUANDO son los proximos, de un
+vistazo, agrupados por fecha.
+
+`frontend/app/selecciones/page.tsx` (nuevo): reutiliza `getMatchesList`
+(el mismo endpoint que ya usa "Partidos", sin tocar el backend) filtrado
+a las competiciones de `INTERNATIONAL_COMPETITION_CODES`
+(`frontend/lib/internationalCompetitions.ts`, nuevo -- lista EXPLICITA de
+codigos, igual que `normalization/competitions.py::COMPETITIONS` en el
+backend, nunca inferida de `competition.country`: una futura competicion
+de CLUB tambien podria tener `country="Europe"`, p.ej. la Champions
+League). Agrupa los proximos partidos por fecha real
+(`formatMatchDateOnly`, misma utilidad de zona horaria ya existente),
+destaca el proximo partido arriba del todo, y muestra los ultimos
+resultados liquidados debajo. El desglose completo de cada partido
+(prediccion, comparativa modelo-vs-mercado) sigue viviendo en
+`/matches/[id]` -- esta pagina nunca duplica esa logica, solo enlaza a
+ella. Nuevo item de navegacion "Selecciones" en `Sidebar.tsx`, separado
+de "Partidos".
+
+`npm run build` compila limpio (ruta `/selecciones` generada como pagina
+estatica) y `tsc --noEmit` sin errores.
+
+**Pendiente**: el usuario aun no ha visto esta pagina en vivo -- pedirle
+que la abra y confirme que el agrupado por fecha/el proximo partido se
+ven como se espera.
