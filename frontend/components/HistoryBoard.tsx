@@ -61,80 +61,49 @@ function groupByCompetitionLatestMatchday(rows: MatchHistory[]): CompetitionGrou
 
 export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
   const groups = groupByCompetitionLatestMatchday(rows);
-  const allCodes = groups.map((g) => g.code);
-  // Regla fija del usuario para TODOS los filtros de liga de la app: de
-  // SELECCION, empieza vacio (nunca de deseleccion con todo marcado por
-  // defecto) -- mismo criterio que Home y Modelo.
-  const [selected, setSelected] = useState<string[]>([]);
+  // Pedido real del usuario: "ponme el mismo filtro de oportunidades en
+  // todas las secciones de la app" -- un unico desplegable con optgroup
+  // Ligas/Selecciones, "Todas" por defecto (nunca botones sueltos de
+  // multi-seleccion).
+  const [selected, setSelected] = useState<string | null>(null);
 
-  function toggle(code: string) {
-    setSelected((prev) => (prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code]));
-  }
-
-  const allSelected = selected.length === allCodes.length;
-  const visibleGroups = groups.filter((g) => selected.includes(g.code));
-  // Pedido real del usuario: mismo filtro que en "Oportunidades" -- las
-  // ligas de club quedan como fila principal, las competiciones de
-  // selecciones en su propia fila separada (nunca mezcladas en una sola).
+  const visibleGroups = selected ? groups.filter((g) => g.code === selected) : groups;
   const clubGroups = groups.filter((g) => !isInternationalCompetition(g.code));
   const internationalGroups = groups.filter((g) => isInternationalCompetition(g.code));
 
   return (
     <div className="flex flex-col gap-6">
       {groups.length > 1 && (
-        <div className="flex flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-slate-500">Ligas:</span>
-            <button
-              onClick={() => setSelected(allCodes)}
-              className={
-                "rounded-full border px-3 py-1 transition-colors " +
-                (allSelected
-                  ? "border-accent/50 bg-accent/15 text-slate-100"
-                  : "border-surface-border text-slate-400 hover:bg-surface-alt/60")
-              }
-            >
-              Todas
-            </button>
-            {clubGroups.map((g) => (
-              <button
-                key={g.code}
-                onClick={() => toggle(g.code)}
-                className={
-                  "rounded-full border px-3 py-1 transition-colors " +
-                  (selected.includes(g.code)
-                    ? "border-accent/50 bg-accent/15 text-slate-100"
-                    : "border-surface-border text-slate-500 hover:bg-surface-alt/60")
-                }
-              >
-                {g.name}
-              </button>
-            ))}
-          </div>
-          {internationalGroups.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="text-slate-500">Selecciones:</span>
-              {internationalGroups.map((g) => (
-                <button
-                  key={g.code}
-                  onClick={() => toggle(g.code)}
-                  className={
-                    "rounded-full border px-3 py-1 transition-colors " +
-                    (selected.includes(g.code)
-                      ? "border-accent/50 bg-accent/15 text-slate-100"
-                      : "border-surface-border text-slate-500 hover:bg-surface-alt/60")
-                  }
-                >
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-slate-500">Liga:</span>
+          <select
+            value={selected ?? ""}
+            onChange={(e) => setSelected(e.target.value || null)}
+            className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
+          >
+            <option value="">Todas</option>
+            <optgroup label="Ligas">
+              {clubGroups.map((g) => (
+                <option key={g.code} value={g.code}>
                   {g.name}
-                </button>
+                </option>
               ))}
-            </div>
-          )}
+            </optgroup>
+            {internationalGroups.length > 0 && (
+              <optgroup label="Selecciones">
+                {internationalGroups.map((g) => (
+                  <option key={g.code} value={g.code}>
+                    {g.name}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+          </select>
         </div>
       )}
 
       {visibleGroups.length === 0 && (
-        <EmptyState title="Elige una o varias ligas arriba para ver su última jornada jugada." />
+        <EmptyState title="Sin partidos jugados todavía para esta liga." />
       )}
 
       {visibleGroups.map((group) => (
