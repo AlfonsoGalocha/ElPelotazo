@@ -29,6 +29,25 @@ class ModelVersion(Base):
     artifact_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
+    # Seccion "Rendimiento del modelo" (pedido real del usuario: "Solo se
+    # activa una nueva version cuando demuestra mejoras fuera de
+    # muestra... No quiero reentrenamientos automaticos que puedan
+    # empeorar el sistema sin validacion"). Antes, `generate_predictions_
+    # for_competition` usaba SIEMPRE la ModelVersion mas reciente de la
+    # competicion sin comparar nunca con la anterior -- ver
+    # services/promotion_service.py::evaluate_and_promote, que decide este
+    # flag con una comparacion walk-forward real (nunca con datos ya
+    # vistos en el entrenamiento del candidato) antes de que
+    # `generate_predictions_for_competition` la use.
+    #
+    # NULLABLE a proposito (mismo patron aditivo que Competition.tier):
+    # toda ModelVersion ya existente ANTES de esta columna queda en
+    # `None`, y se trata como activa salvo que se diga lo contrario
+    # (`isnot(False)`) -- asi el historico de entrenamientos de un
+    # despliegue ya en marcha sigue funcionando exactamente igual que
+    # antes, sin "desactivar" en silencio todo lo entrenado hasta ahora.
+    is_active: Mapped[bool | None] = mapped_column(nullable=True)
+
     predictions: Mapped[list[Prediction]] = relationship(back_populates="model_version")
 
 
@@ -134,6 +153,27 @@ class PredictionResult(Base):
     # append-only, solo existe desde que se anhadio esta tabla -- nunca
     # retroactivo) para calcularlo, nunca un numero inventado.
     closing_line_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    # Seccion "Rendimiento del modelo" (pedido real del usuario): estado
+    # de liquidacion completo -- "won"|"lost"|"void"|"half_won"|
+    # "half_lost" ("pending" NUNCA se guarda aqui: una Prediction sin
+    # PredictionResult todavia ES "pending", por ausencia de fila, igual
+    # que siempre). NULLABLE a proposito (mismo patron aditivo que
+    # Competition.tier en db/models/core.py): las filas YA EXISTENTES
+    # antes de esta columna no la tienen, y se interpretan con el
+    # `outcome` booleano de siempre ("won" si True, "lost" si False) --
+    # ver evaluation_service.py y api/routes/history.py, nunca se
+    # backfillea a mano.
+    #
+    # "void" (mercado anulado, stake devuelto) es el unico valor que
+    # produce hoy el pipeline (partidos CANCELADOS -- ver
+    # evaluation_service.py::void_cancelled_predictions): se EXCLUYE de
+    # Brier/log loss/ROI en vez de contar como "lost". "half_won"/
+    # "half_lost" (ganancia o perdida parcial) quedan soportados por el
+    # esquema pero SIN mercado real que los produzca todavia (ningun
+    # mercado de este sistema admite un "push" parcial hoy) -- limitacion
+    # conocida, documentada en architecture_audit.md.
+    settlement_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     prediction: Mapped[Prediction] = relationship(back_populates="result")
 

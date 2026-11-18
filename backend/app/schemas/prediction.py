@@ -125,12 +125,20 @@ class HistoryPredictionOut(PredictionOut):
     otra forma."""
 
     actual_result: str | None = None
+    # `None` mientras no haya PredictionResult (pendiente) O cuando la
+    # liquidacion es "void" (partido cancelado) -- en ambos casos no hay
+    # un acierto/fallo real que mostrar, ver api/routes/history.py.
     is_correct: bool | None = None
     settled_at: UtcDatetime | None = None
     # Closing Line Value (ver market/clv.py): `None` hasta que haya
     # historico de cuotas suficiente (MatchOddsHistory, solo desde que se
     # anhadio esa tabla -- nunca retroactivo).
     closing_line_value: float | None = None
+    # "won"|"lost"|"void"|"half_won"|"half_lost", o `None` para
+    # predicciones pendientes O liquidadas ANTES de que existiera esta
+    # columna (mismo patron aditivo que Competition.tier) -- el frontend
+    # cae a `is_correct` en ese caso. Ver db/models/modeling.py.
+    settlement_status: str | None = None
 
 
 class MatchHistoryOut(BaseModel):

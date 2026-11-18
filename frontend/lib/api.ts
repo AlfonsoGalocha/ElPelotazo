@@ -5,6 +5,7 @@ import type {
   MatchForm,
   MatchHistory,
   ModelPerformanceReport,
+  ModelVersionInfo,
   Prediction,
   RoundInfo,
   SignalDetail,
@@ -259,6 +260,14 @@ export function getModelPerformance(competitionCode?: string, market?: string): 
   if (market) qs.set("market", market);
   const suffix = qs.toString() ? `?${qs.toString()}` : "";
   return apiFetch<ModelPerformanceReport>(`/models/performance${suffix}`);
+}
+
+// Subseccion "Versiones del modelo" (Rendimiento del modelo, pedido real
+// del usuario): listado completo de ModelVersion, mas reciente primero
+// (ver backend/app/api/routes/models.py) -- incluye las NO activas
+// (nunca se borran), para poder comparar version a version.
+export function getModels(): Promise<ModelVersionInfo[]> {
+  return apiFetch<ModelVersionInfo[]>("/models");
 }
 
 export interface DataSourcesStatus {

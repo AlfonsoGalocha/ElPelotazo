@@ -25,13 +25,19 @@ router = APIRouter(prefix="/history", tags=["history"])
 
 def _serialize_history_prediction(prediction: Prediction, is_best: bool) -> dict:
     result: PredictionResult | None = prediction.result
+    is_void = result is not None and result.settlement_status == "void"
     base = serialize_prediction(prediction, is_best_prediction=is_best)
     return {
         **base,
         "actual_result": result.actual_result if result else None,
-        "is_correct": result.outcome if result else None,
+        # Nunca True/False para una liquidacion "void" (partido
+        # cancelado): no hubo un acierto/fallo real que mostrar, el
+        # frontend la trata igual que "sin resolver" para el color
+        # (ambas grises), pero `settlement_status` distingue el texto.
+        "is_correct": (result.outcome if (result and not is_void) else None),
         "settled_at": result.settled_at if result else None,
         "closing_line_value": result.closing_line_value if result else None,
+        "settlement_status": result.settlement_status if result else None,
     }
 
 

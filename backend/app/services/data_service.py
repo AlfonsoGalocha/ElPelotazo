@@ -218,7 +218,14 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
     match.away_goals = record.away_goals
     match.home_goals_ht = record.home_goals_ht
     match.away_goals_ht = record.away_goals_ht
-    match.status = "finished" if is_finished else "scheduled"
+    # `record.status` (seccion "Rendimiento del modelo"): solo
+    # `api_football/fixtures_provider.py` lo rellena hoy, con el estado
+    # real de la API (incluye "postponed"/"cancelled", nunca
+    # indistinguibles de "scheduled" para siempre -- bug real corregido).
+    # Fuentes que no lo proveen (historico CSV, calendario openfootball)
+    # mandan `None` y caen al criterio antiguo: hay goles -> finished, si
+    # no -> scheduled.
+    match.status = record.status if record.status is not None else ("finished" if is_finished else "scheduled")
     db.flush()
 
     if match.statistics is None:

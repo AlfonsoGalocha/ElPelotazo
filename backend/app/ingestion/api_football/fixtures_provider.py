@@ -43,6 +43,44 @@ logger = get_logger(__name__)
 # se infiere un resultado de un partido que no ha terminado de verdad.
 FINISHED_STATUSES = {"FT", "AET", "PEN"}
 
+# Seccion "Rendimiento del modelo" (pedido real del usuario): bug real
+# reportado -- un partido aplazado o cancelado quedaba indistinguible de
+# "scheduled" para siempre (nunca se marcaba `finished`, pero tampoco nada
+# lo distinguia de un partido normal todavia por jugar), asi que sus
+# predicciones quedaban "pendientes" eternamente y nunca se liberaban.
+# "CANC"/"ABD"/"AWD"/"WO" son definitivos (ese partido, con ese id, nunca
+# va a dar un resultado real) -- sus predicciones se liquidan como "void"
+# (ver evaluation_service.py::void_cancelled_predictions). "PST"/"SUSP"/
+# "INT" NO se tratan igual a proposito: API-Football normalmente
+# REPROGRAMA un partido aplazado bajo el MISMO fixture id (vuelve a "NS"
+# con fecha nueva) -- marcarlo "cancelled" demasiado pronto liquidaria
+# como anulada una prediccion que en realidad se jugara mas tarde,
+# violando la inmutabilidad (seccion 2 del brief: nunca se retoca una
+# prediccion ya hecha). Mientras tanto queda "postponed": ni se liquida
+# ni se vuelve a tratar como "scheduled" para generar NUEVAS predicciones
+# o casar cuotas nuevas (ver data_service.py, filtros `status ==
+# "scheduled"`).
+#
+# Deliberadamente NO se distingue un estado "live" aparte de "scheduled"
+# (aunque API-Football si lo reporta: "1H"/"HT"/"2H"/"ET"/"BT"/"P"): nada
+# en este sistema consume ese detalle hoy (no hay apuestas en vivo ni
+# cuotas in-play) y anhadirlo fragmentaria los muchos filtros existentes
+# `Match.status == "scheduled"` (listados de proximos partidos,
+# generacion de predicciones, casar cuotas...) sin ningun beneficio real
+# todavia -- ver limitaciones conocidas en architecture_audit.md.
+CANCELLED_STATUSES = {"CANC", "ABD", "AWD", "WO"}
+POSTPONED_STATUSES = {"PST", "SUSP", "INT"}
+
+
+def _match_status(status_short: str | None) -> str:
+    if status_short in FINISHED_STATUSES:
+        return "finished"
+    if status_short in CANCELLED_STATUSES:
+        return "cancelled"
+    if status_short in POSTPONED_STATUSES:
+        return "postponed"
+    return "scheduled"  # "NS", en juego ("1H"/"2H"/...), o cualquier otro no reconocido
+
 # "Regular Season - 12" -> 12. Generico (numero al final de la cadena) en
 # vez de asumir el texto exacto -- ver docstring del modulo.
 MATCHDAY_RE = re.compile(r"(\d+)\s*$")
@@ -70,6 +108,7 @@ class ApiFootballMatchProvider(ApiFootballClient, DataProvider):
             fixture = payload["fixture"]
             status_short = fixture.get("status", {}).get("short")
             finished = status_short in FINISHED_STATUSES
+            match_status = _match_status(status_short)
             goals = payload.get("goals", {}) or {}
             halftime = (payload.get("score", {}) or {}).get("halftime") or {}
             round_name = (payload.get("league", {}) or {}).get("round", "")
@@ -91,6 +130,7 @@ class ApiFootballMatchProvider(ApiFootballClient, DataProvider):
                     home_goals_ht=halftime.get("home"),
                     away_goals_ht=halftime.get("away"),
                     matchday=matchday,
+                    status=match_status,
                     # API-Football trae el escudo real en el mismo payload
                     # del fixture, sin request ni coste adicional (pedido
                     # real del usuario: escudos reales via API-Football,

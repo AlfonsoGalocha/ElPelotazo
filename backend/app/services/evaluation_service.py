@@ -186,11 +186,74 @@ def settle_finished_predictions(db: Session, competition_code: str | None = None
                         actual_result=actual_result,
                         settled_at=dt.datetime.utcnow(),
                         closing_line_value=clv,
+                        settlement_status="won" if outcome else "lost",
                     )
                 )
                 created += 1
         db.flush()
     return created
+
+
+def void_cancelled_predictions(db: Session, competition_code: str | None = None) -> int:
+    """Partidos CANCELADOS (ver ingestion/api_football/fixtures_provider.py:
+    CANC/ABD/AWD/WO) nunca van a producir un resultado real -- cualquier
+    `Prediction` suya que siga sin `PredictionResult` se liquida como
+    "void" (stake devuelto), nunca como "lost" (seria penalizar al modelo
+    por algo que no tuvo nada que ver con su prediccion).
+
+    A diferencia de `settle_finished_predictions`, aqui no hace falta
+    `build_match_feature_table`: no hay resultado real que derivar
+    (`actual_result=None`, `outcome=False` como relleno INERTE -- nunca
+    se lee para metricas, `settlement_status="void"` es lo unico que
+    importa, ver `real_performance_report`/`market_track_records` y las
+    curvas de fiabilidad mas abajo, todas excluyen "void" explicitamente).
+
+    Deliberadamente NO cubre "postponed": ese estado puede revertir a
+    "scheduled" cuando la fuente reprograma el partido bajo el mismo id
+    (ver fixtures_provider.py) -- anularlo aqui podria liquidar como
+    "void" una prediccion que en realidad se juega mas tarde, violando la
+    inmutabilidad (nunca se retoca una prediccion ya liquidada)."""
+    query = db.query(Match).filter(Match.status == "cancelled")
+    if competition_code:
+        competition = db.query(Competition).filter_by(code=competition_code).one_or_none()
+        if competition is None:
+            return 0
+        query = query.filter(Match.competition_id == competition.id)
+    match_ids = [m.id for m in query.all()]
+    if not match_ids:
+        return 0
+
+    already_settled_ids = {
+        row[0]
+        for row in db.query(PredictionResult.prediction_id)
+        .join(Prediction, Prediction.id == PredictionResult.prediction_id)
+        .filter(Prediction.match_id.in_(match_ids))
+        .all()
+    }
+    predictions = [
+        p
+        for p in db.query(Prediction).filter(Prediction.match_id.in_(match_ids)).all()
+        if p.id not in already_settled_ids
+    ]
+    created = 0
+    for prediction in predictions:
+        db.add(
+            PredictionResult(
+                prediction_id=prediction.id,
+                outcome=False,
+                actual_result=None,
+                settled_at=dt.datetime.utcnow(),
+                closing_line_value=None,
+                settlement_status="void",
+            )
+        )
+        created += 1
+    db.flush()
+    return created
+
+
+def _is_void(result: PredictionResult) -> bool:
+    return result.settlement_status == "void"
 
 
 def evaluate_settled_predictions(db: Session, competition_code: str | None = None) -> dict:
@@ -301,13 +364,30 @@ def real_performance_report(
     segments: dict[tuple[str, str, int], list[tuple[Prediction, PredictionResult]]] = defaultdict(
         list
     )
+    voided: dict[tuple[str, str, int], int] = defaultdict(int)
     for prediction, result, competition, _match in rows:
-        segments[(competition.code, prediction.market, prediction.model_version_id)].append(
-            (prediction, result)
-        )
+        key = (competition.code, prediction.market, prediction.model_version_id)
+        # Predicciones "void" (partido cancelado, ver
+        # void_cancelled_predictions) se EXCLUYEN de Brier/log loss/ROI --
+        # contarlas como "lost" penalizaria al modelo por algo ajeno a su
+        # prediccion. Se cuentan aparte (`n_void`) para que la muestra
+        # nunca desaparezca en silencio.
+        if _is_void(result):
+            voided[key] += 1
+            continue
+        segments[key].append((prediction, result))
 
     report: dict = {"segments": []}
-    for (comp_code, market_key, model_version), items in segments.items():
+    # Solo se reporta un segmento con AL MENOS una liquidacion real
+    # (won/lost): si una clave entera quedo solo con "void" (caso raro,
+    # p.ej. una competicion suspendida del todo), sus `PredictionResult`
+    # siguen guardados en la BD tal cual, simplemente no generan un
+    # segmento aqui -- ninguna metrica (Brier/ROI/...) tiene sentido sin
+    # ninguna liquidacion real de la que calcularla.
+    for key, items in segments.items():
+        comp_code, market_key, model_version = key
+        n_void = voided.get(key, 0)
+
         y_true = np.array([bool(r.outcome) for _p, r in items])
         y_prob = np.array([p.model_probability for p, _r in items])
         odds = np.array([p.market_odds if p.market_odds is not None else np.nan for p, _r in items])
@@ -328,6 +408,7 @@ def real_performance_report(
                 "market": market_key,
                 "model_version_id": model_version,
                 "n_settled": len(items),
+                "n_void": n_void,
                 "model_quality": quality,
                 "market_strategy": strategy,
                 "performance_by_probability_bucket": by_probability,
@@ -378,6 +459,8 @@ def market_track_records(
 
     observations: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
     for prediction, result, competition in query.all():
+        if _is_void(result):
+            continue  # partido cancelado: no es evidencia de calibracion del mercado
         key = (competition.code, prediction.market)
         observations[key].append((bool(result.outcome), prediction.model_probability))
 
@@ -429,6 +512,7 @@ def fit_edge_reliability_curve(db: Session) -> IsotonicRegression | None:
         .filter(Prediction.edge.isnot(None))
         .all()
     )
+    rows = [(p, r) for p, r in rows if not _is_void(r)]  # partido cancelado: no es evidencia real de edge
     if len(rows) < MIN_SETTLED_FOR_EDGE_RELIABILITY:
         return None
 
@@ -493,6 +577,7 @@ def fit_odds_reliability_curve(db: Session) -> IsotonicRegression | None:
         .filter(Prediction.market_odds.isnot(None))
         .all()
     )
+    rows = [(p, r) for p, r in rows if not _is_void(r)]  # partido cancelado: no es evidencia real de cuota
     if len(rows) < MIN_SETTLED_FOR_ODDS_RELIABILITY:
         return None
 
@@ -558,6 +643,7 @@ def fit_longshot_calibration_curve(
         .filter(Prediction.market_odds >= odds_threshold)
         .all()
     )
+    rows = [(p, r) for p, r in rows if not _is_void(r)]  # partido cancelado: no es evidencia real de calibracion
     if len(rows) < MIN_SETTLED_FOR_LONGSHOT_CALIBRATION:
         return None
 

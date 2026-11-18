@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as dt
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -19,8 +21,42 @@ class ModelVersionOut(BaseModel):
     market_family: str
     dataset_version: str
     metrics: dict
+    training_start: dt.date | None = None
+    training_end: dt.date | None = None
+    created_at: dt.datetime
+    calibration_method: str | None = None
+    # Seccion "Rendimiento del modelo" (promotion_service.py): `None` para
+    # ModelVersion de antes del gate de promocion -- el frontend la trata
+    # como activa igual que el backend (`isnot(False)`), nunca como
+    # "rechazada" por ausencia de dato.
+    is_active: bool | None = None
+    # Derivado de `dataset_version` ("laliga:1234_matches" -> "laliga"),
+    # nunca una columna nueva: es el mismo valor que ya usa
+    # `prediction_service.py` para elegir la ModelVersion de cada
+    # competicion (`dataset_version LIKE "{competition_code}:%"`).
+    competition_code: str | None = None
 
     model_config = {"from_attributes": True}
+
+    @staticmethod
+    def from_model_version(model_version: ModelVersion) -> "ModelVersionOut":
+        competition_code = (
+            model_version.dataset_version.split(":", 1)[0] if model_version.dataset_version else None
+        )
+        return ModelVersionOut(
+            id=model_version.id,
+            name=model_version.name,
+            version=model_version.version,
+            market_family=model_version.market_family,
+            dataset_version=model_version.dataset_version,
+            metrics=model_version.metrics,
+            training_start=model_version.training_start,
+            training_end=model_version.training_end,
+            created_at=model_version.created_at,
+            calibration_method=model_version.calibration_method,
+            is_active=model_version.is_active,
+            competition_code=competition_code,
+        )
 
 
 class TrainModelRequest(BaseModel):
@@ -28,8 +64,9 @@ class TrainModelRequest(BaseModel):
 
 
 @router.get("", response_model=list[ModelVersionOut])
-def list_models(db: Session = Depends(get_db)) -> list[ModelVersion]:
-    return db.query(ModelVersion).order_by(ModelVersion.created_at.desc()).all()
+def list_models(db: Session = Depends(get_db)) -> list[ModelVersionOut]:
+    versions = db.query(ModelVersion).order_by(ModelVersion.created_at.desc()).all()
+    return [ModelVersionOut.from_model_version(v) for v in versions]
 
 
 @router.post("/train")
@@ -59,8 +96,8 @@ def model_performance(
 
 
 @router.get("/{model_id}", response_model=ModelVersionOut)
-def get_model(model_id: int, db: Session = Depends(get_db)) -> ModelVersion:
+def get_model(model_id: int, db: Session = Depends(get_db)) -> ModelVersionOut:
     model_version = db.get(ModelVersion, model_id)
     if model_version is None:
         raise HTTPException(status_code=404, detail="Modelo no encontrado")
-    return model_version
+    return ModelVersionOut.from_model_version(model_version)

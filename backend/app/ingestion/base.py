@@ -29,6 +29,16 @@ class RawMatchRecord:
     referee_raw: str | None = None
     matchday: int | None = None  # jornada, cuando la fuente la provee (ver fixtures_provider.py)
 
+    # Estado REAL del partido segun la fuente (seccion "Rendimiento del
+    # modelo", pedido real del usuario): "scheduled"|"finished"|
+    # "postponed"|"cancelled". `None` para fuentes que no distinguen nada
+    # mas alla de "tiene goles o no" (football-data.co.uk, openfootball
+    # fixtures) -- `services/data_service.py::_upsert_match` cae entonces
+    # al criterio antiguo (hay goles -> finished, si no -> scheduled).
+    # Unicamente `api_football/fixtures_provider.py` (temporada en curso,
+    # con estados reales de la API) lo rellena hoy.
+    status: str | None = None
+
     # Escudo REAL del equipo, cuando la fuente lo trae en el mismo payload
     # que el partido (API-Football: `teams.home/away.logo`) -- `None` para
     # fuentes que no lo proveen (football-data.co.uk, openfootball...),

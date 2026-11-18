@@ -23,3 +23,18 @@ export function formatMatchDateOnly(iso: string, options?: Intl.DateTimeFormatOp
 export function formatMatchTimeOnly(iso: string, options?: Intl.DateTimeFormatOptions): string {
   return new Date(iso).toLocaleTimeString("es-ES", { ...options, timeZone: TIME_ZONE });
 }
+
+// Misma regla que backend/app/utils/dates.py::season_label (julio es el
+// mes de corte) -- pedido real del usuario, subsección "Jornadas" de
+// "Rendimiento del modelo": selector de temporada. El backend no expone
+// `season_label` en `MatchOut` (anhadirlo tocaria muchos endpoints para
+// un solo selector), asi que se deriva aqui de `kickoff_utc`, que ya
+// viaja en todas las respuestas. Para selecciones (sin concepto limpio
+// de "temporada de dos anhos") esto da simplemente el anho de corte
+// real, que sigue siendo una forma razonable de agrupar por "edicion".
+export function seasonLabelFor(iso: string): string {
+  const date = new Date(iso);
+  const month = date.getUTCMonth() + 1; // 1-12
+  const startYear = month >= 7 ? date.getUTCFullYear() : date.getUTCFullYear() - 1;
+  return `${startYear}/${String((startYear + 1) % 100).padStart(2, "0")}`;
+}

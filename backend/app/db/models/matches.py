@@ -35,7 +35,15 @@ class Match(Base):
     away_team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
     referee_id: Mapped[int | None] = mapped_column(ForeignKey("referees.id"), nullable=True)
 
-    status: Mapped[str] = mapped_column(String(16), default="scheduled")  # scheduled|finished
+    # scheduled|finished|postponed|cancelled (seccion "Rendimiento del
+    # modelo", pedido real del usuario: antes solo scheduled/finished --
+    # un partido aplazado/cancelado quedaba indistinguible de uno normal
+    # por jugar para siempre. Deliberadamente SIN un estado "live" aparte
+    # (ver ingestion/api_football/fixtures_provider.py::_match_status):
+    # nada lo consume hoy. Solo las ingestas via API-Football (temporada
+    # en curso) distinguen postponed/cancelled; el historico CSV y el
+    # calendario openfootball solo conocen scheduled/finished.
+    status: Mapped[str] = mapped_column(String(16), default="scheduled")
 
     home_goals: Mapped[int | None] = mapped_column(Integer, nullable=True)
     away_goals: Mapped[int | None] = mapped_column(Integer, nullable=True)
