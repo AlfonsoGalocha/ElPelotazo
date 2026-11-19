@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { AlertTriangle, TrendingUp } from "lucide-react";
-import { getCompetitions, getRankingConfig, getTopSignals } from "@/lib/api";
+import { getCompetitions, getOpportunityDiagnostics, getRankingConfig, getTopSignals } from "@/lib/api";
 import type { SignalScope } from "@/lib/api";
 import { formatMatchDateOnly } from "@/lib/dates";
 import { isInternationalCompetition } from "@/lib/internationalCompetitions";
@@ -84,7 +84,7 @@ export default async function TopSignalsPage({
     minEv !== undefined ||
     quality !== "ALL";
 
-  const [predictions, competitions, rankingConfig] = await Promise.all([
+  const [predictions, competitions, rankingConfig, diagnostics] = await Promise.all([
     getTopSignals({
       limit: 30,
       date,
@@ -101,6 +101,11 @@ export default async function TopSignalsPage({
     }).catch(() => []),
     getCompetitions().catch(() => []),
     getRankingConfig().catch(() => null),
+    getOpportunityDiagnostics({
+      date, scope, days, competition_code: competitionCode,
+      min_fair_odds: minFairOdds, max_fair_odds: maxFairOdds,
+      min_edge: minEdge, min_bookmakers: minBookmakers, min_ev: minEv, quality,
+    }).catch(() => null),
   ]);
   // Pedido real del usuario: "lo importante son las ligas" -- las ligas
   // de club quedan como opciones principales del selector, las
@@ -126,20 +131,9 @@ export default async function TopSignalsPage({
           : scope === "all_upcoming"
             ? `De los próximos ${days} días (sin restricción de jornada).`
             : `${SCOPE_LABELS[scope]} de cada competición — nunca un partido de otra jornada aunque tenga más edge.`}{" "}
-        No son las de mayor discrepancia modelo-mercado (edge) sino las mas fiables: cuota REAL
-        entre {rankingConfig ? rankingConfig.min_opportunity_odds.toFixed(2) : "1.35"} y{" "}
-        {rankingConfig ? rankingConfig.max_opportunity_odds.toFixed(2) : "1.90"} (ambos límites
-        inclusive, configurable en{" "}
-        <Link href="/settings" className="underline hover:text-slate-300">
-          Configuración
-        </Link>
-        ), probabilidad calibrada alta, EV estimado Y conservador positivos, y fiabilidad
-        histórica real suficiente para ese mercado/competición. Orden de prioridad (nunca una
-        puntuación con pesos inventados): 1) probabilidad calibrada, 2) EV conservador, 3)
-        fiabilidad histórica, 4) incertidumbre, 5) calidad de datos, 6) edge — solo información
-        secundaria, nunca decide qué aparece aquí. Como mucho una oportunidad por partido (el
-        resto de mercados candidatos del mismo partido quedan descartados de esta lista, aunque
-        siguen guardados).{" "}
+        Cuotas verificadas entre {rankingConfig ? rankingConfig.min_opportunity_odds.toFixed(2) : "1.35"} y{" "}
+        {rankingConfig ? rankingConfig.max_opportunity_odds.toFixed(2) : "1.90"}, con ambos límites incluidos.
+        Se muestra hasta una oportunidad por partido, con calibración disponible y valor esperado conservador positivo.{" "}
         {sortBy === "edge" && "Reordenado por edge de mayor a menor (el filtro de qué aparece no cambia)."}{" "}
         {hasFairOddsFilter && (
           <>
@@ -317,6 +311,31 @@ export default async function TopSignalsPage({
           </div>
         </details>
       </form>
+      {diagnostics && (
+        <details className="mb-4 rounded-lg border border-surface-border p-3 text-sm text-slate-300">
+          <summary className="cursor-pointer font-medium">Diagnóstico de oportunidades</summary>
+          <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {[
+              ["Partidos analizados", diagnostics.counts.matches],
+              ["Partidos con cuota", diagnostics.counts.matches_with_market],
+              ["Selecciones con mercado", diagnostics.counts.candidates_with_valid_market],
+              ["Selecciones con EV estimado positivo", diagnostics.counts.positive_estimated_ev],
+              ["Selecciones que superan el filtro", diagnostics.counts.passed_gate],
+              ["Oportunidades", diagnostics.counts.opportunities],
+              ["En observación", diagnostics.counts.observation],
+            ].map(([label, value]) => (
+              <div key={label}><dt className="text-slate-400">{label}</dt><dd>{value}</dd></div>
+            ))}
+          </dl>
+          {Object.keys(diagnostics.reasons).length > 0 && (
+            <ul className="mt-3 space-y-1 border-t border-surface-border pt-2">
+              {Object.entries(diagnostics.reasons).sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
+                <li key={reason}>{reason.replaceAll("_", " ")} · {count}</li>
+              ))}
+            </ul>
+          )}
+        </details>
+      )}
 
       <div className="overflow-hidden rounded-xl border border-surface-border bg-card">
         <table className="w-full text-sm">
@@ -396,7 +415,7 @@ export default async function TopSignalsPage({
                 <td className="px-3 py-2 text-slate-400">
                   <span className="flex items-center gap-1">
                     {p.is_stale_odds && <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" />}
-                    {p.odds_age_minutes !== null ? `hace ${Math.round(p.odds_age_minutes)} min` : "—"}
+                    {p.odds_age_minutes !== null ? `hace ${Math.round(p.odds_age_minutes)} min` : "Origen sin verificar"}
                   </span>
                 </td>
               </tr>

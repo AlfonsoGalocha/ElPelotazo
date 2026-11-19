@@ -167,6 +167,27 @@ export function getBestPredictions(limit = 5, marketFamily?: string): Promise<Pr
 // historico; goles sin cuota todavia). Existen y son validas, pero nunca
 // compiten en el ranking de "mejores señales" — se muestran aparte,
 // etiquetadas.
+export interface OpportunityDiagnostics {
+  counts: {
+    matches: number;
+    matches_with_market: number;
+    candidates_with_valid_market: number;
+    positive_estimated_ev: number;
+    passed_gate: number;
+    opportunities: number;
+    observation: number;
+  };
+  reasons: Record<string, number>;
+}
+
+export function getOpportunityDiagnostics(filters: Record<string, string | number | undefined>) {
+  const qs = new URLSearchParams({ summary_only: "true" });
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined) qs.set(key, String(value));
+  }
+  return apiFetch<OpportunityDiagnostics>(`/predictions/best/debug?${qs.toString()}`);
+}
+
 export function getModelOnlyPredictions(limit = 20): Promise<Prediction[]> {
   return apiFetch<Prediction[]>(`/predictions/model-only?limit=${limit}`);
 }
