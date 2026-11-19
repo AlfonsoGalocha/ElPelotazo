@@ -50,6 +50,78 @@ MIN_CALIBRATION_MATCHES = 60  # ajustar un IsotonicRegression con menos
 # se prefiere NO calibrar (calibrated_probability queda None) a calibrar mal
 # con una muestra insuficiente.
 
+CALIBRATION_VALIDATION_FRACTION = 0.3  # mismo criterio que
+# backtesting/calibration.py::compare_calibration
+MIN_CALIBRATION_VALIDATION_SAMPLES = 10  # idem
+
+
+def _fit_validated_isotonic_calibrator(
+    p_ensemble: np.ndarray, y_true: np.ndarray
+) -> tuple[IsotonicCalibrator | None, dict]:
+    """Ajusta Isotonic Regression SOLO si demuestra mejorar el Brier score
+    en un sub-split de validacion DISJUNTO del usado para ajustarlo --
+    pedido real del usuario ("mision plataforma profesional", Bloque 1.4:
+    "No elijas un metodo por moda. Compara su rendimiento mediante
+    validacion temporal y datos fuera de muestra").
+
+    Bug real confirmado en produccion (captura de pantalla del usuario,
+    2026-11-19): Bundesliga, "Ambos equipos marcan" -- el modelo crudo
+    estimaba 78.5%, pero `calibrated_probability` salia en 97.2% (+18.7pp),
+    inflando el EV estimado a +42.9% de la nada. Causa real: antes de este
+    fix, `IsotonicCalibrator` se ajustaba SIEMPRE que hubiera
+    `MIN_CALIBRATION_MATCHES` partidos en el holdout GLOBAL, sin comprobar
+    nunca si calibrar mejoraba algo para ESE mercado en particular.
+    Isotonic Regression es muy flexible (sin sesgo, pero alta varianza):
+    con una muestra modesta puede sobreajustar un cluster pequenho de la
+    zona de probabilidad alta (p.ej. "las pocas veces que el modelo dio
+    ~78%, todas acertaron por casualidad") y quedarse pegado a ese valor
+    extremo para cualquier entrada posterior, por la propia monotonicidad
+    del metodo.
+
+    Nunca se corrige con un limite artificial (85%/90%, pedido EXPLICITO
+    del usuario que NO hacer: "no quiero que simplemente anhadas un
+    limite artificial") -- se corrige exigiendo evidencia real de que
+    calibrar MEJORA el Brier score fuera de muestra, la MISMA logica ya
+    implementada y probada en
+    `backtesting/calibration.py::compare_calibration` (hasta ahora solo
+    se usaba para informes offline bajo demanda, nunca para decidir si
+    activar la calibracion real en produccion).
+
+    Devuelve `(None, reporte)` si la muestra es insuficiente para validar
+    o si calibrar NO mejora el Brier score (en ambos casos,
+    `calibrated_probability` queda `None` para ese mercado -- el sistema
+    ya usa `model_probability` cruda como fallback en todo el pipeline,
+    nunca se inventa una calibracion sin evidencia). Si se valida, el
+    calibrador final se REAJUSTA sobre TODO el holdout (maximiza los datos
+    para el calibrador que entra en produccion) -- la decision de SI
+    calibrar ya se tomo con evidencia honesta fuera de muestra."""
+    n = len(y_true)
+    n_val = int(n * CALIBRATION_VALIDATION_FRACTION)
+    n_test = n - n_val
+    if n_val < MIN_CALIBRATION_VALIDATION_SAMPLES or n_test < MIN_CALIBRATION_VALIDATION_SAMPLES:
+        return None, {
+            "accepted": False,
+            "reason": "muestra insuficiente para validar la calibracion fuera de muestra",
+            "n_holdout": n,
+        }
+
+    val_idx, test_idx = np.arange(n_val), np.arange(n_val, n)
+    probe = IsotonicCalibrator().fit(p_ensemble[val_idx], y_true[val_idx])
+    calibrated_test = probe.transform(p_ensemble[test_idx])
+    brier_before = brier_score(y_true[test_idx], p_ensemble[test_idx])
+    brier_after = brier_score(y_true[test_idx], calibrated_test)
+
+    report = {
+        "accepted": bool(brier_after < brier_before),
+        "brier_before": brier_before,
+        "brier_after": brier_after,
+        "n_validation": int(n_val),
+        "n_test": int(n_test),
+    }
+    if not report["accepted"]:
+        return None, report
+    return IsotonicCalibrator().fit(p_ensemble, y_true), report
+
 
 def _choose_ml_source_per_group(
     candidate_models: dict[str, object],
@@ -252,17 +324,29 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     calibrators: dict[str, IsotonicCalibrator] = {}
     if len(eval_finished) >= MIN_CALIBRATION_MATCHES:
         p_ensemble_by_market = renormalize_mutually_exclusive_groups(p_ensemble_by_market)
+        calibration_reports: dict[str, dict] = {}
         for market_key, p_ensemble in p_ensemble_by_market.items():
             y_true = y_true_by_market.get(market_key)
             if y_true is None or len(set(y_true.tolist())) < 2:
                 continue
-            calibrators[market_key] = IsotonicCalibrator().fit(
+            calibrator, report = _fit_validated_isotonic_calibrator(
                 np.asarray(p_ensemble, dtype=float), y_true
             )
+            calibration_reports[market_key] = report
+            if calibrator is not None:
+                calibrators[market_key] = calibrator
         metrics["calibration"] = {
             "method": "isotonic" if calibrators else None,
             "n_holdout_matches": len(eval_finished),
             "markets_calibrated": sorted(calibrators.keys()),
+            # Mercados con evidencia suficiente para intentar calibrar pero
+            # SIN mejora real demostrada (o muestra insuficiente para
+            # validar): quedan en model_probability cruda, nunca sin
+            # explicacion de por que (pedido real del usuario, "Bloque
+            # 1.4": documentar la razon de la eleccion).
+            "markets_rejected": {
+                k: v for k, v in calibration_reports.items() if k not in calibrators
+            },
         }
     else:
         metrics["calibration"] = {
