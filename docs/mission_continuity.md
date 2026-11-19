@@ -114,9 +114,18 @@ construir la integración o no.
   Oportunidades muestra una columna "Fiabilidad histórica" con etiqueta
   de procedencia (esta liga / ligas similares / global) — nunca presenta
   un nivel general como si fuera específico.
-  **Pendiente real todavía**: shrinkage bayesiano (James-Stein o
-  Beta-Binomial) en vez de corte duro de 30 — evaluado como mejora futura,
-  no implementado.
+  **Shrinkage bayesiano, IMPLEMENTADO Y VALIDADO CON BACKTEST** (commit
+  `32afd4b`, mergeado a `main`): el nivel EXACTO con 1-29 liquidaciones ya
+  no cae entero al respaldo (tier/global) — se MEZCLA con él, ponderado
+  por el tamaño de muestra real (formula Beta-Binomial/James-Stein,
+  `k=TRACK_RECORD_SHRINKAGE_K=30`). El respaldo en sí sigue exigiendo el
+  corte duro de siempre (nunca mezclar con un respaldo ya poco fiable).
+  Nuevo `source_level="competition_market_shrunk"` deja explícita la
+  mezcla (API + tabla de Oportunidades actualizadas). Validado ANTES de
+  activarlo con una simulación de verdad conocida (pedido explícito de
+  la misión, "nunca a ciegas"): el shrinkage tiene menor error cuadrático
+  medio que el corte duro anterior cuando la muestra exacta es pequeña
+  pero real y se desvía del respaldo. 591/591 tests backend en verde.
 
 ### Bloque 3 (histórico inmutable) — PRIORIDAD MÁXIMA, trabajo real hecho esta sesión
 
@@ -331,15 +340,13 @@ por este bloque de trabajo).
 Orden de prioridad recomendado para la próxima sesión (1 y 2.2 completos,
 UI de fiabilidad incluida):
 
-1. **Shrinkage bayesiano para la fiabilidad jerárquica** (en vez del
-   corte duro de 30 observaciones) — evaluar con backtest antes de
-   activar. **Siguiente paso exacto** (lo único de la lista anterior que
-   no depende de acceso real a una API externa).
-2. Integración de lesiones/ausencias vía `/injuries` de API-Football —
+1. Integración de lesiones/ausencias vía `/injuries` de API-Football —
    **BLOQUEADO**, ver Bloque 1 arriba: necesita que el usuario corra
    `scripts/debug_api_football_injuries_coverage.py` con su key real y
    confirme `coverage.injuries` para las 5 ligas antes de construir nada.
-3. (Opcional, menor prioridad) Endpoint/UI para `standings_snapshots` —
+   **Es lo único real y claramente pendiente de toda la lista histórica
+   de este documento** que no depende de otra decisión del usuario.
+2. (Opcional, menor prioridad) Endpoint/UI para `standings_snapshots` —
    hoy la tabla se calcula y archiva correctamente pero no tiene ningún
    consumidor expuesto todavía (igual que `TeamMatchFeatures`, es
    infraestructura de reproducibilidad, no necesariamente user-facing).
@@ -353,6 +360,16 @@ UI de fiabilidad incluida):
 - `standings_snapshots` y `provider_responses` implementados y probados
   (commit `5cc7bfd`, mergeado a `main`). Ver sección A, Bloque 3.4/3.5,
   arriba.
+- Diagnóstico + script de verificación de `/injuries` (commit `aae6145`,
+  mergeado a `main`) — diferido como Shin's method, ver Bloque 1 arriba.
+- Shrinkage bayesiano para la fiabilidad jerárquica, implementado Y
+  validado con backtest (commit `32afd4b`, mergeado a `main`). Ver
+  sección A, Bloque 2.2, arriba.
+
+Con esto, todos los puntos de la lista de prioridad que no requieren una
+decision o un dato externo del usuario estan cerrados. Lo unico
+genuinamente pendiente es la integracion de `/injuries` (punto 1 de
+arriba), bloqueada por falta de acceso real a la API desde este entorno.
 
 Nada de esto requiere credenciales nuevas ni decisiones que no pueda tomar
 yo solo — son puramente de ingeniería. Continuar diciendo "sigue con la
