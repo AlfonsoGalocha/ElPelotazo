@@ -24,6 +24,7 @@ from backend.app.services.evaluation_service import (
     fit_odds_reliability_curve,
     market_track_records,
     market_track_records_with_provenance,
+    real_performance_report,
     settle_finished_predictions,
 )
 from backend.app.services.model_service import train_competition_models
@@ -480,6 +481,46 @@ def test_market_track_records_falls_back_to_global_when_tier_is_also_insufficien
     estimate = records[("track-record-global-thin", "corners_under_9_5")]
     assert estimate.source_level == "market_global"
     assert estimate.n_observations == len(rich_pairs) + len(thin_pairs)
+
+
+def test_real_performance_report_flags_small_samples_with_wide_confidence_interval():
+    """Bloque 4 de la mision "plataforma profesional" (pedido real del
+    usuario): "una tasa de acierto del 80% con 5 apuestas no puede
+    presentarse como evidencia solida". Con muy pocas liquidaciones, el
+    intervalo de confianza debe ser ANCHO (mucha incertidumbre real) y
+    `low_sample_size` debe quedar en True -- nunca se presenta como si
+    fuera un dato fiable."""
+    competition_code = "perf-report-small-sample"
+    pairs = [(0.8, True)] * 4 + [(0.8, False)] * 1  # 5 liquidaciones, 80% de acierto
+    with session_scope() as db:
+        _seed_settled_predictions(db, competition_code, "over_2_5", pairs)
+
+    with session_scope() as db:
+        report = real_performance_report(db, competition_code=competition_code)
+
+    segment = next(s for s in report["segments"] if s["competition_code"] == competition_code)
+    assert segment["n_settled"] == 5
+    assert segment["accuracy"] == 0.8
+    assert segment["low_sample_size"] is True
+    ci_low, ci_high = segment["accuracy_confidence_interval_95"]
+    assert ci_high - ci_low > 0.4  # intervalo ancho de verdad, no una falsa precision
+
+
+def test_real_performance_report_does_not_flag_large_enough_samples():
+    """Caso contrario: con muestra suficiente (>= MIN_SAMPLE_SIZE_FOR_RELIABLE_STATS),
+    `low_sample_size` debe quedar en False -- el aviso nunca se dispara
+    sin necesidad real."""
+    competition_code = "perf-report-large-sample"
+    pairs = [(0.8, True)] * 26 + [(0.8, False)] * 6  # 32 liquidaciones
+    with session_scope() as db:
+        _seed_settled_predictions(db, competition_code, "over_2_5", pairs)
+
+    with session_scope() as db:
+        report = real_performance_report(db, competition_code=competition_code)
+
+    segment = next(s for s in report["segments"] if s["competition_code"] == competition_code)
+    assert segment["n_settled"] == 32
+    assert segment["low_sample_size"] is False
 
 
 def test_evaluate_settled_predictions_empty_db_returns_no_competitions():
