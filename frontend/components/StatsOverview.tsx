@@ -47,34 +47,50 @@ export default function StatsOverview({ segments }: { segments: PerformanceSegme
     };
   }, [segments]);
 
+  // Bloque 5 de la mision (claridad): un ROI agregado sin su `n` al lado
+  // es exactamente el mismo problema que una tasa de acierto sin
+  // intervalo de confianza -- una liga con 2 apuestas liquidadas no puede
+  // verse con el mismo peso visual que una con 200. `label` lleva el n
+  // directamente en la etiqueta del eje (siempre visible, no solo al
+  // pasar el raton) y el tooltip lo repite junto al ROI exacto.
   const byLeague = useMemo(() => {
-    const grouped = new Map<string, { staked: number; pnl: number }>();
+    const grouped = new Map<string, { staked: number; pnl: number; nBets: number }>();
     for (const s of segments) {
       const strategy = s.market_strategy;
       if (!strategy?.n_bets) continue;
-      const entry = grouped.get(s.competition_code) ?? { staked: 0, pnl: 0 };
+      const entry = grouped.get(s.competition_code) ?? { staked: 0, pnl: 0, nBets: 0 };
       entry.staked += strategy.total_staked ?? 0;
       entry.pnl += strategy.total_pnl ?? 0;
+      entry.nBets += strategy.n_bets;
       grouped.set(s.competition_code, entry);
     }
     return [...grouped.entries()]
-      .map(([code, { staked, pnl }]) => ({ code, roi: staked > 0 ? (pnl / staked) * 100 : 0 }))
+      .map(([code, { staked, pnl, nBets }]) => ({
+        code,
+        label: `${code} (n=${nBets})`,
+        nBets,
+        roi: staked > 0 ? (pnl / staked) * 100 : 0,
+      }))
       .sort((a, b) => b.roi - a.roi);
   }, [segments]);
 
   const byMarket = useMemo(() => {
-    const grouped = new Map<string, { staked: number; pnl: number }>();
+    const grouped = new Map<string, { staked: number; pnl: number; nBets: number }>();
     for (const s of segments) {
       const strategy = s.market_strategy;
       if (!strategy?.n_bets) continue;
-      const entry = grouped.get(s.market) ?? { staked: 0, pnl: 0 };
+      const marketLabel = MARKET_DISPLAY_NAMES[s.market] ?? s.market;
+      const entry = grouped.get(marketLabel) ?? { staked: 0, pnl: 0, nBets: 0 };
       entry.staked += strategy.total_staked ?? 0;
       entry.pnl += strategy.total_pnl ?? 0;
-      grouped.set(s.market, entry);
+      entry.nBets += strategy.n_bets;
+      grouped.set(marketLabel, entry);
     }
     return [...grouped.entries()]
-      .map(([market, { staked, pnl }]) => ({
-        market: MARKET_DISPLAY_NAMES[market] ?? market,
+      .map(([market, { staked, pnl, nBets }]) => ({
+        market,
+        label: `${market} (n=${nBets})`,
+        nBets,
         roi: staked > 0 ? (pnl / staked) * 100 : 0,
       }))
       .sort((a, b) => b.roi - a.roi);
@@ -112,10 +128,13 @@ export default function StatsOverview({ segments }: { segments: PerformanceSegme
                 <BarChart data={byLeague} layout="vertical" margin={{ left: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1f2a44" horizontal={false} />
                   <XAxis type="number" tick={{ fill: "#64748b", fontSize: 11 }} unit="%" />
-                  <YAxis type="category" dataKey="code" width={90} tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                  <YAxis type="category" dataKey="label" width={120} tick={{ fill: "#94a3b8", fontSize: 11 }} />
                   <Tooltip
                     contentStyle={{ background: "#101729", border: "1px solid #1f2a44", borderRadius: 8 }}
-                    formatter={(value: number) => [`${value.toFixed(1)}%`, "ROI"]}
+                    formatter={(value: number, _name, item) => [
+                      `${value.toFixed(1)}% (n=${item.payload.nBets} apuestas)`,
+                      "ROI",
+                    ]}
                   />
                   <Bar dataKey="roi" radius={[0, 4, 4, 0]}>
                     {byLeague.map((entry, i) => (
@@ -134,10 +153,13 @@ export default function StatsOverview({ segments }: { segments: PerformanceSegme
                 <BarChart data={byMarket} layout="vertical" margin={{ left: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#1f2a44" horizontal={false} />
                   <XAxis type="number" tick={{ fill: "#64748b", fontSize: 11 }} unit="%" />
-                  <YAxis type="category" dataKey="market" width={120} tick={{ fill: "#94a3b8", fontSize: 11 }} />
+                  <YAxis type="category" dataKey="label" width={150} tick={{ fill: "#94a3b8", fontSize: 11 }} />
                   <Tooltip
                     contentStyle={{ background: "#101729", border: "1px solid #1f2a44", borderRadius: 8 }}
-                    formatter={(value: number) => [`${value.toFixed(1)}%`, "ROI"]}
+                    formatter={(value: number, _name, item) => [
+                      `${value.toFixed(1)}% (n=${item.payload.nBets} apuestas)`,
+                      "ROI",
+                    ]}
                   />
                   <Bar dataKey="roi" radius={[0, 4, 4, 0]}>
                     {byMarket.map((entry, i) => (
