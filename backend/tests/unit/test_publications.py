@@ -2,6 +2,7 @@ import datetime as dt
 
 import pytest
 
+from backend.app.api.routes.publications import publication_detail
 from backend.app.db.models.core import Competition, Season, Team
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import ModelVersion, Prediction
@@ -50,6 +51,7 @@ def test_draw_evaluates_probabilities_but_does_not_win_the_principal_forecast(db
     match.status = terminal_status
     match.home_goals = match.away_goals = 1
     db.flush()
+    assert publication_detail(match.id, db)["groups"]["1X2"]["principal"] == "home_win"
     report = publication_report(db, league.code)
     assert report["history"][0]["market"] == "home_win"
     assert report["history"][0]["probability"] == .65

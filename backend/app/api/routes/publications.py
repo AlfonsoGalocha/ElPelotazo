@@ -21,15 +21,9 @@ def publications(
     max_probability: float | None = Query(None, ge=0, le=1),
     db: Session = Depends(get_db),
 ):
-    versions = {
-        row["feature_set_version"]
-        for group in publication.groups.values() for row in group["alternatives"]
-        if row.get("feature_set_version")
-    }
-    snapshots = db.query(TeamMatchFeatures).filter(
-        TeamMatchFeatures.match_id == match_id, TeamMatchFeatures.feature_set_version.in_(versions)
-    ).all()
-    return {**jsonable_encoder(publication), "feature_snapshots": snapshots}_report(db, competition, market, model_version, min_probability, matchday, outcome, max_probability)
+    return publication_report(
+        db, competition, market, model_version, min_probability, matchday, outcome, max_probability
+    )
 
 
 @router.get("/{match_id}")
@@ -37,7 +31,17 @@ def publication_detail(match_id: int, db: Session = Depends(get_db)):
     publication = db.get(FixturePublication, match_id)
     if publication is None:
         raise HTTPException(status_code=404, detail="No existe una captura oficial para este partido")
-    return publication
+    versions = {
+        row["feature_set_version"]
+        for group in publication.groups.values()
+        for row in group["alternatives"]
+        if row.get("feature_set_version")
+    }
+    snapshots = db.query(TeamMatchFeatures).filter(
+        TeamMatchFeatures.match_id == match_id,
+        TeamMatchFeatures.feature_set_version.in_(versions),
+    ).all()
+    return {**jsonable_encoder(publication), "feature_snapshots": snapshots}
 
 
 @router.get("/{match_id}/revisions")
