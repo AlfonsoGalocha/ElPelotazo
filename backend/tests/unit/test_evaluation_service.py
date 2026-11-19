@@ -3,6 +3,8 @@ from __future__ import annotations
 import datetime as dt
 from contextlib import contextmanager
 
+import numpy as np
+import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -18,6 +20,10 @@ from backend.app.services.evaluation_service import (
     MIN_SETTLED_FOR_LONGSHOT_CALIBRATION,
     MIN_SETTLED_FOR_ODDS_RELIABILITY,
     MIN_SETTLED_FOR_TRACK_RECORD,
+    TRACK_RECORD_SHRINKAGE_K,
+    _raw_reliability,
+    _shrink_toward_backup,
+    _track_record_from_observations,
     evaluate_settled_predictions,
     fit_edge_reliability_curve,
     fit_longshot_calibration_curve,
@@ -439,7 +445,7 @@ def test_market_track_records_falls_back_to_tier_when_exact_competition_is_insuf
     fiabilidad de OTRA competicion del MISMO tier con historico real
     suficiente -- nunca queda vacia solo por falta de recorrido propio."""
     rich_pairs = [(0.75, True)] * 24 + [(0.75, False)] * 8  # 32 >= minimo, bien calibrado
-    thin_pairs = [(0.75, True)] * 5  # muy por debajo del minimo
+    thin_pairs: list[tuple[float, bool]] = []  # NINGUNA liquidacion exacta propia
     with session_scope() as db:
         _seed_settled_predictions(
             db, "track-record-tier-rich", "corners_over_10_5", rich_pairs, tier="EXPERIMENTAL"
@@ -452,9 +458,54 @@ def test_market_track_records_falls_back_to_tier_when_exact_competition_is_insuf
         records = market_track_records_with_provenance(db, competition_code="track-record-tier-thin")
 
     estimate = records[("track-record-tier-thin", "corners_over_10_5")]
+    # Sin NINGUNA liquidacion exacta propia (0 observaciones), nada que
+    # mezclar -- respaldo puro, como antes del shrinkage (ver
+    # `test_market_track_records_shrinks_small_exact_sample_toward_tier_backup`
+    # para el caso real que SI cambia: 1-29 liquidaciones propias).
     assert estimate.source_level == "market_tier"
-    assert estimate.n_observations == len(rich_pairs) + len(thin_pairs)
+    assert estimate.n_observations == len(rich_pairs)
     assert estimate.value > 0.9  # heredado del historico bien calibrado
+
+
+def test_market_track_records_shrinks_small_exact_sample_toward_tier_backup():
+    """Mejora real del Bloque 2.2 (shrinkage bayesiano, ver
+    TRACK_RECORD_SHRINKAGE_K): a diferencia del corte duro anterior (que
+    descartaba ENTERA una muestra exacta de 1-29 liquidaciones y caia
+    100% al respaldo), ahora esa evidencia real SI cuenta, ponderada por
+    su propio tamanho -- `source_level` lo deja explicito
+    ("competition_market_shrunk", nunca igual de puro que "market_tier")
+    y `n_observations` informa la muestra EXACTA real (nunca el total
+    mezclado, que incluiria observaciones de otra competicion)."""
+    rich_pairs = [(0.75, True)] * 24 + [(0.75, False)] * 8  # 32 >= minimo, bien calibrado (~0.97)
+    # Muestra exacta pequenha pero MAL calibrada (0.75 predicho, 0% de
+    # acierto real) -- si el shrinkage de verdad usa esta evidencia, el
+    # resultado debe alejarse del respaldo (bien calibrado) hacia abajo.
+    thin_pairs = [(0.75, False)] * 5
+    with session_scope() as db:
+        _seed_settled_predictions(
+            db, "track-record-tier-shrink-rich", "corners_over_8_5", rich_pairs, tier="EXPERIMENTAL"
+        )
+        _seed_settled_predictions(
+            db, "track-record-tier-shrink-thin", "corners_over_8_5", thin_pairs, tier="EXPERIMENTAL"
+        )
+
+    with session_scope() as db:
+        records = market_track_records_with_provenance(
+            db, competition_code="track-record-tier-shrink-thin"
+        )
+
+    estimate = records[("track-record-tier-shrink-thin", "corners_over_8_5")]
+    assert estimate.source_level == "competition_market_shrunk"
+    assert estimate.n_observations == len(thin_pairs)  # la muestra EXACTA real, no la mezclada
+    # Debe quedar estrictamente por debajo del valor del respaldo puro
+    # (la propia competicion "rich" sola, bien calibrada, sin la
+    # contaminacion de la mala calibracion de "thin") -- bajo el corte
+    # duro anterior, esta muestra de 5 se habria descartado ENTERA y el
+    # resultado habria sido indistinguible del respaldo puro.
+    pure_tier_backup = _track_record_from_observations([(outcome, prob) for prob, outcome in rich_pairs])
+    assert pure_tier_backup is not None
+    backup_value, _ = pure_tier_backup
+    assert estimate.value < backup_value
 
 
 def test_market_track_records_falls_back_to_global_when_tier_is_also_insufficient():
@@ -464,7 +515,7 @@ def test_market_track_records_falls_back_to_global_when_tier_is_also_insufficien
     para que el historico global de este test sea el UNICO contribuyente
     real en la suite."""
     rich_pairs = [(0.75, True)] * 24 + [(0.75, False)] * 8
-    thin_pairs = [(0.75, True)] * 3
+    thin_pairs: list[tuple[float, bool]] = []  # NINGUNA liquidacion exacta propia
     with session_scope() as db:
         _seed_settled_predictions(
             db, "track-record-global-rich", "corners_under_9_5", rich_pairs, tier="CORE"
@@ -480,7 +531,110 @@ def test_market_track_records_falls_back_to_global_when_tier_is_also_insufficien
 
     estimate = records[("track-record-global-thin", "corners_under_9_5")]
     assert estimate.source_level == "market_global"
-    assert estimate.n_observations == len(rich_pairs) + len(thin_pairs)
+    assert estimate.n_observations == len(rich_pairs)
+
+
+def test_market_track_records_shrinks_small_exact_sample_toward_global_backup():
+    """Mismo caso que el shrinkage de tier, pero cuando ni siquiera el
+    tier propio tiene respaldo suficiente y hay que apoyarse en el nivel
+    GLOBAL -- la muestra exacta pequenha (1-29) sigue contando, nunca se
+    descarta entera."""
+    rich_pairs = [(0.75, True)] * 24 + [(0.75, False)] * 8  # tier CORE, bien calibrado
+    thin_pairs = [(0.75, False)] * 5  # tier EXPERIMENTAL propio, mal calibrado
+    with session_scope() as db:
+        _seed_settled_predictions(
+            db, "track-record-global-shrink-rich", "corners_over_9_5", rich_pairs, tier="CORE"
+        )
+        _seed_settled_predictions(
+            db, "track-record-global-shrink-thin", "corners_over_9_5", thin_pairs, tier="EXPERIMENTAL"
+        )
+
+    with session_scope() as db:
+        records = market_track_records_with_provenance(
+            db, competition_code="track-record-global-shrink-thin"
+        )
+
+    estimate = records[("track-record-global-shrink-thin", "corners_over_9_5")]
+    assert estimate.source_level == "competition_market_shrunk"
+    assert estimate.n_observations == len(thin_pairs)
+    pure_global_backup = _track_record_from_observations([(outcome, prob) for prob, outcome in rich_pairs])
+    assert pure_global_backup is not None
+    backup_value, _ = pure_global_backup
+    assert estimate.value < backup_value
+
+
+def test_shrink_toward_backup_returns_pure_backup_when_no_exact_evidence():
+    assert _shrink_toward_backup(None, (0.8, 500)) == (0.8, 500)
+
+
+def test_shrink_toward_backup_returns_pure_exact_when_no_backup_available():
+    assert _shrink_toward_backup((0.6, 12), None) == (0.6, 12)
+
+
+def test_shrink_toward_backup_returns_none_when_neither_level_has_evidence():
+    assert _shrink_toward_backup(None, None) is None
+
+
+def test_shrink_toward_backup_is_an_exact_50_50_blend_at_k_observations():
+    """En `n_exacto == k` (`TRACK_RECORD_SHRINKAGE_K`), la formula da
+    EXACTAMENTE la media de ambos niveles -- el punto de referencia que
+    define que tan fuerte es el respaldo frente a la evidencia propia."""
+    value, n = _shrink_toward_backup((0.4, TRACK_RECORD_SHRINKAGE_K), (0.8, 1000))
+    assert value == pytest.approx(0.6)  # (0.4 + 0.8) / 2
+    assert n == TRACK_RECORD_SHRINKAGE_K  # informa la muestra EXACTA real, nunca la del respaldo
+
+
+def test_shrink_toward_backup_converges_to_exact_as_sample_grows():
+    """Con una muestra exacta mucho mayor que `k`, el respaldo pesa cada
+    vez menos -- nunca diluye una muestra realmente grande."""
+    value, _ = _shrink_toward_backup((0.3, 10_000), (0.9, 1000))
+    assert value == pytest.approx(0.3, abs=0.01)
+
+
+def test_raw_reliability_has_no_minimum_sample_unlike_track_record_from_observations():
+    """`_raw_reliability` es la base del shrinkage: a diferencia de
+    `_track_record_from_observations`, debe devolver algo con 1 sola
+    observacion (el shrinkage decide cuanto pesa, nunca el corte duro de
+    30) y `None` solo con CERO observaciones (ECE no esta definido sin
+    datos)."""
+    assert _raw_reliability([]) is None
+    value, n = _raw_reliability([(True, 0.8)])
+    assert n == 1
+    assert 0.0 <= value <= 1.0
+
+
+def test_shrinkage_estimator_has_lower_mean_squared_error_than_the_old_hard_cutoff():
+    """Validacion por backtest/simulacion pedida explicitamente por la
+    mision (Bloque 2.2: "evaluarse con backtest antes de activarlo en
+    produccion, nunca activarlo a ciegas") -- con datos reales nunca se
+    conoce la fiabilidad VERDADERA de un segmento (es precisamente lo que
+    se intenta estimar), asi que la unica forma honesta de comprobar que
+    el shrinkage mejora sobre el corte duro anterior es una simulacion
+    con verdad conocida, mismo principio que la validacion de la
+    calibracion Isotonic (ver model_service.py::_fit_validated_isotonic_calibrator).
+
+    Simula muchos segmentos con muestra exacta pequenha (10-25
+    observaciones, por debajo del corte duro de 30) cuya fiabilidad REAL
+    se desvia realmente del respaldo (tier) -- el comportamiento ANTERIOR
+    (corte duro: por debajo de 30, usar solo el respaldo, 0% de la
+    muestra exacta) se compara contra el NUEVO (shrinkage, pondera por
+    `n` real) frente a esa verdad conocida."""
+    rng = np.random.default_rng(20261119)
+    backup_value = 0.80  # respaldo (tier) bien estimado con mucha muestra real
+    hard_cutoff_errors = []
+    shrunk_errors = []
+    for _ in range(300):
+        n_i = int(rng.integers(10, 26))  # por debajo del corte duro de 30 (MIN_SETTLED_FOR_TRACK_RECORD)
+        true_value_i = float(np.clip(backup_value + rng.normal(0, 0.12), 0.0, 1.0))
+        noisy_observed = float(np.clip(true_value_i + rng.normal(0, 0.15 / np.sqrt(n_i)), 0.0, 1.0))
+
+        hard_cutoff_estimate = backup_value  # comportamiento ANTERIOR: ignora la muestra exacta entera
+        shrunk_estimate, _ = _shrink_toward_backup((noisy_observed, n_i), (backup_value, 1000))
+
+        hard_cutoff_errors.append((hard_cutoff_estimate - true_value_i) ** 2)
+        shrunk_errors.append((shrunk_estimate - true_value_i) ** 2)
+
+    assert np.mean(shrunk_errors) < np.mean(hard_cutoff_errors)
 
 
 def test_real_performance_report_flags_small_samples_with_wide_confidence_interval():

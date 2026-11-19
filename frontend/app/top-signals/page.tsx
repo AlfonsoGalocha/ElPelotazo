@@ -21,6 +21,11 @@ const SCOPE_LABELS: Record<SignalScope, string> = {
 // de esta competicion exacta -- la etiqueta deja claro de donde sale.
 const RELIABILITY_SOURCE_LABELS: Record<string, string> = {
   competition_market: "esta liga",
+  // Bloque 2.2 de la mision (shrinkage bayesiano, ver
+  // evaluation_service.py::TRACK_RECORD_SHRINKAGE_K): mezcla de poca
+  // muestra de esta liga con un respaldo fiable -- nunca se presenta
+  // como igual de especifica que "esta liga" puro.
+  competition_market_shrunk: "esta liga (muestra pequeña, ajustada)",
   market_tier: "ligas similares",
   market_global: "global",
 };

@@ -161,7 +161,7 @@ export interface Prediction {
 
 export interface PredictionReliability {
   value: number;
-  source_level: "competition_market" | "market_tier" | "market_global";
+  source_level: "competition_market" | "competition_market_shrunk" | "market_tier" | "market_global";
   n_observations: number;
 }
 
