@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     # tampoco descartar senhales sin evidencia de que haga falta). Fija un
     # entero para activar la exclusion dura (`ExclusionReason.STALE_ODDS`).
     max_odds_age_minutes: int | None = None
+    opportunity_max_odds_age_minutes: int = 360
 
     # --- Agente Jarvis (backend/app/agent/) ---
     # Desactivado por defecto: hasta que se ponga una API key real, el

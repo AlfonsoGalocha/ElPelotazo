@@ -301,7 +301,7 @@ class ApiFootballOddsProvider(ApiFootballClient):
             market_names_seen |= seen
             if odds_records:
                 snapshots.append(
-                    FixtureOddsSnapshot(home_name, away_name, commence_time, odds_records)
+                    FixtureOddsSnapshot(home_name, away_name, commence_time, odds_records, f"api-football-{fixture_id}")
                 )
 
         if fixtures and not any(s.odds for s in snapshots):
@@ -327,6 +327,7 @@ class ApiFootballOddsProvider(ApiFootballClient):
                 s.away_team_raw,
                 s.commence_time,
                 [r for r in s.odds if r.market == "corners_total"],
+                s.provider_fixture_id,
             )
             for s in snapshots
         ]
@@ -336,7 +337,16 @@ class ApiFootballOddsProvider(ApiFootballClient):
     def _parse_odds_response(odds_response: list[dict]) -> tuple[list[RawOddsRecord], set[str]]:
         records: list[RawOddsRecord] = []
         names_seen: set[str] = set()
+        fetched_at = dt.datetime.utcnow()
         for entry in odds_response:
+            updated_at = None
+            if isinstance(entry.get("update"), str):
+                try:
+                    parsed = dt.datetime.fromisoformat(entry["update"].replace("Z", "+00:00"))
+                    if parsed.tzinfo is not None:
+                        updated_at = parsed.astimezone(dt.timezone.utc).replace(tzinfo=None)
+                except ValueError:
+                    pass
             for bookmaker in entry.get("bookmakers", []):
                 bookmaker_key = bookmaker.get("name", "unknown")
                 for bet in bookmaker.get("bets", []):
@@ -360,6 +370,8 @@ class ApiFootballOddsProvider(ApiFootballClient):
                             bookmaker_key, market_key, value_kind, value
                         )
                         if record is not None:
+                            record.provider_updated_at = updated_at
+                            record.fetched_at = fetched_at
                             records.append(record)
         return records, names_seen
 

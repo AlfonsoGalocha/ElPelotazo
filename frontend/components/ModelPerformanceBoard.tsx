@@ -103,6 +103,9 @@ export default function ModelPerformanceBoard({ segments }: { segments: Performa
 
   return (
     <>
+      <p className="text-xs text-slate-400">
+        Predicciones registradas antes del inicio. La procedencia completa de los datos aún está pendiente de verificar.
+      </p>
       {leagueCodes.length > 1 && (
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-slate-500">Liga:</span>

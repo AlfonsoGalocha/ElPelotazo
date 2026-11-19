@@ -75,3 +75,13 @@ def test_calibrator_rejected_with_insufficient_sample_for_validation_split():
     assert calibrator is None
     assert report["accepted"] is False
     assert "insuficiente" in report["reason"]
+
+
+def test_isotonic_temporal_split_does_not_break_simultaneous_kickoffs():
+    y = np.tile([0, 1], 30)
+    p = np.tile([0.25, 0.75], 30)
+    dates = np.repeat(np.arange(6), 10)
+    _, report = _fit_validated_isotonic_calibrator(p, y, dates)
+    assert report["n_validation"] == 10
+    assert report["n_test"] == 50
+    assert report["log_loss_after"] <= report["log_loss_before"]

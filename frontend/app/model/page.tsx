@@ -1,5 +1,6 @@
 import { BarChart3 } from "lucide-react";
-import { getHistory, getModelPerformance } from "@/lib/api";
+import { getHistory, getModelPerformance, getPublications } from "@/lib/api";
+import CalibrationChart from "@/components/CalibrationChart";
 import ModelPerformanceTabs, { type Tab } from "@/components/ModelPerformanceTabs";
 
 const VALID_TABS: Tab[] = ["resumen", "jornadas", "competiciones", "versiones"];
@@ -19,13 +20,14 @@ export default async function ModelPerformancePage({
   searchParams: { tab?: string };
 }) {
   const initialTab = VALID_TABS.includes(searchParams.tab as Tab) ? (searchParams.tab as Tab) : "resumen";
-  const [report, history] = await Promise.all([
+  const [report, history, publications] = await Promise.all([
     getModelPerformance().catch(() => ({ segments: [] })),
     // Limite alto, sin filtrar por liga server-side: la subseccion
     // "Jornadas" agrupa/filtra en el cliente (mismo patron que el
     // antiguo /history), para poder cambiar de liga sin otra ida y
     // vuelta al backend para la vista por defecto.
     getHistory(undefined, 150).catch(() => []),
+    getPublications().catch(() => null),
   ]);
 
   return (
@@ -33,16 +35,36 @@ export default async function ModelPerformancePage({
       <div>
         <h1 className="mb-1 flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-100">
           <BarChart3 className="h-5 w-5 text-accent" />
-          Rendimiento del modelo
+          Laboratorio del modelo
         </h1>
-        <p className="text-sm text-slate-500">
-          Cada predicción se registra ANTES del pitido inicial (fotografía inmutable: probabilidad,
-          cuota, edge y versión del modelo en ese momento, nunca recalculada después) y se liquida
-          contra el resultado real en cuanto el partido termina. Nada aquí es una garantía de
-          resultados futuros: es lo que ha pasado hasta ahora, con los datos disponibles.
+        <p className="text-sm text-slate-400">
+          El acierto se mide sobre el pronóstico principal. La calibración usa todas las probabilidades de 1X2.
         </p>
       </div>
-
+      <section className="grid gap-4 lg:grid-cols-3" aria-label="Capturas prepartido">
+        {publications?.metrics.length ? publications.metrics.map(metric => (
+          <article key={metric.family} className="rounded-xl border border-surface-border p-4">
+            <h2 className="font-semibold">{metric.family}</h2>
+            <p className="text-sm text-slate-300">{metric.n} partidos · {metric.wins} aciertos · {metric.losses} fallos · {(100 * metric.wins / metric.n).toFixed(1)} %</p>
+            <p className="text-xs text-slate-400">Brier {metric.brier.toFixed(3)} · Log Loss {metric.log_loss.toFixed(3)} · ECE {metric.ece.toFixed(3)}</p>
+            <CalibrationChart buckets={metric.calibration.map(b => ({
+              range: `${Math.round(b.low * 100)}–${Math.round(b.high * 100)} %`,
+              n: b.n, predicted_probability_mean: b.predicted, empirical_frequency: b.observed,
+            }))} />
+            <details className="text-sm text-slate-300">
+              <summary className="cursor-pointer">Por competición y modelo</summary>
+              {metric.segments.map(s => (
+                <p key={`${s.competition}-${s.model_version}`}>
+                  {s.competition} · Modelo {s.model_version} · n={s.n} · Brier {s.brier.toFixed(3)} · Log Loss {s.log_loss.toFixed(3)}
+                </p>
+              ))}
+            </details>
+          </article>
+        )) : <p className="text-sm text-slate-400">
+          {publications ? "Aún no hay capturas oficiales liquidadas." : "No se pudieron consultar las capturas oficiales."}
+        </p>}
+      </section>
+      <h2 className="text-lg font-semibold">Evaluación histórica anterior a las capturas oficiales</h2>
       <ModelPerformanceTabs segments={report.segments} historyRows={history} initialTab={initialTab} />
     </div>
   );

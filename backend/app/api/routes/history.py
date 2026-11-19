@@ -8,14 +8,18 @@ original ya paso).
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.app.api.routes.predictions import serialize_prediction
 from backend.app.db.database import get_db
 from backend.app.db.models.core import Competition
-from backend.app.db.models.matches import Match
-from backend.app.db.models.modeling import Prediction, PredictionResult
+from backend.app.db.models.features import TeamMatchFeatures
+from backend.app.db.models.matches import CornerObservation, Match, MatchOddsHistory
+from backend.app.db.models.modeling import Prediction, PredictionResult, PredictionSnapshot
+from backend.app.prediction.eligibility import corner_verification, recorded_origin
 from backend.app.prediction.anomaly import best_prediction_per_match
 from backend.app.schemas.prediction import HistoryPredictionOut, MatchHistoryOut
 from backend.app.services.evaluation_service import fit_edge_reliability_curve
@@ -23,22 +27,37 @@ from backend.app.services.evaluation_service import fit_edge_reliability_curve
 router = APIRouter(prefix="/history", tags=["history"])
 
 
-def _serialize_history_prediction(prediction: Prediction, is_best: bool) -> dict:
+def _serialize_history_prediction(prediction: Prediction, is_best: bool, observed_total: int | None = None) -> dict:
     result: PredictionResult | None = prediction.result
     is_void = result is not None and result.settlement_status == "void"
+    match = prediction.match
+    verification = corner_verification(
+        prediction.market, match.statistics if match else None, result.outcome if result else None, observed_total
+    )
     base = serialize_prediction(prediction, is_best_prediction=is_best)
     return {
         **base,
+        "origin_status": recorded_origin(prediction, match, datetime.utcnow()),
+        "settlement_verification": verification,
         "actual_result": result.actual_result if result else None,
         # Nunca True/False para una liquidacion "void" (partido
         # cancelado): no hubo un acierto/fallo real que mostrar, el
         # frontend la trata igual que "sin resolver" para el color
         # (ambas grises), pero `settlement_status` distingue el texto.
-        "is_correct": (result.outcome if (result and not is_void) else None),
+        "is_correct": (result.outcome if result and not is_void and verification in {"confirmed", "not_applicable"} else None),
         "settled_at": result.settled_at if result else None,
         "closing_line_value": result.closing_line_value if result else None,
         "settlement_status": result.settlement_status if result else None,
     }
+
+
+def _latest_corners(db: Session, match_ids: list[int]) -> dict[int, int]:
+    rows = (
+        db.query(CornerObservation.match_id, CornerObservation.total)
+        .filter(CornerObservation.match_id.in_(match_ids))
+        .order_by(CornerObservation.id).all()
+    )
+    return dict(rows)
 
 
 @router.get("", response_model=list[MatchHistoryOut])
@@ -70,6 +89,7 @@ def list_history(
         edge_reliability_curve=fit_edge_reliability_curve(db),
     )
 
+    corner_totals = _latest_corners(db, match_ids)
     out: list[dict] = []
     for match in matches:
         predictions = by_match.get(match.id, [])
@@ -80,7 +100,8 @@ def list_history(
             {
                 "match": match,
                 "predictions": [
-                    _serialize_history_prediction(p, best is not None and p.id == best.id) for p in predictions
+                    _serialize_history_prediction(p, best is not None and p.id == best.id, corner_totals.get(p.match_id))
+                    for p in predictions
                 ],
                 "best_prediction_id": best.id if best else None,
             }
@@ -102,10 +123,67 @@ def get_history_detail(match_id: int, db: Session = Depends(get_db)) -> dict:
         {match_id: predictions},
         edge_reliability_curve=fit_edge_reliability_curve(db),
     ).get(match_id)
+    corner_totals = _latest_corners(db, [match_id])
     return {
         "match": match,
         "predictions": [
-            _serialize_history_prediction(p, best is not None and p.id == best.id) for p in predictions
+            _serialize_history_prediction(p, best is not None and p.id == best.id, corner_totals.get(p.match_id))
+                    for p in predictions
         ],
         "best_prediction_id": best.id if best else None,
     }
+
+
+@router.get("/{match_id}/snapshots")
+def archived_predictions(match_id: int, limit: int = Query(50, ge=1, le=200), db: Session = Depends(get_db)):
+    match = db.get(Match, match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Partido no encontrado")
+    snapshots = (
+        db.query(PredictionSnapshot).filter_by(match_id=match_id)
+        .order_by(PredictionSnapshot.id.desc()).limit(limit).all()
+    )
+    versions = {row.feature_set_version for row in snapshots if row.feature_set_version is not None}
+    features = (
+        db.query(TeamMatchFeatures).filter_by(match_id=match_id)
+        .filter(TeamMatchFeatures.feature_set_version.in_(versions)).all()
+    )
+    quote_ids = {
+        quote_id
+        for row in snapshots
+        for quote_id in (row.features_used.get("consensus_input_history_ids") or [])
+    }
+    odds_inputs = db.query(MatchOddsHistory).filter(
+        MatchOddsHistory.id.in_(quote_ids), MatchOddsHistory.match_id == match_id
+    ).all()
+    return {
+        "snapshots": [
+            {"snapshot": row, "origin_status": recorded_origin(row, match, datetime.utcnow())}
+            for row in snapshots
+        ],
+        "feature_snapshots": features,
+        "consensus_input_quotes": odds_inputs,
+    }
+
+
+@router.get("/{match_id}/odds")
+def archived_odds(
+    match_id: int,
+    market: str,
+    selection: str,
+    line: float | None = None,
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(MatchOddsHistory).filter_by(
+            match_id=match_id, market=market, line=line, selection=selection
+        ).order_by(MatchOddsHistory.id.desc()).limit(limit).all()
+    )
+
+
+@router.get("/{match_id}/corner-observations")
+def corner_observations(match_id: int, db: Session = Depends(get_db)):
+    return db.query(CornerObservation).filter_by(match_id=match_id).order_by(
+        CornerObservation.id.desc()
+    ).all()

@@ -22,10 +22,11 @@ def test_get_opportunity_odds_band_defaults_to_settings_when_nothing_was_saved(d
     assert (min_odds, max_odds) == (1.35, 1.90)
 
 
-def test_get_opportunity_odds_band_creates_exactly_one_row(db_session):
+def test_get_opportunity_odds_band_does_not_write_defaults(db_session):
+    db_session.query(RankingConfig).delete()
     get_opportunity_odds_band(db_session)
     get_opportunity_odds_band(db_session)
-    assert db_session.query(RankingConfig).count() == 1
+    assert db_session.query(RankingConfig).count() == 0
 
 
 def test_set_opportunity_odds_band_persists_and_is_read_back(db_session):

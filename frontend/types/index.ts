@@ -141,7 +141,10 @@ export interface Prediction {
   market_odds_min: number | null;
   market_odds_max: number | null;
   market_odds_median: number | null;
+  has_statistical_value?: boolean;
+  value_exclusion?: string | null;
   market_odds_average: number | null;
+  odds_origin_at?: string | null;
   market_quality: "HIGH" | "MEDIUM" | "LOW" | null;
   odds_age_minutes: number | null;
   is_stale_odds: boolean;
@@ -190,6 +193,8 @@ export interface HistoryPrediction extends Prediction {
   // ese caso `is_correct` sigue siendo la fuente de verdad (ver
   // backend/app/db/models/modeling.py::PredictionResult.settlement_status).
   settlement_status: string | null;
+  settlement_verification?: "confirmed" | "unverified" | "disputed" | "not_applicable";
+  origin_status?: string;
 }
 
 export interface MatchHistory {

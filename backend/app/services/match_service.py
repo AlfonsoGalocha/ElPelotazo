@@ -8,10 +8,11 @@ from sqlalchemy.orm import Session
 from backend.app.db.models.core import Season
 from backend.app.db.models.matches import Match, MatchOdds, MatchStatistics
 from backend.app.market.odds import best_available_quote
+from backend.app.prediction.eligibility import observed_corner_total
 
 
 def load_matches_dataframe(db: Session, competition_id: int | None = None) -> pd.DataFrame:
-    query = db.query(Match, MatchStatistics, Season).join(
+    query = db.query(Match, MatchStatistics, Season, observed_corner_total()).join(
         MatchStatistics, MatchStatistics.match_id == Match.id, isouter=True
     ).join(Season, Season.id == Match.season_id)
 
@@ -19,7 +20,7 @@ def load_matches_dataframe(db: Session, competition_id: int | None = None) -> pd
         query = query.filter(Match.competition_id == competition_id)
 
     rows = []
-    for match, stats, season in query.all():
+    for match, stats, season, observed_corners in query.all():
         rows.append(
             {
                 "match_id": match.id,
@@ -27,6 +28,7 @@ def load_matches_dataframe(db: Session, competition_id: int | None = None) -> pd
                 "season_id": match.season_id,
                 "season_label": season.label,
                 "date": match.kickoff_utc,
+                "status": match.status,
                 "home_team_id": match.home_team_id,
                 "away_team_id": match.away_team_id,
                 "referee_id": match.referee_id,
@@ -36,6 +38,7 @@ def load_matches_dataframe(db: Session, competition_id: int | None = None) -> pd
                 "away_shots": stats.away_shots if stats else None,
                 "home_shots_on_target": stats.home_shots_on_target if stats else None,
                 "away_shots_on_target": stats.away_shots_on_target if stats else None,
+                "observed_total_corners": observed_corners,
                 "home_corners": stats.home_corners if stats else None,
                 "away_corners": stats.away_corners if stats else None,
                 "home_fouls": stats.home_fouls if stats else None,

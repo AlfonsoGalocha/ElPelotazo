@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import io
+from pathlib import Path
 
+import joblib
 import pandas as pd
 from sqlalchemy.orm import Session
 
@@ -25,7 +29,6 @@ from backend.app.services.evaluation_service import (
     market_track_records,
 )
 from backend.app.services.match_service import load_matches_dataframe
-from backend.app.services.model_service import load_model_artifact
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -164,12 +167,14 @@ def _persist_team_match_features(
     prefijo `home_`/`away_` -- nunca las columnas crudas del partido
     (`home_goals`, etc.), que `feature_columns()` ya excluye explicitamente
     por ser leakage severo (ver features/goals.py)."""
+    shared_cols = [c for c in feature_cols if not c.startswith(("home_", "away_"))]
     home_cols = [c for c in feature_cols if c.startswith("home_")]
     away_cols = [c for c in feature_cols if c.startswith("away_")]
     as_of = dt.datetime.utcnow()
     for _, row in target_matches.iterrows():
         match_id = int(row["match_id"])
         home_features = {c[len("home_") :]: _json_safe_feature_value(row[c]) for c in home_cols}
+        home_features["match_features"] = {c: _json_safe_feature_value(row[c]) for c in shared_cols}
         away_features = {c[len("away_") :]: _json_safe_feature_value(row[c]) for c in away_cols}
         db.add(
             TeamMatchFeatures(
@@ -219,21 +224,31 @@ def generate_predictions_for_competition(
         logger.warning("prediction_service.no_model", extra={"competition": competition_code})
         return []
 
-    artifact = load_model_artifact(model_versions)
+    artifact_bytes = Path(model_versions.artifact_path).read_bytes()
+    model_artifact_sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+    artifact = joblib.load(io.BytesIO(artifact_bytes))
     matches = load_matches_dataframe(db, competition.id)
+    if matches.empty:
+        return []
     table = build_match_feature_table(matches)
 
-    target_matches = table[table["home_goals"].isna()]
+    target_matches = table[
+        (table["status"] == "scheduled")
+        & (table["date"] > dt.datetime.utcnow())
+        & table["home_goals"].isna()
+        & table["away_goals"].isna()
+    ]
     if target_date is not None:
         target_matches = target_matches[target_matches["date"].dt.date == target_date]
     if target_matches.empty:
         return []
 
+    feature_set_version = f"{model_versions.version}@{dt.datetime.utcnow().isoformat()}"
     _persist_team_match_features(
         db,
         target_matches,
         feature_columns(table),
-        feature_set_version=f"{model_versions.version}@{dt.datetime.utcnow().isoformat()}",
+        feature_set_version=feature_set_version,
     )
 
     match_odds_rows = {
@@ -242,10 +257,23 @@ def generate_predictions_for_competition(
     market_quotes = {}
     for match_id, odds_rows in match_odds_rows.items():
         for market_key, (market, line, selection) in ALL_MARKET_TO_ODDS_LOOKUP.items():
-            consensus = compute_market_consensus(odds_rows, market, line, selection)
+            market_rows = [
+                odds for odds in odds_rows
+                if odds.market == market and odds.line == line and odds.snapshot_type == "pre_match"
+            ]
+            consensus = compute_market_consensus(market_rows, market, line, selection)
             if consensus.market_probability is None:
                 continue
             market_quotes[(match_id, market_key)] = {
+                "odds_origin_at": min(o.provider_updated_at for o in market_rows)
+                if market_rows and all(
+                    o.provider_updated_at is not None and o.fetched_at is not None
+                    and o.recorded_at is not None
+                    and o.provider_updated_at <= o.fetched_at <= o.recorded_at
+                    for o in market_rows
+                ) else None,
+                "history_quote_ids": sorted(o.history_quote_id for o in market_rows)
+                if all(o.history_quote_id is not None for o in market_rows) else None,
                 "market_probability": consensus.market_probability,
                 "market_odds": consensus.market_odds,
                 "vig_removed": consensus.market_probability_source == "consensus_no_vig"
@@ -337,6 +365,8 @@ def generate_predictions_for_competition(
                     market_odds_max=old.market_odds_max,
                     market_odds_median=old.market_odds_median,
                     market_odds_average=old.market_odds_average,
+                    odds_origin_at=old.odds_origin_at,
+                    feature_set_version=old.feature_set_version,
                     signal_score=old.signal_score,
                     created_at=old.created_at,
                 )
@@ -357,6 +387,7 @@ def generate_predictions_for_competition(
     predictions = []
     for output in outputs:
         line, selection = _market_line_and_selection(output.market)
+        captured_market = market_quotes.get((output.match_id, output.market), {})
         prediction = Prediction(
             match_id=output.match_id,
             market=output.market,
@@ -372,7 +403,11 @@ def generate_predictions_for_competition(
             confidence=output.confidence,
             data_quality=output.data_quality,
             explanation={"factors": output.explanation},
-            features_used={"feature_names": [f["feature"] for f in output.explanation]},
+            features_used={
+                "feature_names": [f["feature"] for f in output.explanation],
+                "model_artifact_sha256": model_artifact_sha256,
+                "consensus_input_history_ids": captured_market.get("history_quote_ids"),
+            },
             market_probability_source=output.market_probability_source,
             bookmakers_count=output.bookmakers_count,
             bookmakers_used=output.bookmakers_used,
@@ -380,6 +415,8 @@ def generate_predictions_for_competition(
             market_odds_max=output.market_odds_max,
             market_odds_median=output.market_odds_median,
             market_odds_average=output.market_odds_average,
+            odds_origin_at=captured_market.get("odds_origin_at"),
+            feature_set_version=feature_set_version,
             calibrated_probability=output.calibrated_probability,
             uncertainty_low=output.uncertainty_low,
             uncertainty_high=output.uncertainty_high,
@@ -409,5 +446,8 @@ def generate_predictions_for_competition(
         db.add(prediction)
         predictions.append(prediction)
 
+    from backend.app.services.publication_service import capture_publications
+
+    capture_publications(db, predictions, track_records)
     db.commit()
     return predictions

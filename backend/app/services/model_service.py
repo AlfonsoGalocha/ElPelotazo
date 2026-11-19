@@ -13,7 +13,12 @@ from backend.app.db.models.core import Competition
 from backend.app.db.models.modeling import ModelVersion
 from backend.app.features.goals import build_match_feature_table, feature_columns
 from backend.app.models.calibration.calibrators import IsotonicCalibrator
-from backend.app.models.calibration.metrics import brier_score, log_loss_score
+from backend.app.models.calibration.metrics import (
+    brier_score,
+    expected_calibration_error,
+    log_loss_score,
+    reliability_curve,
+)
 from backend.app.models.ensemble.ensemble import learn_ensemble_weights
 from backend.app.models.goals.baseline import LeagueAverageBaseline
 from backend.app.models.goals.dixon_coles import DixonColesModel
@@ -42,8 +47,7 @@ logger = get_logger(__name__)
 
 MIN_HOLDOUT_MATCHES = 100  # una temporada en curso con pocos partidos jugados
 # no es un holdout fiable (demasiado ruido estadistico); se usa la ultima
-# temporada COMPLETA en su lugar y la temporada en curso se deja dentro del
-# train (son datos reales validos, solo no sirven para evaluar).
+# temporada con muestra suficiente. Solo se ajusta con fechas anteriores.
 
 MIN_CALIBRATION_MATCHES = 60  # ajustar un IsotonicRegression con menos
 # puntos que esto sobreajusta al ruido del holdout (seccion 11 del brief):
@@ -56,7 +60,7 @@ MIN_CALIBRATION_VALIDATION_SAMPLES = 10  # idem
 
 
 def _fit_validated_isotonic_calibrator(
-    p_ensemble: np.ndarray, y_true: np.ndarray
+    p_ensemble: np.ndarray, y_true: np.ndarray, dates: np.ndarray | None = None
 ) -> tuple[IsotonicCalibrator | None, dict]:
     """Ajusta Isotonic Regression SOLO si demuestra mejorar el Brier score
     en un sub-split de validacion DISJUNTO del usado para ajustarlo --
@@ -97,6 +101,8 @@ def _fit_validated_isotonic_calibrator(
     calibrar ya se tomo con evidencia honesta fuera de muestra."""
     n = len(y_true)
     n_val = int(n * CALIBRATION_VALIDATION_FRACTION)
+    if dates is not None and n_val < n:
+        n_val = int(np.searchsorted(dates, dates[n_val], side="left"))
     n_test = n - n_val
     if n_val < MIN_CALIBRATION_VALIDATION_SAMPLES or n_test < MIN_CALIBRATION_VALIDATION_SAMPLES:
         return None, {
@@ -111,8 +117,16 @@ def _fit_validated_isotonic_calibrator(
     brier_before = brier_score(y_true[test_idx], p_ensemble[test_idx])
     brier_after = brier_score(y_true[test_idx], calibrated_test)
 
+    log_before = log_loss_score(y_true[test_idx], p_ensemble[test_idx])
+    log_after = log_loss_score(y_true[test_idx], calibrated_test)
     report = {
-        "accepted": bool(brier_after < brier_before),
+        "accepted": bool(brier_after < brier_before and log_after <= log_before),
+        "log_loss_before": log_before,
+        "log_loss_after": log_after,
+        "ece_before": expected_calibration_error(y_true[test_idx], p_ensemble[test_idx]),
+        "ece_after": expected_calibration_error(y_true[test_idx], calibrated_test),
+        "reliability_before": reliability_curve(y_true[test_idx], p_ensemble[test_idx]),
+        "reliability_after": reliability_curve(y_true[test_idx], calibrated_test),
         "brier_before": brier_before,
         "brier_after": brier_after,
         "n_validation": int(n_val),
@@ -181,7 +195,7 @@ def _pick_holdout_season(table) -> str | None:
     if len(seasons_in_order) < 2:
         return None
 
-    for candidate in reversed(seasons_in_order):
+    for candidate in reversed(seasons_in_order[1:]):
         if counts[candidate] >= MIN_HOLDOUT_MATCHES:
             return candidate
     return seasons_in_order[-1]
@@ -198,26 +212,26 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
         raise ValueError(f"Competicion no encontrada: {competition_code}")
 
     matches = load_matches_dataframe(db, competition.id)
-    finished = matches.dropna(subset=["home_goals", "away_goals"])
+    if matches.empty:
+        return {"competition": competition_code, "status": "insufficient_data", "n_matches": 0}
+    finished = matches[
+        (matches["status"] == "finished") & (matches["date"] < dt.datetime.utcnow())
+    ].dropna(subset=["home_goals", "away_goals"])
     if len(finished) < 50:
-        logger.warning(
-            "model_service.insufficient_data",
-            extra={"competition": competition_code, "n": len(finished)},
-        )
-        return {
-            "competition": competition_code,
-            "status": "insufficient_data",
-            "n_matches": len(finished),
-        }
+        return {"competition": competition_code, "status": "insufficient_data", "n_matches": len(finished)}
 
-    table = build_match_feature_table(matches)
+    table = build_match_feature_table(finished.sort_values("date"))
 
     holdout_season = _pick_holdout_season(table)
     if holdout_season:
-        train_table = table[table["season_label"] != holdout_season]
         eval_table = table[table["season_label"] == holdout_season]
+        train_table = table[table["date"] < eval_table["date"].min()]
     else:
-        train_table, eval_table = table, table
+        split_date = table.iloc[int(len(table) * 0.7)]["date"]
+        train_table = table[table["date"] < split_date]
+        eval_table = table[table["date"] >= split_date]
+    if train_table.empty or eval_table.empty:
+        return {"competition": competition_code, "status": "insufficient_temporal_split"}
 
     baseline = LeagueAverageBaseline().fit(train_table)
     dixon_coles = DixonColesModel().fit(train_table)
@@ -242,13 +256,19 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     p_ensemble_by_market: dict[str, object] = {}
     y_true_by_market: dict[str, object] = {}
 
-    eval_finished = eval_table.dropna(subset=["home_goals", "away_goals"])
+    eval_finished = eval_table.sort_values("date")
+    split_at = eval_finished.iloc[int(len(eval_finished) * 0.4)]["date"]
+    selection_mask = (eval_finished["date"] < split_at).to_numpy()
+    if not selection_mask.any():
+        return {"competition": competition_code, "status": "insufficient_temporal_split"}
+    calibration_mask = ~selection_mask
+    model_selection = eval_finished.loc[selection_mask]
     grouped_markets = {m for group in MUTUALLY_EXCLUSIVE_GROUPS for m in group}
     # "multinomial_joint" no cubre mercados fuera de un grupo (ver
     # MultinomialGroupClassifier): la comparacion por grupo solo tiene
     # sentido con los candidatos que SI cubren esos mercados.
     ml_winner_by_group_market = (
-        _choose_ml_source_per_group(ml_candidate_models, eval_finished)
+        _choose_ml_source_per_group(ml_candidate_models, model_selection)
         if len(eval_finished) > 0
         else {}
     )
@@ -292,18 +312,21 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
                 winner = (winner_name, winner_source, p_by_candidate[winner_name])
             else:
                 candidates = [
-                    (name, model, p_by_candidate[name])
+                    (name, model, p_by_candidate[name][selection_mask] if p_by_candidate[name] is not None else None)
                     for name, model in ungrouped_candidate_models.items()
                 ]
-                winner = pick_best_candidate(y_true, candidates)
+                winner = pick_best_candidate(y_true[selection_mask], candidates)
 
             if winner is not None and winner[2] is not None:
-                winner_name, winner_source, p_ml = winner
+                winner_name, winner_source, _ = winner
+                p_ml = p_by_candidate[winner_name]
                 winner_pipeline = winner_source.pipelines_[market_key]
                 selected_ml.register(market_key, winner_source, winner_name, winner_pipeline)
                 market_metrics["ml_winner"] = winner_name
 
-                weights, ensemble_loss = learn_ensemble_weights([p_dc, p_ml], y_true)
+                weights, ensemble_loss = learn_ensemble_weights(
+                    [p_dc[selection_mask], p_ml[selection_mask]], y_true[selection_mask]
+                )
                 ensemble_weights[market_key] = weights[0]
                 market_metrics["ensemble"] = {
                     "weight_statistical": weights[0],
@@ -322,7 +345,7 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     # Ajustado SOLO en el holdout (nunca visto por dixon_coles/ml_classifier
     # durante el fit), igual que `learn_ensemble_weight` -- no hay leakage.
     calibrators: dict[str, IsotonicCalibrator] = {}
-    if len(eval_finished) >= MIN_CALIBRATION_MATCHES:
+    if int(calibration_mask.sum()) >= MIN_CALIBRATION_MATCHES:
         p_ensemble_by_market = renormalize_mutually_exclusive_groups(p_ensemble_by_market)
         calibration_reports: dict[str, dict] = {}
         for market_key, p_ensemble in p_ensemble_by_market.items():
@@ -330,7 +353,9 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
             if y_true is None or len(set(y_true.tolist())) < 2:
                 continue
             calibrator, report = _fit_validated_isotonic_calibrator(
-                np.asarray(p_ensemble, dtype=float), y_true
+                np.asarray(p_ensemble, dtype=float)[calibration_mask],
+                y_true[calibration_mask],
+                eval_finished.loc[calibration_mask, "date"].to_numpy(),
             )
             calibration_reports[market_key] = report
             if calibrator is not None:
@@ -339,6 +364,9 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
             "method": "isotonic" if calibrators else None,
             "n_holdout_matches": len(eval_finished),
             "markets_calibrated": sorted(calibrators.keys()),
+            "n_model_selection": int(selection_mask.sum()),
+            "n_calibration_pool": int(calibration_mask.sum()),
+            "temporal_diagnostics": calibration_reports,
             # Mercados con evidencia suficiente para intentar calibrar pero
             # SIN mejora real demostrada (o muestra insuficiente para
             # validar): quedan en model_probability cruda, nunca sin
@@ -420,13 +448,18 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
         version=version,
         market_family="goals",
         training_start=train_table["date"].min().date() if len(train_table) else None,
-        training_end=train_table["date"].max().date() if len(train_table) else None,
+        training_end=max(train_table["date"].max(), eval_table["date"].max()).date(),
         features=feature_columns(table),
-        hyperparameters={"holdout_season": holdout_season},
+        hyperparameters={
+            "holdout_season": holdout_season,
+            "base_fit_end": train_table["date"].max().isoformat(),
+            "selection_end": eval_table["date"].max().isoformat(),
+        },
         metrics=metrics,
         dataset_version=f"{competition_code}:{len(finished)}_matches",
         calibration_method="isotonic" if calibrators else None,
         artifact_path=str(artifact_path),
+        is_active=False,
     )
     db.add(model_version)
     db.commit()

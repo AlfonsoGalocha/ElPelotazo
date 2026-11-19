@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 
 
 class ExclusionReason(str, Enum):
+    NO_CALIBRATION = "calibracion_no_disponible"
+    NO_UNCERTAINTY = "incertidumbre_no_disponible"
+    UNVERIFIED_ODDS_ORIGIN = "origen_cuota_no_verificado"
     NO_MARKET = "sin_mercado"  # no hay market_probability/market_odds en absoluto
     INVALID_ODDS = "cuota_invalida"  # cuota <= 1.0 o por debajo del minimo configurado
     ODDS_TOO_HIGH = (
@@ -103,22 +106,26 @@ def evaluate_quality_gate(
     if prediction.data_quality < settings.min_data_quality:
         return ExclusionReason.LOW_DATA_QUALITY
     if settings.max_odds_age_minutes is not None:
-        # `created_at` es cuando se genero ESTA prediccion, capturando el
-        # `market_probability`/`market_odds` vigentes en ese momento (ver
-        # services/prediction_service.py) -- es la marca de frescura real
-        # de la cuota usada, no una fecha inventada.
-        age_minutes = (dt.datetime.utcnow() - prediction.created_at).total_seconds() / 60.0
-        if age_minutes > settings.max_odds_age_minutes:
-            return ExclusionReason.STALE_ODDS
+        return _odds_freshness_exclusion(prediction, settings.max_odds_age_minutes)
     return None
 
 
-def odds_age_minutes(prediction: Prediction) -> float:
-    """Antigueedad en minutos de la cuota usada por esta prediccion (ver
-    `created_at` en evaluate_quality_gate). Siempre visible en la UI
-    (seccion 12: "cuotas actualizadas hace X minutos"), independientemente
-    de si `max_odds_age_minutes` esta activado para excluir senhales."""
-    return (dt.datetime.utcnow() - prediction.created_at).total_seconds() / 60.0
+def odds_age_minutes(prediction: Prediction) -> float | None:
+    """Age of the oldest provider timestamp used in this consensus, in UTC."""
+    origin = prediction.odds_origin_at
+    now = dt.datetime.utcnow()
+    if origin is None or prediction.created_at is None or origin > min(now, prediction.created_at):
+        return None
+    return (now - origin).total_seconds() / 60.0
+
+
+def _odds_freshness_exclusion(prediction: Prediction, max_minutes: int) -> ExclusionReason | None:
+    age = odds_age_minutes(prediction)
+    if age is None:
+        return ExclusionReason.UNVERIFIED_ODDS_ORIGIN
+    if age > max_minutes:
+        return ExclusionReason.STALE_ODDS
+    return None
 
 
 # Penaliza la "MEJOR PREDICCION"/"MEJOR SENHAL" cuando la cuota de consenso
@@ -666,12 +673,17 @@ def evaluate_quality_gate_v3(
         return ExclusionReason.INSUFFICIENT_BOOKMAKERS
     if prediction.data_quality < settings.min_data_quality:
         return ExclusionReason.LOW_DATA_QUALITY
-    if settings.max_odds_age_minutes is not None:
-        age_minutes = (dt.datetime.utcnow() - prediction.created_at).total_seconds() / 60.0
-        if age_minutes > settings.max_odds_age_minutes:
-            return ExclusionReason.STALE_ODDS
+    freshness = _odds_freshness_exclusion(
+        prediction, settings.max_odds_age_minutes or settings.opportunity_max_odds_age_minutes
+    )
+    if freshness is not None:
+        return freshness
 
-    calibrated = calibrated_probability_or_fallback(prediction)
+    calibrated = prediction.calibrated_probability
+    if calibrated is None:
+        return ExclusionReason.NO_CALIBRATION
+    if prediction.uncertainty_low is None or prediction.uncertainty_high is None:
+        return ExclusionReason.NO_UNCERTAINTY
     ev_estimated = ev_with_probability(calibrated, prediction.market_odds)
     if ev_estimated is None or ev_estimated <= 0.0:
         return ExclusionReason.NON_POSITIVE_ESTIMATED_EV

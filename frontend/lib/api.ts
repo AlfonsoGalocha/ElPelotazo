@@ -84,6 +84,7 @@ export type SignalScope = "current_round" | "next_round" | "all_upcoming";
 
 export interface TopSignalsOptions {
   limit?: number;
+  perMatch?: number;
   date?: string;
   sortBy?: "score" | "edge";
   // "current_round" (por defecto): solo la jornada actual de cada
@@ -119,11 +120,12 @@ export interface TopSignalsOptions {
 // `sortBy`: "score" (por defecto, ranking compuesto) o "edge" (de mayor a
 // menor edge en crudo) -- solo cambia el ORDEN, el filtro de calidad es
 // el mismo.
-export function getTopSignals(opts: TopSignalsOptions = {}): Promise<Prediction[]> {
+export function getTopSignals(opts: TopSignalsOptions = {}, available = false): Promise<Prediction[]> {
   const {
     limit = 20,
     date,
     sortBy,
+    perMatch,
     scope,
     days,
     competitionCode,
@@ -136,6 +138,7 @@ export function getTopSignals(opts: TopSignalsOptions = {}): Promise<Prediction[
   } = opts;
   const qs = new URLSearchParams({ limit: String(limit) });
   if (date) qs.set("date", date);
+  if (perMatch !== undefined) qs.set("per_match", String(perMatch));
   if (sortBy) qs.set("sort_by", sortBy);
   if (scope) qs.set("scope", scope);
   if (days !== undefined) qs.set("days", String(days));
@@ -146,7 +149,7 @@ export function getTopSignals(opts: TopSignalsOptions = {}): Promise<Prediction[
   if (minBookmakers !== undefined) qs.set("min_bookmakers", String(minBookmakers));
   if (minEv !== undefined) qs.set("min_ev", String(minEv));
   if (quality) qs.set("quality", quality);
-  return apiFetch<Prediction[]>(`/predictions/top-signals?${qs.toString()}`);
+  return apiFetch<Prediction[]>(`/predictions/${available ? "available" : "top-signals"}?${qs.toString()}`);
 }
 
 // Detalle completo de una senhal: desglose bookmaker-por-bookmaker (con
@@ -167,6 +170,27 @@ export function getBestPredictions(limit = 5, marketFamily?: string): Promise<Pr
 // historico; goles sin cuota todavia). Existen y son validas, pero nunca
 // compiten en el ranking de "mejores señales" — se muestran aparte,
 // etiquetadas.
+export interface OpportunityDiagnostics {
+  counts: {
+    matches: number;
+    matches_with_market: number;
+    candidates_with_valid_market: number;
+    positive_estimated_ev: number;
+    passed_gate: number;
+    opportunities: number;
+    observation: number;
+  };
+  reasons: Record<string, number>;
+}
+
+export function getOpportunityDiagnostics(filters: Record<string, string | number | undefined>) {
+  const qs = new URLSearchParams({ summary_only: "true" });
+  for (const [key, value] of Object.entries(filters)) {
+    if (value !== undefined) qs.set(key, String(value));
+  }
+  return apiFetch<OpportunityDiagnostics>(`/predictions/best/debug?${qs.toString()}`);
+}
+
 export function getModelOnlyPredictions(limit = 20): Promise<Prediction[]> {
   return apiFetch<Prediction[]>(`/predictions/model-only?limit=${limit}`);
 }
@@ -342,4 +366,41 @@ export async function updateRankingConfig(minOdds: number, maxOdds: number): Pro
     throw new Error(body?.detail ?? `API /config/ranking respondio ${res.status}`);
   }
   return res.json() as Promise<RankingConfig>;
+}
+
+export type PublicationSelection = {
+  match_id: number; match: string; kickoff: string; market: string; competition: string;
+  model_version_id: number; probability: number; calibrated: number | null;
+  odds: number | null; status: string; captured_at: string; family?: string;
+  probability_error?: number | null;
+  profit_units?: number; cumulative_units?: number; matchday?: number | null;
+  score?: [number | null, number | null];
+  alternatives?: { market: string; probability: number; calibrated: number | null; odds: number | null }[];
+};
+
+export type PublicationReport = {
+  metrics: {family: string; n: number; wins: number; losses: number; brier: number;
+    log_loss: number; ece: number; segments: {competition: string; model_version: number; n: number; brier: number; log_loss: number}[]; calibration: {low: number; high: number; n: number;
+      predicted: number; observed: number}[]}[];
+  history: PublicationSelection[];
+  recommendations: PublicationSelection[];
+  breakdown: Record<string, {label: string; n: number; wins: number; roi: number}[]>;
+  performance: {n: number; settled: number; wins: number; losses: number; void: number;
+    profit_units: number; roi: number | null; drawdown_units: number;};
+};
+
+export function getPublications(filters: Record<string, string | undefined> = {}) {
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) if (value) qs.set(key, value);
+  return apiFetch<PublicationReport>(`/publications?${qs}`);
+}
+
+export function getPublication(matchId: number) {
+  return apiFetch<{
+    captured_at: string;
+    ranking_version: string;
+    groups: Record<string, { principal: string; alternatives: PublicationSelection[] }>;
+    recommendation: PublicationSelection | null;
+    feature_snapshots: { id: number; is_home: boolean; as_of: string; features: Record<string, unknown> }[];
+  }>(`/publications/${matchId}`);
 }

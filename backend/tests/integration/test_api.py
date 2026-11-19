@@ -9,7 +9,7 @@ from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, OddsIngestionRun, Season
 from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory
 from backend.app.db.models.features import TeamMatchFeatures
-from backend.app.db.models.modeling import Prediction, PredictionSnapshot
+from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionSnapshot
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.ingestion.odds.provider import FixtureOddsSnapshot
 from backend.app.main import app
@@ -90,6 +90,7 @@ def seeded_competition_code():
     with session_scope() as db:
         result = train_competition_models(db, competition_code)
         assert result["status"] == "trained"
+        db.get(ModelVersion, result["model_version_id"]).is_active = True
 
     with session_scope() as db:
         comp = db.query(Competition).filter_by(code=competition_code).one()
@@ -173,6 +174,7 @@ def _set_safe_calibration(prediction: Prediction) -> None:
     (banda de cuotas -- seccion "cambio de filosofia del ranking", v3).
     Calcula los valores a partir de `market_odds` de la propia fila, para
     funcionar igual sea cual sea el mercado/cuota concreto que le toque."""
+    prediction.odds_origin_at = prediction.created_at - dt.timedelta(minutes=1)
     implied = 1.0 / prediction.market_odds
     calibrated = min(0.95, implied + 0.15)
     prediction.calibrated_probability = calibrated
@@ -259,7 +261,7 @@ def _seed_market_track_record(competition_code: str) -> None:
         home_goals, away_goals = (2, 1) if i % 2 == 0 else (0, 1)
         with session_scope() as db:
             db.query(Match).filter_by(id=match_id).update(
-                {"home_goals": home_goals, "away_goals": away_goals, "status": "finished"},
+                {"home_goals": home_goals, "away_goals": away_goals, "status": "finished", "kickoff_utc": dt.datetime.utcnow()},
                 synchronize_session=False,
             )
 
@@ -742,6 +744,11 @@ class _FakeOddsProvider:
         return True
 
     def fetch_odds(self, competition_code: str) -> list[FixtureOddsSnapshot]:
+        fetched_at = dt.datetime.utcnow()
+        for snapshot in self._snapshots:
+            for odds in snapshot.odds:
+                odds.provider_updated_at = fetched_at - dt.timedelta(minutes=5)
+                odds.fetched_at = fetched_at
         return self._snapshots
 
 
@@ -1269,6 +1276,7 @@ def test_attach_secondary_odds_gives_corners_a_real_market(seeded_competition_co
                 RawOddsRecord("bet365", "corners_total", 8.5, "under", 2.00),
             ],
         )
+        match_id = match.id
         provider = _FakeApiFootballProvider([snapshot])
         result = attach_secondary_odds_to_scheduled_matches(
             db, provider, seeded_competition_code, 2025, fixture_date, fixture_date
@@ -1277,7 +1285,7 @@ def test_attach_secondary_odds_gives_corners_a_real_market(seeded_competition_co
 
     with session_scope() as db:
         predictions = generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
-        by_market = {p.market: p for p in predictions}
+        by_market = {p.market: p for p in predictions if p.match_id == match_id}
         assert not any(m.startswith("cards_") for m in by_market)
 
         corners_over = by_market["corners_over_8_5"]
@@ -1323,6 +1331,9 @@ def test_best_predictions_debug_explains_exclusions(seeded_competition_code):
             "pocas_casas",
             "calidad_datos_baja",
             "cuota_desactualizada",
+            "origen_cuota_no_verificado",
+            "calibracion_no_disponible",
+            "incertidumbre_no_disponible",
             "ev_estimado_no_positivo",
             "ev_conservador_no_positivo",
             "fiabilidad_historica_insuficiente",
@@ -1439,7 +1450,7 @@ def test_predictions_current_round_marks_the_best_prediction_per_match(seeded_co
 
 
 def test_predictions_current_round_falls_back_to_next_round_when_current_round_is_empty(
-    seeded_competition_code,
+    seeded_competition_code, request,
 ):
     """Pedido real del usuario: la portada se quedaba vacia cuando la
     jornada "actual" (el matchday mas bajo con algun partido 'scheduled',
@@ -1449,9 +1460,20 @@ def test_predictions_current_round_falls_back_to_next_round_when_current_round_i
     SIGUIENTE (que si tiene partidos futuros) en vez de devolver vacio, y
     marcarlo explicitamente via `is_next_round` (igual que `is_fallback`
     para el caso sin matchday)."""
+    affected_rounds = {}
+    def restore_rounds():
+        with session_scope() as db:
+            for match_id, round_number in affected_rounds.items():
+                db.get(Match, match_id).matchday = round_number
+    request.addfinalizer(restore_rounds)
     with session_scope() as db:
         comp = db.query(Competition).filter_by(code=seeded_competition_code).one()
         season = db.query(Match).filter_by(competition_id=comp.id).first().season_id
+
+        for existing in db.query(Match).filter_by(competition_id=comp.id, status="scheduled").all():
+            if existing.matchday is not None:
+                affected_rounds[existing.id] = existing.matchday
+                existing.matchday = None
 
         # Jornada "actual" (matchday mas bajo): su unico partido ya paso de
         # hora pero sigue 'scheduled' -- round_matches (kickoff >= now)

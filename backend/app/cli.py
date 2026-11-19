@@ -525,6 +525,59 @@ def train(competition: str = typer.Option(None)) -> None:
             typer.echo(f"[train] promocion: {json.dumps(decision, default=str)}")
 
 
+@app.command("publish-upcoming")
+def publish_upcoming() -> None:
+    """Capture the official forecast of fixtures entering the final hour."""
+    from backend.app.services.publication_service import capture_due_publications
+
+    with session_scope() as db:
+        checked = capture_due_publications(db)
+    typer.echo(f"[publish-upcoming] {checked} partidos comprobados")
+
+
+@app.command("reconcile-published-corners")
+def reconcile_published_corners(limit: int = typer.Option(5, min=1, max=20)) -> None:
+    """Fetch missing corner evidence on a bounded schedule."""
+    from backend.app.db.models.core import ProviderResponse
+    from backend.app.db.models.matches import CornerObservation, MatchStatistics
+    from backend.app.db.models.publication import FixturePublication
+    from backend.app.ingestion.api_football.client import ApiFootballClient
+    from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
+    from scripts.reconcile_corners import reconcile
+
+    import httpx
+
+    with httpx.Client(timeout=30) as transport:
+        client = ApiFootballClient(transport)
+        if not client.is_available():
+            return
+        with session_scope() as db:
+            now = dt.datetime.utcnow()
+            recent_fixtures = {
+                str(row.params.get("fixture"))
+                for row in db.query(ProviderResponse).filter(
+                    ProviderResponse.operation == "reconcile_corners",
+                    ProviderResponse.fetched_at >= now - dt.timedelta(hours=24),
+                )
+            }
+            rows = db.query(Match, FixturePublication).join(
+                FixturePublication, FixturePublication.match_id == Match.id
+            ).outerjoin(MatchStatistics, MatchStatistics.match_id == Match.id).filter(
+                Match.status == "finished", Match.provider == "api_football", Match.kickoff_utc < now,
+                ~Match.id.in_(db.query(CornerObservation.match_id)),
+                (MatchStatistics.home_corners.is_(None)) | (MatchStatistics.away_corners.is_(None)),
+            ).order_by(Match.kickoff_utc.desc()).all()
+            ids = [
+                match.id for match, publication in rows
+                if match.provider_id.rsplit("-", 1)[-1] not in recent_fixtures
+                and ("Córners 9.5" in publication.groups
+                     or (publication.recommendation or {}).get("market") in SECONDARY_MARKET_DEFINITIONS)
+            ][:limit]
+        for match_id in ids:
+            with session_scope() as db:
+                reconcile(db, client, match_id, persist=True)
+
+
 @app.command()
 def predict(competition: str, date: str = typer.Option(None)) -> None:
     """Genera predicciones para partidos programados de una competicion."""

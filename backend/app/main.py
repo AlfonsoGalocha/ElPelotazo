@@ -14,6 +14,7 @@ from backend.app.api.routes import (
     matches,
     models,
     predictions,
+    publications,
     teams,
 )
 from backend.app.db.database import init_db
@@ -45,6 +46,7 @@ app.include_router(competitions.router)
 app.include_router(teams.router)
 app.include_router(matches.router)
 app.include_router(predictions.router)
+app.include_router(publications.router)
 app.include_router(backtesting.router)
 app.include_router(models.router)
 app.include_router(history.router)

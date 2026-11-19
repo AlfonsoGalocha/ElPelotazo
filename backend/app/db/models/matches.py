@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import CheckConstraint, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.database import Base
@@ -105,6 +105,18 @@ class MatchStatistics(Base):
     match: Mapped[Match] = relationship(back_populates="statistics")
 
 
+class CornerObservation(Base):
+    """A recorded total with an immutable source response and fixture identity."""
+
+    __tablename__ = "corner_observations"
+    __table_args__ = (CheckConstraint("total >= 0", name="ck_corner_observation_total"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"), index=True)
+    provider_response_id: Mapped[int] = mapped_column(ForeignKey("provider_responses.id"), unique=True)
+    total: Mapped[int] = mapped_column(Integer)
+
+
 class MatchOdds(Base):
     """Cuotas de una casa de apuestas para un mercado/linea concretos.
 
@@ -124,6 +136,11 @@ class MatchOdds(Base):
     price: Mapped[float] = mapped_column(Float)
     snapshot_type: Mapped[str] = mapped_column(String(16), default="closing")
     recorded_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    provider_updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    fetched_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+    history_quote_id: Mapped[int | None] = mapped_column(ForeignKey("match_odds_history.id"), nullable=True)
+    archived_quote: Mapped[MatchOddsHistory | None] = relationship()
 
     match: Mapped[Match] = relationship(back_populates="odds")
 
@@ -156,6 +173,8 @@ class MatchOddsHistory(Base):
     price: Mapped[float] = mapped_column(Float)
     snapshot_type: Mapped[str] = mapped_column(String(16), default="closing")
     recorded_at: Mapped[dt.datetime] = mapped_column(DateTime)
+    provider_updated_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    fetched_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class PlayerMatchStatistics(Base):

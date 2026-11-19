@@ -22,6 +22,9 @@ function ResultCell({ prediction }: { prediction: HistoryPrediction }) {
       </span>
     );
   }
+  if (prediction.settlement_verification === "unverified" || prediction.settlement_verification === "disputed") {
+    return <span className="text-xs text-slate-400">{prediction.settlement_verification === "disputed" ? "Liquidación discrepante" : "Córners sin verificar"}</span>;
+  }
   if (prediction.is_correct === null) {
     return <span className="text-xs text-slate-500">sin resolver</span>;
   }

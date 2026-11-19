@@ -16,7 +16,7 @@ import datetime as dt
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match, MatchOdds
-from backend.app.db.models.modeling import Prediction, PredictionResult
+from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionResult
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.normalization.competitions import COMPETITIONS
 from backend.app.services.data_service import ingest_matches
@@ -76,6 +76,7 @@ def _setup_cancelled_match(competition_code: str, seed: int) -> int:
     with session_scope() as db:
         result = train_competition_models(db, competition_code)
         assert result["status"] == "trained"
+        db.get(ModelVersion, result["model_version_id"]).is_active = True
 
     with session_scope() as db:
         comp = db.query(Competition).filter_by(code=competition_code).one()

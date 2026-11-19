@@ -50,6 +50,7 @@ def _prediction(**overrides) -> Prediction:
         uncertainty_high=0.78,
         explanation={"factors": []},
         features_used={"feature_names": []},
+        odds_origin_at=dt.datetime.utcnow() - dt.timedelta(minutes=1),
         created_at=dt.datetime.utcnow(),
     )
     defaults.update(overrides)
@@ -163,7 +164,7 @@ def test_v3_excludes_low_data_quality():
 
 def test_v3_excludes_stale_odds_when_configured():
     settings = Settings(max_odds_age_minutes=30)
-    prediction = _prediction(created_at=dt.datetime.utcnow() - dt.timedelta(hours=2))
+    prediction = _prediction(odds_origin_at=dt.datetime.utcnow() - dt.timedelta(hours=2))
     assert evaluate_quality_gate_v3(prediction, settings, market_track_record=0.6) == ExclusionReason.STALE_ODDS
 
 
@@ -422,3 +423,14 @@ def test_rank_signals_v3_never_includes_odds_outside_the_configured_band():
     excluded_reasons = {s.prediction.match_id: s.reason for s in excluded}
     assert excluded_reasons[1] == ExclusionReason.ODDS_OUTSIDE_OPPORTUNITY_BAND
     assert excluded_reasons[2] == ExclusionReason.ODDS_OUTSIDE_OPPORTUNITY_BAND
+
+
+def test_fresh_prediction_does_not_make_unknown_or_future_odds_fresh():
+    assert evaluate_quality_gate_v3(_prediction(odds_origin_at=None)) is ExclusionReason.UNVERIFIED_ODDS_ORIGIN
+    future = _prediction(odds_origin_at=dt.datetime.utcnow() + dt.timedelta(minutes=1))
+    assert evaluate_quality_gate_v3(future) is ExclusionReason.UNVERIFIED_ODDS_ORIGIN
+
+
+def test_main_opportunities_require_calibration_and_interval():
+    assert evaluate_quality_gate_v3(_prediction(calibrated_probability=None)) is ExclusionReason.NO_CALIBRATION
+    assert evaluate_quality_gate_v3(_prediction(uncertainty_low=None)) is ExclusionReason.NO_UNCERTAINTY

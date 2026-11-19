@@ -10,6 +10,7 @@ from backend.app.db.models.core import (  # noqa: F401
     TeamNameMapping,
 )
 from backend.app.db.models.features import TeamMatchFeatures  # noqa: F401
+from backend.app.db.models.publication import FixturePublication  # noqa: F401
 from backend.app.db.models.matches import (  # noqa: F401
     Match,
     MatchOdds,
