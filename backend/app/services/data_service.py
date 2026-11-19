@@ -21,6 +21,8 @@ from backend.app.normalization.bookmakers import canonical_bookmaker, is_exclude
 from backend.app.normalization.competitions import resolve_competition_id, resolve_season_id
 from backend.app.normalization.players import resolve_referee_id
 from backend.app.normalization.teams import is_excluded_team, resolve_team_id
+from backend.app.services.provider_response_service import archive_raw_responses
+from backend.app.services.standings_service import snapshot_standings
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -43,6 +45,20 @@ def _update_team_logo(db: Session, team_id: int, logo_url: str | None) -> None:
         team.logo_url = logo_url
 
 
+def _archive_if_api_football(db: Session, provider: object, operation: str, competition_code: str | None) -> None:
+    """Archiva `provider.last_raw_responses` en `ProviderResponse` si el
+    proveedor es API-Football (el unico que expone esta captura, ver
+    `ApiFootballClient`) y vacia la lista despues -- una misma instancia
+    de proveedor puede usarse para mas de una llamada dentro del mismo
+    comando CLI (p.ej. varias competiciones), y cada tanda debe archivarse
+    bajo su propia `competition_code`, nunca mezclada con la siguiente."""
+    raw_responses = getattr(provider, "last_raw_responses", None)
+    if not raw_responses:
+        return
+    archive_raw_responses(db, getattr(provider, "name", "api_football"), operation, competition_code, raw_responses)
+    raw_responses.clear()
+
+
 def competition_season_has_matches(db: Session, competition_code: str, season_label: str) -> bool:
     """True si ya hay AL MENOS UN `Match` para (competicion, temporada).
 
@@ -63,7 +79,12 @@ def competition_season_has_matches(db: Session, competition_code: str, season_la
 
 
 def ingest_matches(
-    db: Session, provider: DataProvider, competition_code: str, season_label: str, force_refresh: bool = False
+    db: Session,
+    provider: DataProvider,
+    competition_code: str,
+    season_label: str,
+    force_refresh: bool = False,
+    operation: str = "ingest_matches",
 ) -> int:
     """Descarga y persiste los partidos de una (competicion, temporada).
 
@@ -89,6 +110,12 @@ def ingest_matches(
         provider.refresh_cache()
 
     records = provider.fetch_matches(competition_code, season_label)
+    # Bloque 3.4/3.5 de la mision (provider_responses): archiva la
+    # respuesta cruda real de la API justo despues de usarla para
+    # construir `records` -- solo los proveedores API-Football la
+    # exponen (`last_raw_responses`, ver client.py); el resto (CSV,
+    # openfootball) no tiene nada que archivar.
+    _archive_if_api_football(db, provider, operation, competition_code)
     competition_id = resolve_competition_id(db, competition_code)
     season_id = resolve_season_id(db, competition_id, season_label)
 
@@ -100,6 +127,17 @@ def ingest_matches(
             continue
         _upsert_match(db, record, competition_id, season_id)
         count += 1
+    # Bloque 3.4/3.5 de la mision (standings_snapshots): cada ingesta
+    # real de partidos puede traer resultados finalizados nuevos -- se
+    # archiva una foto fresca de la clasificacion justo despues de
+    # comprometer esos partidos, nunca antes (para que ya cuenten en el
+    # calculo). Append-only: no sustituye el snapshot anterior, suma uno
+    # nuevo con su propio `as_of`. `count == 0` (nada nuevo de verdad)
+    # no evita el snapshot -- un partido ingerido en una llamada ANTERIOR
+    # pudo pasar a "finished" solo con el resultado, sin tocar el fixture
+    # en si (ver `_upsert_match`), asi que recalcular siempre es lo seguro.
+    db.commit()
+    snapshot_standings(db, competition_id, season_id)
     db.commit()
     logger.info(
         "ingestion.completed",
@@ -481,6 +519,7 @@ def attach_odds_to_scheduled_matches(
         raise ValueError(f"Competicion no encontrada: {competition_code}")
 
     snapshots = provider.fetch_odds(competition_code)
+    _archive_if_api_football(db, provider, "update_odds", competition_code)
     return _attach_odds_snapshots(db, snapshots, provider.name, competition.id, "ingestion.odds_api")
 
 
@@ -506,4 +545,5 @@ def attach_secondary_odds_to_scheduled_matches(
         raise ValueError(f"Competicion no encontrada: {competition_code}")
 
     snapshots = provider.fetch_secondary_odds(competition_code, season_year, date_from, date_to)
+    _archive_if_api_football(db, provider, "update_secondary_odds", competition_code)
     return _attach_odds_snapshots(db, snapshots, provider.name, competition.id, "ingestion.api_football")

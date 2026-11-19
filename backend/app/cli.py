@@ -184,7 +184,7 @@ def update_fixtures(competition: str = typer.Option(None)) -> None:
     with session_scope() as db:
         for comp in competitions:
             try:
-                n = ingest_matches(db, provider, comp, season_label)
+                n = ingest_matches(db, provider, comp, season_label, operation="update_fixtures")
                 typer.echo(
                     f"[update-fixtures] {comp} {season_label} ({source_label}): "
                     f"{n} partidos actualizados"
@@ -247,7 +247,7 @@ def update_international(
             for year in INTERNATIONAL_COMPETITION_EDITIONS[comp_code]:
                 season_label = season_label_from_date(dt.date(year, 9, 1))
                 try:
-                    n = ingest_matches(db, provider, comp_code, season_label)
+                    n = ingest_matches(db, provider, comp_code, season_label, operation="update_international")
                     typer.echo(
                         f"[update-international] {comp_code} {season_label} ({year}): {n} partidos"
                     )
