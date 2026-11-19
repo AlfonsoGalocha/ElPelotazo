@@ -211,13 +211,41 @@ n=5 ya no se reporta igual que uno con n=500: lleva su intervalo de
 confianza explícito y una señal clara de muestra insuficiente. 570/570
 tests backend en verde.
 
-### Bloque 5 (gráficos) — YA EXISTEN varios, verificado por inventario de componentes
+### Bloque 5 (gráficos) — AUDITADO contra la skill `dataviz`, 2 gaps reales corregidos
 
-`CalibrationChart.tsx`, `EdgeRoiChart.tsx`, `ModelVsMarketChart.tsx`,
-`PerformanceEvolutionChart.tsx`, `ModelPerformanceTabs/Board.tsx` ya
-existen en `frontend/components/`. No se auditó su contenido pixel a pixel
-contra los 7 gráficos pedidos en el Bloque 5.2 ni contra la skill de
-dataviz del proyecto — pendiente real para la siguiente sesión.
+Inventario completo y verificado (grep exhaustivo de `recharts` en todo
+`frontend/`, no quedó ningún gráfico sin revisar): `CalibrationChart.tsx`
+(diagrama de fiabilidad), `EdgeRoiChart.tsx` (ROI real por rango de
+edge), `ModelVsMarketChart.tsx` (modelo vs calibrado vs mercado),
+`PerformanceEvolutionChart.tsx` (beneficio acumulado), y los dos
+`BarChart` de `StatsOverview.tsx` (ROI por liga, ROI por mercado).
+Revisados uno a uno contra las reglas no-negociables de la skill
+`dataviz` (un solo eje, color por identidad/estado nunca por rango,
+leyenda cuando hay ≥2 series, tooltip con los números exactos, trazos
+finos): **sin hallazgos** — ya cumplían el formulario (un eje, line/bar
+chart correcto para cada trabajo, colores de estado con redundancia de
+texto, tooltips con `n` real).
+
+**2 gaps reales de claridad encontrados y corregidos** (mismo principio
+ya aplicado en el Bloque 4 — "un número sin su tamaño de muestra al lado
+no es evidencia sólida"):
+1. `PerformanceSegment.accuracy/accuracy_confidence_interval_95/
+   low_sample_size` (commit `c44a04b`, Bloque 4) se calculaba en el
+   backend pero nunca llegaba a la UI — `ModelPerformanceBoard.tsx`
+   mostraba Brier/log loss/ECE/ROI sin ningún aviso de tamaño de
+   muestra. **Corregido** (commit `4df0c98`): cada tarjeta de segmento
+   muestra ahora el acierto con su intervalo de Wilson y una etiqueta
+   "Muestra pequeña" cuando `n_settled < 30`.
+2. Los `BarChart` "ROI por liga" y "ROI por mercado" de
+   `StatsOverview.tsx` no mostraban el número de apuestas (`n_bets`) en
+   ningún sitio — ni en el eje ni en el tooltip. Una liga con 2 apuestas
+   se dibujaba con el mismo peso visual que una con 200. **Corregido**
+   (commit `865e195`): la etiqueta del eje ahora lleva `(n=X)` siempre
+   visible, y el tooltip repite el `n` exacto junto al ROI.
+
+`tsc --noEmit` y `next build` en verde tras ambos cambios. No se
+encontraron dual-axis, paletas sin validar, ni leyendas ausentes — el
+resto del inventario ya seguía el método de la skill correctamente.
 
 ### Bloque 6 (calidad API-Football) — prácticamente completado ESTA MISMA SESIÓN (antes de recibir este prompt)
 
@@ -266,22 +294,19 @@ UI de fiabilidad incluida):
 
 1. **`standings_snapshots`** (clasificación histórica por fecha) y
    **`provider_responses`** (respuesta cruda de API-Football archivada) —
-   gaps de esquema reales, sin implementar.
-2. Auditar los 7 gráficos pedidos en el Bloque 5.2 uno a uno contra los ya
-   existentes (`CalibrationChart.tsx`, `EdgeRoiChart.tsx`,
-   `ModelVsMarketChart.tsx`, `PerformanceEvolutionChart.tsx`,
-   `ModelPerformanceTabs/Board.tsx`), aplicando la skill `dataviz` del
-   proyecto. **EN CURSO ahora mismo.**
-3. Integración de lesiones/ausencias vía `/injuries` de API-Football
+   gaps de esquema reales, sin implementar. **Siguiente paso exacto.**
+2. Integración de lesiones/ausencias vía `/injuries` de API-Football
    (requiere verificar cobertura real para las 5 ligas antes de construir
    nada, mismo principio "nunca inventar" ya aplicado todo el día de hoy).
-4. Shrinkage bayesiano para la fiabilidad jerárquica (en vez del corte
+3. Shrinkage bayesiano para la fiabilidad jerárquica (en vez del corte
    duro de 30 observaciones) — evaluar con backtest antes de activar.
 
-**Completado desde el último corte de este documento**: intervalos de
-confianza y aviso de muestra pequeña en `/models/performance` (punto 3 de
-la lista anterior, ver Bloque 4 arriba), commit `c44a04b` mergeado a
-`main`.
+**Completado desde el último corte de este documento**:
+- Intervalos de confianza y aviso de muestra pequeña en
+  `/models/performance` (Bloque 4), commit `c44a04b` mergeado a `main`.
+- Auditoría completa del Bloque 5 (gráficos) contra la skill `dataviz`,
+  2 gaps reales de claridad corregidos (commits `4df0c98`, `865e195`),
+  mergeados a `main`. Ver sección A, Bloque 5, arriba.
 
 Nada de esto requiere credenciales nuevas ni decisiones que no pueda tomar
 yo solo — son puramente de ingeniería. Continuar diciendo "sigue con la
