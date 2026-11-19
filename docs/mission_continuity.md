@@ -172,16 +172,40 @@ Ya existen (confirmado, `backend/app/db/models/*.py`):
 (nuevo, esta sesión), `prediction_results`, `ranking_config`,
 `odds_ingestion_runs` (append-only, diagnóstico), `backtests`, `agent_alerts`.
 
-Pedidas en el prompt y **sin equivalente directo todavía**:
-`standings_snapshots` (clasificación histórica por fecha — hoy se calcula
-al vuelo desde `matches`, no se guarda snapshot por jornada),
-`opportunity_evaluations` (el propio Bloque 2 lo cubriría si se persiste
-el resultado de `/best/debug` en vez de ser solo observabilidad en
-caliente), `data_sync_runs` (ya existe un equivalente real:
-`odds_ingestion_runs`, pero solo cubre cuotas, no fixtures/resultados/
-clasificaciones), `provider_responses` (no se guarda la respuesta cruda de
-API-Football en ningún sitio — si la API cambia de formato sin avisar, no
-hay forma de auditar retroactivamente qué devolvió exactamente).
+**`standings_snapshots` y `provider_responses`, IMPLEMENTADOS Y PROBADOS**
+(commit `5cc7bfd`, mergeado a `main`): eran gaps reales confirmados por
+grep exhaustivo (no existía NINGÚN cálculo de clasificación en todo el
+proyecto, ni backend ni frontend, y ninguna fila de respuesta cruda
+archivada).
+- `StandingsSnapshot` (`backend/app/db/models/standings.py`,
+  APPEND-ONLY, mismo patrón que `MatchOddsHistory`/`PredictionSnapshot`):
+  `backend/app/services/standings_service.py::compute_current_standings`
+  calcula la tabla solo con partidos `finished` con marcador real
+  (desempate deliberadamente simple: puntos → GD → GF → `team_id`,
+  documentado como tal, nunca un desempate oficial exótico sin
+  verificar). `snapshot_standings` se archiva automáticamente dentro de
+  `ingest_matches` (cubre `update`/`update-fixtures`/
+  `update-international` de una sola vez) cada vez que se ingieren
+  partidos — nunca una tabla vacía de relleno si todavía no hay ningún
+  resultado real.
+- `ProviderResponse` (misma tabla `core.py`, APPEND-ONLY): `ApiFootballClient`
+  (`client.py`) acumula la respuesta cruda completa de cada página real
+  en `self.last_raw_responses`; `provider_response_service.py::archive_raw_responses`
+  la archiva y vacía el buffer justo después de usarla, desde
+  `ingest_matches`/`attach_odds_to_scheduled_matches`/
+  `attach_secondary_odds_to_scheduled_matches` — cubre fixtures Y
+  cuotas de API-Football. Permite auditar retroactivamente qué devolvió
+  la API si cambia de formato sin avisar, en vez de depender solo de lo
+  que el pipeline de normalización decidió conservar en el momento.
+  9 tests nuevos, 579/579 backend en verde.
+
+Siguen **sin equivalente directo** (no bloqueantes, menor prioridad que
+lo de arriba): `opportunity_evaluations` (el propio Bloque 2 lo cubriría
+si se persiste el resultado de `/best/debug` en vez de ser solo
+observabilidad en caliente), `data_sync_runs` (ya existe un equivalente
+real para cuotas, `odds_ingestion_runs`, pero no para fixtures/resultados
+— `ProviderResponse` ya cubre el caso de auditoría cruda, así que el
+valor incremental de esta tabla es menor).
 
 ### Bloque 3.6 (liquidación/settle) — YA CUBIERTO, verificado
 
@@ -292,14 +316,16 @@ por este bloque de trabajo).
 Orden de prioridad recomendado para la próxima sesión (1 y 2.2 completos,
 UI de fiabilidad incluida):
 
-1. **`standings_snapshots`** (clasificación histórica por fecha) y
-   **`provider_responses`** (respuesta cruda de API-Football archivada) —
-   gaps de esquema reales, sin implementar. **Siguiente paso exacto.**
-2. Integración de lesiones/ausencias vía `/injuries` de API-Football
+1. Integración de lesiones/ausencias vía `/injuries` de API-Football
    (requiere verificar cobertura real para las 5 ligas antes de construir
    nada, mismo principio "nunca inventar" ya aplicado todo el día de hoy).
-3. Shrinkage bayesiano para la fiabilidad jerárquica (en vez del corte
+   **Siguiente paso exacto.**
+2. Shrinkage bayesiano para la fiabilidad jerárquica (en vez del corte
    duro de 30 observaciones) — evaluar con backtest antes de activar.
+3. (Opcional, menor prioridad) Endpoint/UI para `standings_snapshots` —
+   hoy la tabla se calcula y archiva correctamente pero no tiene ningún
+   consumidor expuesto todavía (igual que `TeamMatchFeatures`, es
+   infraestructura de reproducibilidad, no necesariamente user-facing).
 
 **Completado desde el último corte de este documento**:
 - Intervalos de confianza y aviso de muestra pequeña en
@@ -307,6 +333,9 @@ UI de fiabilidad incluida):
 - Auditoría completa del Bloque 5 (gráficos) contra la skill `dataviz`,
   2 gaps reales de claridad corregidos (commits `4df0c98`, `865e195`),
   mergeados a `main`. Ver sección A, Bloque 5, arriba.
+- `standings_snapshots` y `provider_responses` implementados y probados
+  (commit `5cc7bfd`, mergeado a `main`). Ver sección A, Bloque 3.4/3.5,
+  arriba.
 
 Nada de esto requiere credenciales nuevas ni decisiones que no pueda tomar
 yo solo — son puramente de ingeniería. Continuar diciendo "sigue con la
