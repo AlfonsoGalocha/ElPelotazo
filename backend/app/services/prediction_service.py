@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pandas as pd
 from sqlalchemy.orm import Session
 
 from backend.app.db.models.core import Competition
+from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionSnapshot
-from backend.app.features.goals import build_match_feature_table
+from backend.app.features.goals import build_match_feature_table, feature_columns
 from backend.app.market.consensus import compute_market_consensus
 from backend.app.prediction.market_labels import DOUBLE_CHANCE_COMPONENTS
 from backend.app.prediction.predictor import (
@@ -133,6 +135,65 @@ def _add_derived_double_chance_quotes(market_quotes: dict, match_ids) -> None:
             }
 
 
+def _json_safe_feature_value(raw: object) -> float | None:
+    """`NaN` de pandas no es JSON valido (ausencia real de dato -- p.ej.
+    un equipo recien ascendido sin partidos previos para calcular una
+    media movil -- nunca se inventa un 0.0 u otro valor)."""
+    return None if pd.isna(raw) else float(raw)
+
+
+def _persist_team_match_features(
+    db: Session, target_matches: pd.DataFrame, feature_cols: list[str], feature_set_version: str
+) -> None:
+    """Mision "historico propio": archiva, para cada partido que se esta
+    prediciendo, exactamente las features (forma, fuerza, descanso...) que
+    el modelo tenia disponibles en ESTE momento -- `TeamMatchFeatures`
+    (db/models/features.py) ya existia en el esquema para esto
+    ("Snapshot de features conocidas ANTES del kickoff... materializadas
+    para reproducibilidad") pero nunca se habia conectado a ningun
+    pipeline real (tabla muerta, confirmado por grep exhaustivo).
+
+    `feature_set_version` se genera NUEVO en cada llamada (timestamp real,
+    nunca reutilizado) a proposito: aunque el modelo activo no cambie,
+    las features SI pueden cambiar entre una regeneracion y la siguiente
+    (nuevos partidos jugados alimentan las medias moviles de forma) --
+    reutilizar la misma version para refrescos sucesivos perderia esa
+    evolucion real, igual que `PredictionSnapshot` para las predicciones.
+    Solo usa las columnas de `feature_columns()` (la MISMA lista ya
+    probada y usada para alimentar el clasificador ML real) filtradas por
+    prefijo `home_`/`away_` -- nunca las columnas crudas del partido
+    (`home_goals`, etc.), que `feature_columns()` ya excluye explicitamente
+    por ser leakage severo (ver features/goals.py)."""
+    home_cols = [c for c in feature_cols if c.startswith("home_")]
+    away_cols = [c for c in feature_cols if c.startswith("away_")]
+    as_of = dt.datetime.utcnow()
+    for _, row in target_matches.iterrows():
+        match_id = int(row["match_id"])
+        home_features = {c[len("home_") :]: _json_safe_feature_value(row[c]) for c in home_cols}
+        away_features = {c[len("away_") :]: _json_safe_feature_value(row[c]) for c in away_cols}
+        db.add(
+            TeamMatchFeatures(
+                match_id=match_id,
+                team_id=int(row["home_team_id"]),
+                is_home=True,
+                feature_set_version=feature_set_version,
+                as_of=as_of,
+                features=home_features,
+            )
+        )
+        db.add(
+            TeamMatchFeatures(
+                match_id=match_id,
+                team_id=int(row["away_team_id"]),
+                is_home=False,
+                feature_set_version=feature_set_version,
+                as_of=as_of,
+                features=away_features,
+            )
+        )
+    db.flush()
+
+
 def generate_predictions_for_competition(
     db: Session, competition_code: str, target_date: dt.date | None = None
 ) -> list[Prediction]:
@@ -167,6 +228,13 @@ def generate_predictions_for_competition(
         target_matches = target_matches[target_matches["date"].dt.date == target_date]
     if target_matches.empty:
         return []
+
+    _persist_team_match_features(
+        db,
+        target_matches,
+        feature_columns(table),
+        feature_set_version=f"{model_versions.version}@{dt.datetime.utcnow().isoformat()}",
+    )
 
     match_odds_rows = {
         m.id: m.odds for m in db.query(Match).filter(Match.id.in_(target_matches["match_id"].tolist()))
