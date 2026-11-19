@@ -129,6 +129,15 @@ INTERNATIONAL_COMPETITION_EDITIONS: dict[str, list[int]] = {
 class ApiFootballClient:
     def __init__(self, http_client: httpx.Client | None = None) -> None:
         self._client = http_client or httpx.Client(timeout=30.0)
+        # Bloque 3.4/3.5 de la mision (provider_responses): respuesta
+        # cruda de CADA pagina de CADA llamada real a la API durante la
+        # vida de esta instancia -- una instancia nueva por comando CLI
+        # (ver cli.py), asi que acumular sin resetear entre llamadas
+        # (p.ej. `fetch_odds_for_window` hace un `_get("/odds", ...)` por
+        # fixture) es correcto: el llamador archiva todo el lote junto al
+        # terminar la operacion (ver
+        # services/provider_response_service.py::archive_raw_responses).
+        self.last_raw_responses: list[dict] = []
 
     def is_available(self) -> bool:
         settings = get_settings()
@@ -195,6 +204,11 @@ class ApiFootballClient:
                 raise ApiFootballRateLimitError(
                     f"API-Football rate limit: path={path} params={params} errors={errors}"
                 )
+        # Solo se archiva una respuesta que de verdad llego hasta aqui
+        # (nunca un intento que reventó antes, ver `ApiFootballRateLimitError`
+        # arriba) -- `payload` completo, no solo `response`, para poder
+        # auditar tambien `errors`/`paging` tal cual los devolvio la API.
+        self.last_raw_responses.append({"path": path, "params": dict(params), "response": payload})
         return payload.get("response", []), payload.get("paging")
 
     def _get(self, path: str, params: dict) -> list[dict]:

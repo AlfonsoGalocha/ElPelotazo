@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from sqlalchemy import Date, DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.db.database import Base
@@ -174,3 +174,32 @@ class OddsIngestionRun(Base):
     fixtures_fetched: Mapped[int | None] = mapped_column(nullable=True)
     matched: Mapped[int | None] = mapped_column(nullable=True)
     error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+
+
+class ProviderResponse(Base):
+    """Respuesta CRUDA (JSON completo, tal cual la devolvio la API) de
+    cada llamada real a un proveedor externo -- gap real de esquema
+    confirmado en la auditoria de la mision (Bloque 3.4/3.5): hasta ahora
+    si API-Football cambiaba de formato sin avisar, no habia forma de
+    auditar retroactivamente que devolvio exactamente, solo lo que el
+    pipeline de normalizacion decidio guardar (y descartar) en el
+    momento. APPEND-ONLY, mismo principio que `OddsIngestionRun`/
+    `MatchOddsHistory`: nunca se borra ni se actualiza una fila existente.
+
+    Hoy solo cubre API-Football (ver `ApiFootballClient.last_raw_responses`,
+    `services/provider_response_service.py::archive_raw_responses`) --
+    es el unico proveedor con este riesgo real confirmado (formato propio,
+    no un CSV versionado como football-data.co.uk/openfootball)."""
+
+    __tablename__ = "provider_responses"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32))  # "api_football"
+    # "update_fixtures" | "update_odds" | "update_secondary_odds" |
+    # "update_international" -- mismo vocabulario que OddsIngestionRun.operation.
+    operation: Mapped[str] = mapped_column(String(32))
+    competition_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    path: Mapped[str] = mapped_column(String(128))  # p.ej. "/fixtures", "/odds"
+    params: Mapped[dict] = mapped_column(JSON)
+    response: Mapped[dict] = mapped_column(JSON)
+    fetched_at: Mapped[dt.datetime] = mapped_column(DateTime)
