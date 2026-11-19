@@ -234,6 +234,12 @@ export interface PerformanceSegment {
   // devuelto) -- excluidas de model_quality/market_strategy, nunca
   // contadas como "lost" (ver evaluation_service.py::void_cancelled_predictions).
   n_void: number;
+  // Bloque 4 de la mision: tasa de acierto real + intervalo de Wilson al
+  // 95% + aviso explicito de muestra pequena (n_settled < 30) -- nunca se
+  // presenta un punto estimado como preciso sin estos datos al lado.
+  accuracy: number;
+  accuracy_confidence_interval_95: [number, number];
+  low_sample_size: boolean;
   model_quality: {
     n_predictions: number;
     brier_score: number;
