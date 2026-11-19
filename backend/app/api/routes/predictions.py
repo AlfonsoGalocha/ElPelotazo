@@ -576,6 +576,53 @@ def top_signals(
     ]
 
 
+@router.get("/available")
+def available_predictions(
+    limit: int = Query(10, ge=1, le=30),
+    per_match: int = Query(1, ge=1, le=3),
+    scope: str = SCOPE_QUERY,
+    competition_code: str | None = Query(None),
+    days: int = Query(4, ge=1, le=30),
+    date: dt.date | None = Query(None),
+    min_fair_odds: float | None = Query(None, ge=1),
+    max_fair_odds: float | None = Query(None, ge=1),
+    min_edge: float | None = Query(None, ge=0),
+    min_bookmakers: int | None = Query(None, ge=1),
+    min_ev: float | None = Query(None),
+    quality: str | None = QUALITY_QUERY,
+    db: Session = Depends(get_db),
+):
+    from backend.app.prediction.available_ranking import rank_available
+    from backend.app.prediction.ranking import evaluate_quality_gate_v3
+
+    settings = _settings_for_opportunities(db, get_settings())
+    candidates = _base_signal_query(
+        db, None, True, days, date, min_fair_odds, max_fair_odds, scope,
+        competition_code, min_edge_pp=min_edge, min_bookmakers=min_bookmakers, min_ev=min_ev,
+    ).all()
+    if quality and quality.upper() != "ALL":
+        candidates = [
+            p for p in candidates
+            if market_quality_tier(p.bookmakers_used, p.market_odds_min, p.market_odds_max,
+                                   p.market_odds_median, settings) == quality.upper()
+        ]
+    by_match = _group_by_match(candidates)
+    provenance = market_track_records_with_provenance(db, competition_code)
+    reliability = {key: value.value for key, value in provenance.items()}
+    rows = []
+    for prediction in rank_available(candidates, reliability, per_match=per_match)[:limit]:
+        flags = compute_anomaly_flags(prediction, by_match[prediction.match_id], settings)
+        reason = evaluate_quality_gate_v3(
+            prediction, settings, reliability.get((prediction.match.competition.code, prediction.market))
+        )
+        rows.append({
+            **serialize_prediction(prediction, flags, reliability=_reliability_for(prediction, provenance)),
+            "has_statistical_value": reason is None and is_strong_signal(flags),
+            "value_exclusion": reason.value if reason else None,
+        })
+    return rows
+
+
 @router.get("/best", response_model=list[PredictionOut])
 def best_predictions(
     limit: int = Query(5, ge=1, le=50),

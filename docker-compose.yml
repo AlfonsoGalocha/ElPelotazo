@@ -167,6 +167,10 @@ services:
     # como un "$" normal.
     command:
       - >
+        (while true; do
+          football-edge publish-upcoming || echo "[scheduler] no se pudo publicar el corte prepartido";
+          sleep 600;
+        done) &
         while true; do
           hour=$$(date -u +%H);
           hour=$${hour#0};
@@ -202,6 +206,7 @@ services:
             # necesitarlo mas a menudo.
             football-edge train || echo "[scheduler] fallo train (reentrenamiento), se reintenta en 6h";
           fi
+          football-edge reconcile-published-corners --limit 5 || echo "[scheduler] fallo verificación de córners";
           football-edge evaluate || echo "[scheduler] fallo evaluate/settle, se reintenta en 1h";
           football-edge predict-upcoming || echo "[scheduler] fallo predict-upcoming, se reintenta en 1h";
           sleep 3600;

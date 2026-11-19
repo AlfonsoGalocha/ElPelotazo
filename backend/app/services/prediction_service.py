@@ -446,5 +446,8 @@ def generate_predictions_for_competition(
         db.add(prediction)
         predictions.append(prediction)
 
+    from backend.app.services.publication_service import capture_publications
+
+    capture_publications(db, predictions, track_records)
     db.commit()
     return predictions
