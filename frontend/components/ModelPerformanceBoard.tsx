@@ -21,9 +21,29 @@ function SegmentCard({ segment }: { segment: PerformanceSegment }) {
         <h3 className="text-sm font-semibold text-slate-200">
           {segment.competition_code} · {MARKET_DISPLAY_NAMES[segment.market] ?? segment.market}
         </h3>
-        <span className="text-xs text-slate-500">{segment.n_settled} predicciones liquidadas</span>
+        <span className="flex items-center gap-2 text-xs text-slate-500">
+          {segment.n_settled} predicciones liquidadas
+          {segment.low_sample_size && (
+            <span
+              className="rounded border border-amber-700/50 bg-amber-900/30 px-1.5 py-0.5 text-[10px] font-medium uppercase text-amber-400"
+              title="Menos de 30 predicciones liquidadas: estas metricas tienen poca evidencia estadistica, no las trates como definitivas."
+            >
+              Muestra pequeña
+            </span>
+          )}
+        </span>
       </div>
-      <div className="mb-3 grid grid-cols-2 gap-3 text-xs text-slate-400 sm:grid-cols-4">
+      <div className="mb-3 grid grid-cols-2 gap-3 text-xs text-slate-400 sm:grid-cols-5">
+        <div>
+          <div className="uppercase text-slate-500">Acierto (IC 95%)</div>
+          <div className="text-slate-200">
+            {(segment.accuracy * 100).toFixed(1)}%{" "}
+            <span className="text-slate-500">
+              [{(segment.accuracy_confidence_interval_95[0] * 100).toFixed(0)}–
+              {(segment.accuracy_confidence_interval_95[1] * 100).toFixed(0)}%]
+            </span>
+          </div>
+        </div>
         <div>
           <div className="uppercase text-slate-500">Brier score</div>
           <div className="text-slate-200">{segment.model_quality.brier_score.toFixed(3)}</div>
