@@ -141,6 +141,8 @@ export interface Prediction {
   market_odds_min: number | null;
   market_odds_max: number | null;
   market_odds_median: number | null;
+  has_statistical_value?: boolean;
+  value_exclusion?: string | null;
   market_odds_average: number | null;
   odds_origin_at?: string | null;
   market_quality: "HIGH" | "MEDIUM" | "LOW" | null;

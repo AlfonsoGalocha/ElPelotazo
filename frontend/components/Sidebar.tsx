@@ -42,7 +42,9 @@ const NAV_ITEMS = [
   { href: "/selecciones", label: "Selecciones", icon: Globe },
   { href: "/top-signals", label: "Oportunidades", icon: TrendingUp },
   { href: "/ai-analyst", label: "Analista IA", icon: Bot },
-  { href: "/model", label: "Rendimiento del modelo", icon: BarChart3 },
+  { href: "/model", label: "Laboratorio del modelo", icon: BarChart3 },
+  { href: "/prediction-history", label: "Histórico de predicciones", icon: CalendarDays },
+  { href: "/opportunity-performance", label: "Rendimiento de oportunidades", icon: TrendingUp },
   { href: "/settings", label: "Configuración", icon: Settings },
 ];
 

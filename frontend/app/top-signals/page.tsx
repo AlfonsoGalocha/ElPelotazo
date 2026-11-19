@@ -1,11 +1,10 @@
 import Link from "next/link";
 import { AlertTriangle, TrendingUp } from "lucide-react";
-import { getCompetitions, getOpportunityDiagnostics, getRankingConfig, getTopSignals } from "@/lib/api";
+import { getCompetitions, getOpportunityDiagnostics, getTopSignals } from "@/lib/api";
 import type { SignalScope } from "@/lib/api";
 import { formatMatchDateOnly } from "@/lib/dates";
 import { isInternationalCompetition } from "@/lib/internationalCompetitions";
 import { MARKET_DISPLAY_NAMES } from "@/types";
-import SignalBadge from "@/components/SignalBadge";
 import MarketQualityBadge from "@/components/MarketQualityBadge";
 import AnomalyBadges from "@/components/AnomalyBadge";
 import { EmptyState } from "@/components/EmptyState";
@@ -35,7 +34,8 @@ export default async function TopSignalsPage({
 }: {
   searchParams: {
     date?: string;
-    sort_by?: "score" | "edge";
+    limit?: string;
+    per_match?: string;
     scope?: SignalScope;
     competition_code?: string;
     days?: string;
@@ -48,7 +48,8 @@ export default async function TopSignalsPage({
   };
 }) {
   const { date, competition_code: competitionCode } = searchParams;
-  const sortBy = searchParams.sort_by === "edge" ? "edge" : "score";
+  const limit = searchParams.limit === "5" ? 5 : 10;
+  const perMatch = searchParams.per_match === "2" ? 2 : 1;
   // `date` tiene prioridad sobre `scope` (ver backend); mostrarlo como su
   // propio modo evita que el selector de jornada contradiga al de fecha.
   const scope: SignalScope = date ? "all_upcoming" : (searchParams.scope ?? "current_round");
@@ -77,18 +78,17 @@ export default async function TopSignalsPage({
   const hasAdvancedFilter =
     Boolean(date) ||
     hasFairOddsFilter ||
-    sortBy !== "score" ||
     (searchParams.days !== undefined && searchParams.days !== "4") ||
     minEdge !== undefined ||
     minBookmakers !== undefined ||
     minEv !== undefined ||
     quality !== "ALL";
 
-  const [predictions, competitions, rankingConfig, diagnostics] = await Promise.all([
+  const [predictions, competitions, diagnostics] = await Promise.all([
     getTopSignals({
-      limit: 30,
+      limit,
+      perMatch,
       date,
-      sortBy,
       scope,
       days,
       competitionCode,
@@ -98,9 +98,8 @@ export default async function TopSignalsPage({
       minBookmakers,
       minEv,
       quality,
-    }).catch(() => []),
+    }, true).catch(() => []),
     getCompetitions().catch(() => []),
-    getRankingConfig().catch(() => null),
     getOpportunityDiagnostics({
       date, scope, days, competition_code: competitionCode,
       min_fair_odds: minFairOdds, max_fair_odds: maxFairOdds,
@@ -131,10 +130,7 @@ export default async function TopSignalsPage({
           : scope === "all_upcoming"
             ? `De los próximos ${days} días (sin restricción de jornada).`
             : `${SCOPE_LABELS[scope]} de cada competición — nunca un partido de otra jornada aunque tenga más edge.`}{" "}
-        Cuotas verificadas entre {rankingConfig ? rankingConfig.min_opportunity_odds.toFixed(2) : "1.35"} y{" "}
-        {rankingConfig ? rankingConfig.max_opportunity_odds.toFixed(2) : "1.90"}, con ambos límites incluidos.
-        Se muestra hasta una oportunidad por partido, con calibración disponible y valor esperado conservador positivo.{" "}
-        {sortBy === "edge" && "Reordenado por edge de mayor a menor (el filtro de qué aparece no cambia)."}{" "}
+        Cuotas entre 1,35 y 1,90, con ambos límites incluidos. La etiqueta «Valor estadístico» exige cuota verificable, calibración y EV conservador positivo.{" "}
         {hasFairOddsFilter && (
           <>
             Filtrado además a cuota justa del modelo entre {minFairOdds ?? "0"} y {maxFairOdds ?? "∞"}.
@@ -215,17 +211,15 @@ export default async function TopSignalsPage({
               defaultValue={date ?? ""}
               className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
             />
-            <label htmlFor="sort_by" className="ml-2">
-              Ordenar por:
-            </label>
-            <select
-              id="sort_by"
-              name="sort_by"
-              defaultValue={sortBy}
-              className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
-            >
-              <option value="score">Probabilidad / fiabilidad (por defecto)</option>
-              <option value="edge">Edge (mayor a menor, informativo)</option>
+            <label htmlFor="limit">Selecciones</label>
+            <select id="limit" name="limit" defaultValue={String(limit)}
+              className="rounded border border-surface-border bg-surface-raised px-2 py-1">
+              <option value="5">Top 5</option><option value="10">Top 10</option>
+            </select>
+            <label htmlFor="per_match">Máximo por partido</label>
+            <select id="per_match" name="per_match" defaultValue={String(perMatch)}
+              className="rounded border border-surface-border bg-surface-raised px-2 py-1">
+              <option value="1">Una</option><option value="2">Dos de mercados distintos</option>
             </select>
             <label htmlFor="min_fair_odds" className="ml-2">
               Cuota justa entre:
@@ -311,6 +305,11 @@ export default async function TopSignalsPage({
           </div>
         </details>
       </form>
+      {predictions.length > 0 && !predictions.some(p => p.has_statistical_value) && (
+        <p className="mb-4 rounded-lg border border-surface-border p-3 text-sm text-slate-300">
+          No se han identificado oportunidades con valor demostrado para esta jornada. Estas son las selecciones mejor clasificadas por el modelo.
+        </p>
+      )}
       {diagnostics && (
         <details className="mb-4 rounded-lg border border-surface-border p-3 text-sm text-slate-300">
           <summary className="cursor-pointer font-medium">Diagnóstico de oportunidades</summary>
@@ -380,17 +379,19 @@ export default async function TopSignalsPage({
                 <td className="px-3 py-2">{p.market_odds !== null ? p.market_odds.toFixed(2) : "—"}</td>
                 <td className="px-3 py-2 text-slate-400">{p.bookmakers_used ?? "—"}</td>
                 <td className="px-3 py-2 text-edge-positive">
-                  {p.ev_calibrated !== null ? `+${(p.ev_calibrated * 100).toFixed(1)}%` : "—"}
+                  {p.ev_calibrated !== null ? `${p.ev_calibrated >= 0 ? "+" : ""}${(p.ev_calibrated * 100).toFixed(1)}%` : "—"}
                 </td>
                 <td className="px-3 py-2 text-edge-positive">
-                  {p.ev_conservative !== null ? `+${(p.ev_conservative * 100).toFixed(1)}%` : "—"}
+                  {p.ev_conservative !== null ? `${p.ev_conservative >= 0 ? "+" : ""}${(p.ev_conservative * 100).toFixed(1)}%` : "—"}
                 </td>
                 <td className="px-3 py-2 text-slate-600">
                   {p.edge !== null ? `${p.edge >= 0 ? "+" : ""}${(p.edge * 100).toFixed(1)} pp` : "—"}
                 </td>
                 <td className="px-3 py-2">
                   <div className="flex flex-wrap items-center gap-1">
-                    <SignalBadge tier={p.signal_tier} />
+                    <span className={p.has_statistical_value ? "font-semibold text-emerald-400" : "text-slate-400"}>
+                      {p.has_statistical_value ? "Valor estadístico" : "Selección disponible"}
+                    </span>
                     <AnomalyBadges flags={p.anomaly_flags} />
                   </div>
                 </td>
@@ -424,7 +425,7 @@ export default async function TopSignalsPage({
         </table>
         {predictions.length === 0 && (
           <div className="p-2">
-            <EmptyState title="No hay oportunidades de alta fiabilidad para los criterios actuales" />
+            <EmptyState title="No hay selecciones con cuota válida para los criterios actuales" />
           </div>
         )}
       </div>
