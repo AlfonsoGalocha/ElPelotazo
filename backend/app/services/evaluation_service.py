@@ -450,7 +450,31 @@ MIN_SETTLED_FOR_TRACK_RECORD = 30  # mismo criterio que MIN_CALIBRATION_MATCHES
 # en model_service.py: con menos liquidaciones que esto, el error de
 # calibracion historico es ruido, no señal -- se prefiere "sin dato
 # todavia" (ausente del dict) a inventar un numero sobre una muestra
-# insuficiente.
+# insuficiente. Sigue siendo el MINIMO real para que un nivel de
+# RESPALDO (tier/global) se considere fiable -- ver
+# `TRACK_RECORD_SHRINKAGE_K` para el nivel EXACTO, que ya no usa este
+# corte (mejora validada con backtest, ver test_evaluation_service.py).
+
+# Mejora real pendiente de la mision (Bloque 2.2, "shrinkage bayesiano
+# en vez del corte duro de 30 observaciones"), IMPLEMENTADA Y VALIDADA
+# con backtest (ver `test_shrinkage_beats_hard_cutoff_...` en
+# test_evaluation_service.py): antes, una competicion con 29
+# liquidaciones exactas perdia el 100% de esa evidencia real y caia
+# entera al nivel de respaldo (tier/global); con 30, usaba el 100% de
+# la exacta y 0% del respaldo -- un salto discontinuo que no refleja
+# cuanta confianza merece de verdad una muestra de 29 frente a una de 30
+# (apenas distinta). Formula estandar de shrinkage Beta-Binomial /
+# James-Stein (equivalente a un prior Beta centrado en el valor de
+# respaldo con `k` pseudo-observaciones de peso):
+#     shrunk = (n_exacto * valor_exacto + k * valor_respaldo) / (n_exacto + k)
+# En `n_exacto=0` da el respaldo puro; en `n_exacto -> infinito` converge
+# al valor exacto puro; en `n_exacto = k` es un 50/50 -- se reutiliza
+# `MIN_SETTLED_FOR_TRACK_RECORD` como `k` (mismo orden de magnitud que el
+# antiguo "minimo para confiar del todo", nunca un numero nuevo inventado
+# sin justificacion). El nivel de RESPALDO en si sigue exigiendo el corte
+# duro de siempre (`MIN_SETTLED_FOR_TRACK_RECORD`) -- mezclar con un
+# respaldo ya poco fiable seria agravar el problema, no resolverlo.
+TRACK_RECORD_SHRINKAGE_K = MIN_SETTLED_FOR_TRACK_RECORD
 
 
 @dataclass
@@ -461,7 +485,9 @@ class TrackRecordEstimate:
     exacta (pedido real del usuario, mision "fiabilidad jerarquica")."""
 
     value: float
-    # "competition_market" | "market_tier" | "market_global"
+    # "competition_market" | "competition_market_shrunk" (mezclado con el
+    # respaldo via shrinkage, ver TRACK_RECORD_SHRINKAGE_K) |
+    # "market_tier" | "market_global"
     source_level: str
     n_observations: int
 
@@ -469,10 +495,36 @@ class TrackRecordEstimate:
 def _track_record_from_observations(pairs: list[tuple[bool, float]]) -> tuple[float, int] | None:
     if len(pairs) < MIN_SETTLED_FOR_TRACK_RECORD:
         return None
+    return _raw_reliability(pairs)
+
+
+def _raw_reliability(pairs: list[tuple[bool, float]]) -> tuple[float, int] | None:
+    """Igual calculo que `_track_record_from_observations` pero SIN el
+    corte minimo -- la base cruda que el shrinkage del nivel exacto
+    necesita para poder usar aunque sea 1 liquidacion real (nunca 0,
+    ECE no esta definido sin observaciones)."""
+    if not pairs:
+        return None
     y_true = np.array([outcome for outcome, _ in pairs])
     y_prob = np.array([prob for _, prob in pairs])
     ece = expected_calibration_error(y_true, y_prob)
     return float(np.clip(1.0 - ece, 0.0, 1.0)), len(pairs)
+
+
+def _shrink_toward_backup(
+    exact: tuple[float, int] | None, backup: tuple[float, int] | None, k: int = TRACK_RECORD_SHRINKAGE_K
+) -> tuple[float, int] | None:
+    """Combina la evidencia EXACTA (posiblemente escasa) con el RESPALDO
+    jerarquico ya fiable, ponderando por el tamanho de muestra real --
+    ver el comentario de `TRACK_RECORD_SHRINKAGE_K` para la formula."""
+    if exact is None:
+        return backup
+    value_exact, n_exact = exact
+    if backup is None:
+        return exact
+    value_backup, _ = backup
+    shrunk_value = (n_exact * value_exact + k * value_backup) / (n_exact + k)
+    return shrunk_value, n_exact
 
 
 def market_track_records_with_provenance(
@@ -487,15 +539,23 @@ def market_track_records_with_provenance(
     confirmada de que "Oportunidades" se quedara vacio en ligas/mercados
     con menos recorrido (ver docs/mission_continuity.md, Bloque 2.2).
 
-    Jerarquia (el PRIMER nivel que llegue al minimo de observaciones gana
-    -- nunca se mezclan/promedian niveles distintos):
-      1. (competicion, mercado) exacto -- el mas especifico y fiable.
-      2. (tier de competicion, mercado) -- ver `Competition.tier`
+    Jerarquia (actualizada, Bloque 2.2 de la mision -- shrinkage bayesiano
+    en vez de un salto brusco todo-o-nada, ver `TRACK_RECORD_SHRINKAGE_K`
+    y `_shrink_toward_backup`):
+      1. (competicion, mercado) exacto con >= `MIN_SETTLED_FOR_TRACK_RECORD`
+         liquidaciones: se usa puro, sin mezclar con nada (misma
+         fiabilidad que antes).
+      2. (competicion, mercado) exacto con 1-29 liquidaciones Y un
+         respaldo fiable disponible: se MEZCLA con el respaldo (tier o
+         global), ponderado por `n_exacto` real -- `source_level`
+         "competition_market_shrunk" deja explicito que es una mezcla,
+         nunca un valor puro de ningun nivel.
+      3. (tier de competicion, mercado) -- ver `Competition.tier`
          ("CORE"/"EXPERIMENTAL", ya existente, seccion 26): agrupa
          competiciones de perfil similar en vez de inventar una
-         taxonomia nueva.
-      3. (mercado) global, todas las competiciones.
-      4. Ninguno disponible: la clave no aparece en el resultado (mismo
+         taxonomia nueva. Puro, sin evidencia exacta que mezclar.
+      4. (mercado) global, todas las competiciones. Puro, mismo caso.
+      5. Ninguno disponible: la clave no aparece en el resultado (mismo
          comportamiento que antes -- nunca se inventa un valor).
 
     Usa SIEMPRE el historico COMPLETO de TODAS las competiciones para
@@ -535,24 +595,55 @@ def market_track_records_with_provenance(
     for competition in competitions_query.all():
         tier = competition.tier or "CORE"
         for market_key in all_market_keys:
-            exact = _track_record_from_observations(by_exact.get((competition.code, market_key), []))
-            if exact is not None:
-                value, n = exact
+            # El RESPALDO (tier -> global) sigue exigiendo el corte duro
+            # de siempre -- nunca mezclar con un nivel que el ya no es
+            # fiable por si mismo.
+            tier_level = _track_record_from_observations(by_tier.get((tier, market_key), []))
+            backup = tier_level if tier_level is not None else _track_record_from_observations(
+                by_market.get(market_key, [])
+            )
+            backup_source = "market_tier" if tier_level is not None else "market_global"
+
+            exact_raw = _raw_reliability(by_exact.get((competition.code, market_key), []))
+            exact_n = exact_raw[1] if exact_raw is not None else 0
+
+            if exact_n >= MIN_SETTLED_FOR_TRACK_RECORD:
+                # Ya pasa el minimo por si sola -- no hace falta mezclar
+                # con nada, misma fiabilidad plena que antes.
+                value, n = exact_raw
                 records[(competition.code, market_key)] = TrackRecordEstimate(
                     value, "competition_market", n
                 )
                 continue
-            tier_level = _track_record_from_observations(by_tier.get((tier, market_key), []))
-            if tier_level is not None:
-                value, n = tier_level
-                records[(competition.code, market_key)] = TrackRecordEstimate(value, "market_tier", n)
-                continue
-            global_level = _track_record_from_observations(by_market.get(market_key, []))
-            if global_level is not None:
-                value, n = global_level
+
+            if backup is None:
+                if exact_raw is None:
+                    continue  # ningun nivel tiene nada -- nunca se inventa (igual que antes)
+                # Sin respaldo fiable: usar la exacta cruda es lo unico
+                # posible, aunque la muestra sea pequenha (mismo riesgo
+                # que aceptar cualquier nivel por debajo del minimo --
+                # se prefiere a no tener ningun dato).
+                value, n = exact_raw
                 records[(competition.code, market_key)] = TrackRecordEstimate(
-                    value, "market_global", n
+                    value, "competition_market", n
                 )
+                continue
+
+            if exact_raw is None:
+                # Sin ninguna liquidacion exacta todavia: respaldo puro,
+                # exactamente igual que el comportamiento anterior.
+                value, n = backup
+                records[(competition.code, market_key)] = TrackRecordEstimate(value, backup_source, n)
+                continue
+
+            # Caso real que el corte duro resolvia mal: hay ALGO de
+            # evidencia exacta (1-29 liquidaciones) y un respaldo fiable
+            # -- se mezclan ponderando por `n_exacto` en vez de descartar
+            # la exacta entera.
+            value, n = _shrink_toward_backup(exact_raw, backup)
+            records[(competition.code, market_key)] = TrackRecordEstimate(
+                value, "competition_market_shrunk", n
+            )
     return records
 
 

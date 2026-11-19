@@ -19,7 +19,8 @@ class ReliabilityOut(BaseModel):
     """Ver services/evaluation_service.py::TrackRecordEstimate."""
 
     value: float
-    source_level: str  # "competition_market" | "market_tier" | "market_global"
+    # "competition_market" | "competition_market_shrunk" | "market_tier" | "market_global"
+    source_level: str
     n_observations: int
 
 
@@ -92,10 +93,13 @@ class PredictionOut(BaseModel):
     # ver services/evaluation_service.py::market_track_records_with_provenance):
     # `None` sin historico suficiente en NINGUN nivel. Cuando existe,
     # `source_level` dice de donde sale -- "competition_market" (especifica
-    # de esta competicion y mercado), "market_tier" (heredada de otras
-    # competiciones del mismo tier, CORE/EXPERIMENTAL) o "market_global"
-    # (de todas las competiciones). NUNCA mostrar esto como si fuera
-    # siempre especifico de la competicion exacta -- pedido real del
+    # de esta competicion y mercado), "competition_market_shrunk" (mezcla
+    # de la exacta, con poca muestra, y un respaldo fiable -- shrinkage
+    # bayesiano, ver TRACK_RECORD_SHRINKAGE_K), "market_tier" (heredada de
+    # otras competiciones del mismo tier, CORE/EXPERIMENTAL) o
+    # "market_global" (de todas las competiciones). NUNCA mostrar esto
+    # como si fuera siempre especifico de la competicion exacta -- pedido
+    # real del
     # usuario ("nunca presentar una fiabilidad global como si fuera
     # especifica").
     reliability: ReliabilityOut | None = None
