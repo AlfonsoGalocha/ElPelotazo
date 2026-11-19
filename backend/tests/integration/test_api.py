@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, OddsIngestionRun, Season
 from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory
+from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.modeling import Prediction, PredictionSnapshot
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.ingestion.odds.provider import FixtureOddsSnapshot
@@ -662,6 +663,69 @@ def test_regenerating_predictions_archives_the_superseded_ones_in_prediction_sna
             assert by_market[market].model_probability == probability
             assert by_market[market].original_prediction_id is not None
             assert by_market[market].archived_at is not None
+
+
+def test_generating_predictions_persists_team_match_features(seeded_competition_code):
+    """Mision "historico propio" (Bloque 3.1/3.7): `TeamMatchFeatures`
+    existia en el esquema ("snapshot de features conocidas ANTES del
+    kickoff... para reproducibilidad") pero nunca se habia conectado a
+    ningun pipeline real -- confirmado por grep exhaustivo antes de este
+    fix. Cada vez que se generan predicciones para un partido programado,
+    debe quedar una fila real por equipo con sus features de ese momento
+    (nunca las columnas crudas del propio partido, eso seria leakage)."""
+    # `seeded_competition_code` ya genera predicciones propias durante su
+    # propio setup (fixture compartida por todo el fichero) -- mismo
+    # principio de robustez que el resto de tests de este fichero: nunca
+    # se asume un conteo ABSOLUTO de partida, solo el INCREMENTO real.
+    fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=1)).date()
+    with session_scope() as db:
+        predictions = generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+        match_id = predictions[0].match_id
+        match = db.get(Match, match_id)
+        home_team_id, away_team_id = match.home_team_id, match.away_team_id
+
+    with session_scope() as db:
+        rows = (
+            db.query(TeamMatchFeatures)
+            .filter(TeamMatchFeatures.match_id == match_id)
+            .order_by(TeamMatchFeatures.id.desc())
+            .limit(2)
+            .all()
+        )
+        assert len(rows) == 2
+        by_team = {r.team_id: r for r in rows}
+        assert by_team[home_team_id].is_home is True
+        assert by_team[away_team_id].is_home is False
+        for row in rows:
+            assert row.as_of is not None
+            assert row.feature_set_version  # nunca vacio
+            assert row.features  # al menos una feature real guardada
+            # Nunca se filtran las columnas crudas del propio partido
+            # (leakage severo, ver features/goals.py::feature_columns).
+            assert "goals" not in row.features
+            assert all(not key.startswith("home_") and not key.startswith("away_") for key in row.features)
+
+    # Regenerar debe AÑADIR una nueva version, nunca sobreescribir la
+    # anterior (mismo principio que PredictionSnapshot): las features
+    # pueden evolucionar entre una regeneracion y la siguiente aunque el
+    # modelo activo sea el mismo.
+    with session_scope() as db:
+        rows_before_second = (
+            db.query(TeamMatchFeatures).filter(TeamMatchFeatures.match_id == match_id).count()
+        )
+        versions_before_second = {
+            r.feature_set_version
+            for r in db.query(TeamMatchFeatures).filter(TeamMatchFeatures.match_id == match_id)
+        }
+
+    with session_scope() as db:
+        generate_predictions_for_competition(db, seeded_competition_code, fixture_date)
+
+    with session_scope() as db:
+        rows_after = db.query(TeamMatchFeatures).filter(TeamMatchFeatures.match_id == match_id).all()
+        assert len(rows_after) == rows_before_second + 2
+        versions_after = {r.feature_set_version for r in rows_after}
+        assert len(versions_after - versions_before_second) == 1  # una version NUEVA, ninguna sobreescrita
 
 
 class _FakeOddsProvider:
