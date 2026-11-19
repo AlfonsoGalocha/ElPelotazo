@@ -10,7 +10,26 @@ Fecha de este corte: 2026-11-18/19. Rama: `claude/football-edge-detector-x0f2ea`
 
 ## A. Diagnóstico inicial — hallazgos reales (con cita de archivo:línea)
 
-### Bloque 1 (calidad del modelo) — MUCHO YA EXISTE, verificado leyendo código:
+### Bloque 1 (calidad del modelo) — bug real encontrado y corregido EN PRODUCCIÓN
+
+El usuario reportó en vivo (captura de pantalla, Bundesliga "Ambos equipos
+marcan"): modelo crudo 78.5%, `calibrated_probability` 97.2% (+18.7pp),
+EV estimado inflado a +42.9%. Causa real confirmada: la calibración
+Isotonic se activaba SIEMPRE que hubiera suficiente holdout GLOBAL, sin
+validar nunca si mejoraba el Brier score para ESE mercado en concreto —
+exactamente el pathology conocido de Isotonic Regression sobreajustando
+un cluster pequeño de la zona de probabilidad alta. **Corregido** (commit
+`a7fb6d5`, mergeado a `main`): nueva `_fit_validated_isotonic_calibrator`
+en `model_service.py` — solo activa la calibración de un mercado si
+demuestra mejorar el Brier score en un sub-split de test disjunto del de
+ajuste (reutiliza `backtesting/calibration.py::compare_calibration`, antes
+solo usado para informes offline). 3 tests nuevos, 567/567 en verde.
+**Importante**: este fix solo se aplica en el PRÓXIMO entrenamiento de
+cada competición (el calibrador va dentro del artefacto de modelo
+guardado) — hace falta `football-edge train` (o esperar al ciclo de 6h
+del scheduler) para que Bundesliga deje de mostrar el 97.2%.
+
+### Bloque 1 (resto) — MUCHO YA EXISTE, verificado leyendo código:
 
 - **Dixon-Coles + ensemble ML + pesos por simplex**: `backend/app/models/goals/dixon_coles.py`,
   `backend/app/models/ensemble/ensemble.py`.
