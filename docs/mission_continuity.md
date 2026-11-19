@@ -138,7 +138,13 @@ Pendiente (ver sección G).
   `Prediction.explanation` SÍ guarda valores reales (`raw_value` por
   feature), pero solo de las top-N features más explicativas (ver
   `prediction/explanation.py`), no del vector completo usado.
-  **Diseño para conectar `TeamMatchFeatures` la próxima sesión** (no
+  **IMPLEMENTADO Y PROBADO** (commit `2ca996a`, mergeado a `main`):
+  `generate_predictions_for_competition` ahora archiva una fila por
+  equipo en `TeamMatchFeatures` cada vez que genera predicciones, usando
+  `feature_columns()` (la misma lista ya probada, sin leakage) y una
+  `feature_set_version` nueva en cada llamada (append-only, nunca
+  sobreescribe). 2 tests nuevos. 568/568 tests.
+  **Diseño descartado (ya resuelto) para conectar `TeamMatchFeatures`** (no
   implementado todavía, deliberadamente no apresurado):
   1. `build_match_feature_table` (`backend/app/features/goals.py`) ya
      devuelve columnas con prefijo `home_`/`away_` consistente — separar
@@ -253,12 +259,7 @@ por este bloque de trabajo).
 Orden de prioridad recomendado para la próxima sesión (1 y 2.2 completos,
 UI de fiabilidad incluida):
 
-1. **Conectar `TeamMatchFeatures`** (tabla ya existente, nunca usada —
-   ver diseño detallado arriba en sección A, Bloque 3) — el entregable de
-   mayor impacto real para Bloque 3.1/3.7 (reconstruir exactamente qué
-   sabía el modelo). Requiere decidir primero cómo versionar
-   `feature_set_version` para que sea realmente histórico.
-2. **`standings_snapshots`** (clasificación histórica por fecha) y
+1. **`standings_snapshots`** (clasificación histórica por fecha) y
    **`provider_responses`** (respuesta cruda de API-Football archivada) —
    gaps de esquema reales, sin implementar.
 3. Auditar `backend/app/api/routes/models.py::model_performance`
