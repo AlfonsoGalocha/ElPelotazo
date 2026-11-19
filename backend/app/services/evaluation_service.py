@@ -48,6 +48,7 @@ from backend.app.features.goals import build_match_feature_table
 from backend.app.market.clv import compute_clv
 from backend.app.market.consensus import compute_market_consensus
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS, label_for_market
+from backend.app.prediction.uncertainty import wilson_interval
 from backend.app.prediction.ranking import (
     LONGSHOT_ODDS_THRESHOLD,
     fit_edge_reliability_curve_from_observations,
@@ -330,6 +331,14 @@ def evaluate_settled_predictions(db: Session, competition_code: str | None = Non
     return report
 
 
+# Bloque 4 de la mision "plataforma profesional" (pedido real del
+# usuario): "Una tasa de acierto del 80% con 5 apuestas no puede
+# presentarse como evidencia solida" -- mismo criterio ya usado para
+# fiabilidad historica/calibracion en el resto del proyecto
+# (MIN_CALIBRATION_MATCHES=60, MIN_SETTLED_FOR_TRACK_RECORD=30).
+MIN_SAMPLE_SIZE_FOR_RELIABLE_STATS = 30
+
+
 def real_performance_report(
     db: Session,
     competition_code: str | None = None,
@@ -403,6 +412,19 @@ def real_performance_report(
         by_probability = performance_by_probability_bucket(y_true, y_prob)
         by_edge = performance_by_edge_bucket(y_true, y_prob, odds) if has_odds.any() else []
 
+        # Pedido real del usuario (Bloque 4): "incluye intervalos de
+        # confianza y numero de observaciones -- una tasa de acierto del
+        # 80% con 5 apuestas no puede presentarse como evidencia solida".
+        # `accuracy` = tasa de acierto real de las selecciones liquidadas
+        # (fraccion de `y_true` verdaderas) -- intervalo de Wilson al 95%
+        # (ver prediction/uncertainty.py, ya usado en el resto del
+        # proyecto para el mismo tipo de proporcion con `n` variable).
+        # `low_sample_size` nunca oculta el dato, solo lo marca
+        # explicitamente para que la UI pueda avisar sin tener que
+        # adivinar un umbral por su cuenta.
+        accuracy = float(np.mean(y_true))
+        accuracy_ci_low, accuracy_ci_high = wilson_interval(accuracy, len(y_true))
+
         report["segments"].append(
             {
                 "competition_code": comp_code,
@@ -410,6 +432,9 @@ def real_performance_report(
                 "model_version_id": model_version,
                 "n_settled": len(items),
                 "n_void": n_void,
+                "accuracy": accuracy,
+                "accuracy_confidence_interval_95": [accuracy_ci_low, accuracy_ci_high],
+                "low_sample_size": len(items) < MIN_SAMPLE_SIZE_FOR_RELIABLE_STATS,
                 "model_quality": quality,
                 "market_strategy": strategy,
                 "performance_by_probability_bucket": by_probability,

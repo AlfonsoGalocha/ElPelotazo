@@ -320,6 +320,15 @@ def test_model_performance_endpoint_uses_only_settled_predictions():
         assert segment["n_settled"] > 0
         assert "reliability_curve" in segment["model_quality"]
         assert isinstance(segment["performance_by_probability_bucket"], list)
+        # Bloque 4 de la mision "plataforma profesional" (pedido real del
+        # usuario): "una tasa de acierto del 80% con 5 apuestas no puede
+        # presentarse como evidencia solida" -- intervalo de confianza y
+        # aviso de muestra pequenha SIEMPRE presentes, nunca solo el
+        # numero puntual.
+        assert 0.0 <= segment["accuracy"] <= 1.0
+        ci_low, ci_high = segment["accuracy_confidence_interval_95"]
+        assert 0.0 <= ci_low <= segment["accuracy"] <= ci_high <= 1.0
+        assert segment["low_sample_size"] is True  # un unico partido liquidado
     assert match_id  # sanity: el partido existe y se uso para liquidar
 
 
