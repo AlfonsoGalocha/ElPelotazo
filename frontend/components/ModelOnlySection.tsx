@@ -21,7 +21,7 @@ export default function ModelOnlySection({ predictions }: { predictions: Predict
       <p className="mb-3 text-xs text-slate-500">
         Solo probabilidad del modelo: córners no tiene cuotas reales en el dataset histórico, y
         algunos mercados de goles pueden no tenerlas todavía. Sin cuota de mercado no hay edge que
-        calcular, así que estas predicciones nunca compiten en "Mejores señales".
+        calcular, así que estas predicciones nunca compiten en «Mejores oportunidades».
       </p>
       <div className="flex flex-col gap-2">
         {predictions.map((p) => (
