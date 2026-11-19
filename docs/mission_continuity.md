@@ -201,10 +201,15 @@ reales (nunca pendientes, "void" excluido de Brier/ROI):
 Brier score, log loss, ECE, reliability curve, accuracy, ROI, PnL total,
 max drawdown, desglose por rango de probabilidad (predicha vs frecuencia
 empírica real — exactamente el Bloque 5.2.2 del prompt) y por rango de
-edge. **Gap real**: no se ve un intervalo de confianza explícito ni aviso
-de "N bajo" en la RESPUESTA de este endpoint (sí se usa un umbral mínimo
-en otros sitios, `MIN_SETTLED_FOR_TRACK_RECORD=30`, pero aquí no se aplica
-ni se muestra) — un segmento con n=5 se reporta igual que uno con n=500.
+edge. **Gap real, IMPLEMENTADO Y PROBADO** (commit `c44a04b`, mergeado a
+`main`): cada segmento de `real_performance_report` ahora incluye
+`accuracy`, `accuracy_confidence_interval_95` (Wilson score, reutilizando
+`prediction/uncertainty.py::wilson_interval`, antes solo usado para CI de
+`model_probability`) y `low_sample_size` (`True` si
+`n_settled < MIN_SAMPLE_SIZE_FOR_RELIABLE_STATS = 30`) — un segmento con
+n=5 ya no se reporta igual que uno con n=500: lleva su intervalo de
+confianza explícito y una señal clara de muestra insuficiente. 570/570
+tests backend en verde.
 
 ### Bloque 5 (gráficos) — YA EXISTEN varios, verificado por inventario de componentes
 
@@ -262,16 +267,21 @@ UI de fiabilidad incluida):
 1. **`standings_snapshots`** (clasificación histórica por fecha) y
    **`provider_responses`** (respuesta cruda de API-Football archivada) —
    gaps de esquema reales, sin implementar.
-3. Auditar `backend/app/api/routes/models.py::model_performance`
-   (confianza/N bajo no se expone) y añadir intervalos de confianza/aviso
-   de muestra pequeña a la respuesta del endpoint.
-4. Auditar los 7 gráficos pedidos en el Bloque 5.2 uno a uno contra los ya
-   existentes, aplicando la skill `dataviz` del proyecto.
-5. Integración de lesiones/ausencias vía `/injuries` de API-Football
+2. Auditar los 7 gráficos pedidos en el Bloque 5.2 uno a uno contra los ya
+   existentes (`CalibrationChart.tsx`, `EdgeRoiChart.tsx`,
+   `ModelVsMarketChart.tsx`, `PerformanceEvolutionChart.tsx`,
+   `ModelPerformanceTabs/Board.tsx`), aplicando la skill `dataviz` del
+   proyecto. **EN CURSO ahora mismo.**
+3. Integración de lesiones/ausencias vía `/injuries` de API-Football
    (requiere verificar cobertura real para las 5 ligas antes de construir
    nada, mismo principio "nunca inventar" ya aplicado todo el día de hoy).
-6. Shrinkage bayesiano para la fiabilidad jerárquica (en vez del corte
+4. Shrinkage bayesiano para la fiabilidad jerárquica (en vez del corte
    duro de 30 observaciones) — evaluar con backtest antes de activar.
+
+**Completado desde el último corte de este documento**: intervalos de
+confianza y aviso de muestra pequeña en `/models/performance` (punto 3 de
+la lista anterior, ver Bloque 4 arriba), commit `c44a04b` mergeado a
+`main`.
 
 Nada de esto requiere credenciales nuevas ni decisiones que no pueda tomar
 yo solo — son puramente de ingeniería. Continuar diciendo "sigue con la
