@@ -61,11 +61,26 @@ del scheduler) para que Bundesliga deje de mostrar el 97.2%.
   en silencio" — se prefirió no implementarla sin poder verificarla. Sigue
   usando el método proporcional estándar.
 
-**Gap real identificado**: no hay evidencia de *drift de lesiones/ausencias*
-ni de ningún indicador de "equipo recién ascendido" explícito — el prompt
-pide tratarlos cuando haya datos; API-Football SÍ puede dar lesiones
-(`/injuries`, visto en su documentación oficial) pero no está integrado hoy.
-Pendiente (ver sección G).
+**Gap real identificado, diagnosticado esta sesión y DELIBERADAMENTE
+DIFERIDO (mismo criterio que Shin's method, ver arriba)**: no hay
+evidencia de *drift de lesiones/ausencias* ni de ningún indicador de
+"equipo recién ascendido" explícito. Investigado con `WebSearch` (ver
+docs públicas de API-Football): el endpoint `/injuries` existe desde
+2021, pero la cobertura real por liga/plan **no está documentada de
+forma fiable** — la propia guía de API-Football recomienda comprobar
+`coverage.injuries` en `/leagues` liga por liga en vez de asumirlo. Este
+entorno de desarrollo tiene el egress de red restringido (no incluye
+api-football.com/api-sports.io, ver docstring de `ApiFootballClient`),
+así que **no se puede verificar con datos reales desde aquí** — construir
+la integración sin saber si las 5 ligas del MVP tienen esta cobertura
+sería exactamente el tipo de invención que la misión prohíbe
+explícitamente. Preparado para que el usuario lo compruebe con su key
+real: `scripts/debug_api_football_injuries_coverage.py` (nuevo, 1 request
+barato por liga vía `/leagues?id=X`, nunca `/injuries` en sí), con test
+de regresión (`backend/tests/unit/test_debug_api_football_injuries_coverage_script.py`,
+3/3 en verde) verificado contra una respuesta canned. Siguiente paso
+exacto: el usuario corre el script, y con el resultado real se decide si
+construir la integración o no.
 
 ### Bloque 2 (Oportunidades) — gap real y concreto confirmado
 
@@ -316,12 +331,14 @@ por este bloque de trabajo).
 Orden de prioridad recomendado para la próxima sesión (1 y 2.2 completos,
 UI de fiabilidad incluida):
 
-1. Integración de lesiones/ausencias vía `/injuries` de API-Football
-   (requiere verificar cobertura real para las 5 ligas antes de construir
-   nada, mismo principio "nunca inventar" ya aplicado todo el día de hoy).
-   **Siguiente paso exacto.**
-2. Shrinkage bayesiano para la fiabilidad jerárquica (en vez del corte
-   duro de 30 observaciones) — evaluar con backtest antes de activar.
+1. **Shrinkage bayesiano para la fiabilidad jerárquica** (en vez del
+   corte duro de 30 observaciones) — evaluar con backtest antes de
+   activar. **Siguiente paso exacto** (lo único de la lista anterior que
+   no depende de acceso real a una API externa).
+2. Integración de lesiones/ausencias vía `/injuries` de API-Football —
+   **BLOQUEADO**, ver Bloque 1 arriba: necesita que el usuario corra
+   `scripts/debug_api_football_injuries_coverage.py` con su key real y
+   confirme `coverage.injuries` para las 5 ligas antes de construir nada.
 3. (Opcional, menor prioridad) Endpoint/UI para `standings_snapshots` —
    hoy la tabla se calcula y archiva correctamente pero no tiene ningún
    consumidor expuesto todavía (igual que `TeamMatchFeatures`, es
