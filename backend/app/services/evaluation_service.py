@@ -47,6 +47,7 @@ from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.features.goals import build_match_feature_table
 from backend.app.market.clv import compute_clv
 from backend.app.market.consensus import compute_market_consensus
+from backend.app.prediction.eligibility import active_market, historical_evidence, stored_pre_kickoff
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS, label_for_market
 from backend.app.prediction.uncertainty import wilson_interval
 from backend.app.prediction.ranking import (
@@ -57,6 +58,7 @@ from backend.app.prediction.ranking import (
 )
 from backend.app.prediction.secondary_markets import (
     SECONDARY_MARKET_DEFINITIONS,
+    compute_total_column,
     label_for_secondary_market,
 )
 from backend.app.services.match_service import load_matches_dataframe
@@ -87,7 +89,13 @@ def _closing_consensus_odds(db: Session, match_id: int, market_key: str) -> floa
 
     rows = (
         db.query(MatchOddsHistory)
-        .filter_by(match_id=match_id, market=market, line=line)
+        .join(Match, Match.id == MatchOddsHistory.match_id)
+        .filter(
+            MatchOddsHistory.match_id == match_id,
+            MatchOddsHistory.market == market,
+            MatchOddsHistory.line == line,
+            MatchOddsHistory.recorded_at < Match.kickoff_utc,
+        )
         .order_by(MatchOddsHistory.recorded_at.asc())
         .all()
     )
@@ -128,8 +136,10 @@ def settle_finished_predictions(db: Session, competition_code: str | None = None
         if competition is None:
             continue
         matches = load_matches_dataframe(db, competition.id)
+        if matches.empty:
+            continue
         table = build_match_feature_table(matches)
-        finished = table[table["home_goals"].notna()]
+        finished = table[(table["status"] == "finished") & table["home_goals"].notna() & table["away_goals"].notna()]
         if finished.empty:
             continue
         finished_match_ids = finished["match_id"].tolist()
@@ -179,6 +189,9 @@ def settle_finished_predictions(db: Session, competition_code: str | None = None
                     if home_goals == home_goals and away_goals == away_goals  # not NaN
                     else None
                 )
+                if market in SECONDARY_MARKET_DEFINITIONS:
+                    total = compute_total_column(table_by_match_id.loc[[prediction.match_id]], "corners").iloc[0]
+                    actual_result = f"{int(total)} córners"
                 closing_odds = _closing_consensus_odds(db, prediction.match_id, prediction.market)
                 clv = compute_clv(prediction.market_odds, closing_odds)
                 db.add(
@@ -276,13 +289,20 @@ def evaluate_settled_predictions(db: Session, competition_code: str | None = Non
         if competition is None:
             continue
         matches = load_matches_dataframe(db, competition.id)
+        if matches.empty:
+            continue
         table = build_match_feature_table(matches)
-        finished = table[table["home_goals"].notna()]
+        finished = table[(table["status"] == "finished") & table["home_goals"].notna() & table["away_goals"].notna()]
         if finished.empty:
             continue
 
         finished_match_ids = finished["match_id"].tolist()
-        predictions = db.query(Prediction).filter(Prediction.match_id.in_(finished_match_ids)).all()
+        predictions = (
+            db.query(Prediction)
+            .join(Match, Match.id == Prediction.match_id)
+            .filter(Prediction.match_id.in_(finished_match_ids), active_market(), stored_pre_kickoff())
+            .all()
+        )
         if not predictions:
             continue
 
@@ -370,7 +390,7 @@ def real_performance_report(
     if model_version_id:
         query = query.filter(Prediction.model_version_id == model_version_id)
 
-    rows = query.all()
+    rows = historical_evidence(query).all()
     segments: dict[tuple[str, str, int], list[tuple[Prediction, PredictionResult]]] = defaultdict(
         list
     )
@@ -387,7 +407,7 @@ def real_performance_report(
             continue
         segments[key].append((prediction, result))
 
-    report: dict = {"segments": []}
+    report: dict = {"segments": [], "cohort": "pre_kickoff_timestamp_screened"}
     # Solo se reporta un segmento con AL MENOS una liquidacion real
     # (won/lost): si una clave entera quedo solo con "void" (caso raro,
     # p.ej. una competicion suspendida del todo), sus `PredictionResult`
@@ -577,7 +597,7 @@ def market_track_records_with_provenance(
     by_exact: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
     by_tier: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
     by_market: dict[str, list[tuple[bool, float]]] = defaultdict(list)
-    for prediction, result, competition in query.all():
+    for prediction, result, competition in historical_evidence(query).all():
         if _is_void(result):
             continue  # partido cancelado: no es evidencia de calibracion del mercado
         pair = (bool(result.outcome), prediction.model_probability)
@@ -700,14 +720,14 @@ def fit_edge_reliability_curve(db: Session) -> IsotonicRegression | None:
     con cuota real en total -- se prefiere "sin correccion" (neutro) a
     ajustar sobre ruido.
     """
-    rows = (
+    query = (
         db.query(Prediction, PredictionResult)
         .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
         .filter(Prediction.market_odds.isnot(None))
         .filter(Prediction.edge.isnot(None))
-        .all()
+        .join(Match, Match.id == Prediction.match_id)
     )
-    rows = [(p, r) for p, r in rows if not _is_void(r)]  # partido cancelado: no es evidencia real de edge
+    rows = historical_evidence(query).all()
     if len(rows) < MIN_SETTLED_FOR_EDGE_RELIABILITY:
         return None
 
@@ -766,13 +786,13 @@ def fit_odds_reliability_curve(db: Session) -> IsotonicRegression | None:
     `None` si hay menos de `MIN_SETTLED_FOR_ODDS_RELIABILITY`
     liquidaciones con cuota real en total.
     """
-    rows = (
+    query = (
         db.query(Prediction, PredictionResult)
         .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
         .filter(Prediction.market_odds.isnot(None))
-        .all()
+        .join(Match, Match.id == Prediction.match_id)
     )
-    rows = [(p, r) for p, r in rows if not _is_void(r)]  # partido cancelado: no es evidencia real de cuota
+    rows = historical_evidence(query).all()
     if len(rows) < MIN_SETTLED_FOR_ODDS_RELIABILITY:
         return None
 
@@ -831,14 +851,14 @@ def fit_longshot_calibration_curve(
     cuota >=4), asi que este umbral puede alcanzarse mas tarde que los
     otros `MIN_SETTLED_FOR_*`.
     """
-    rows = (
+    query = (
         db.query(Prediction, PredictionResult)
         .join(PredictionResult, PredictionResult.prediction_id == Prediction.id)
         .filter(Prediction.market_odds.isnot(None))
         .filter(Prediction.market_odds >= odds_threshold)
-        .all()
+        .join(Match, Match.id == Prediction.match_id)
     )
-    rows = [(p, r) for p, r in rows if not _is_void(r)]  # partido cancelado: no es evidencia real de calibracion
+    rows = historical_evidence(query).all()
     if len(rows) < MIN_SETTLED_FOR_LONGSHOT_CALIBRATION:
         return None
 

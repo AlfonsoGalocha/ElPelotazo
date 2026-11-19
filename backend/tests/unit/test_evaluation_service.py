@@ -10,7 +10,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app.db.database import Base, session_scope
 from backend.app.db.models.core import Competition, Season
-from backend.app.db.models.matches import Match, MatchOdds
+from backend.app.db.models.matches import Match, MatchOdds, MatchStatistics
 from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionResult
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.normalization.competitions import COMPETITIONS
@@ -93,6 +93,7 @@ def test_evaluate_settled_predictions_grades_a_now_finished_match():
     with session_scope() as db:
         result = train_competition_models(db, competition_code)
         assert result["status"] == "trained"
+        db.get(ModelVersion, result["model_version_id"]).is_active = True
 
     with session_scope() as db:
         comp = db.query(Competition).filter_by(code=competition_code).one()
@@ -150,7 +151,7 @@ def test_evaluate_settled_predictions_grades_a_now_finished_match():
     # Simula que el partido ya se jugo de verdad.
     with session_scope() as db:
         db.query(Match).filter_by(id=match_id).update(
-            {"home_goals": 2, "away_goals": 1, "status": "finished"}, synchronize_session=False
+            {"home_goals": 2, "away_goals": 1, "status": "finished", "kickoff_utc": dt.datetime.utcnow()}, synchronize_session=False
         )
 
     with session_scope() as db:
@@ -234,6 +235,7 @@ def test_settle_never_fabricates_a_corners_outcome_for_a_match_without_real_corn
     with session_scope() as db:
         result = train_competition_models(db, competition_code)
         assert result["status"] == "trained"
+        db.get(ModelVersion, result["model_version_id"]).is_active = True
 
     with session_scope() as db:
         comp = db.query(Competition).filter_by(code=competition_code).one()
@@ -275,7 +277,7 @@ def test_settle_never_fabricates_a_corners_outcome_for_a_match_without_real_corn
     # trae el resultado pero no las estadisticas del partido).
     with session_scope() as db:
         db.query(Match).filter_by(id=match_id).update(
-            {"home_goals": 2, "away_goals": 1, "status": "finished"}, synchronize_session=False
+            {"home_goals": 2, "away_goals": 1, "status": "finished", "kickoff_utc": dt.datetime.utcnow()}, synchronize_session=False
         )
 
     with session_scope() as db:
@@ -346,6 +348,10 @@ def _seed_settled_predictions(
         )
         db.add(match)
         db.flush()
+        if market.startswith("corners_"):
+            under = market.startswith("corners_under_")
+            total = 14 if outcome != under else 4
+            db.add(MatchStatistics(match_id=match.id, home_corners=total // 2, away_corners=total // 2))
         prediction = Prediction(
             match_id=match.id,
             market=market,
@@ -358,7 +364,7 @@ def _seed_settled_predictions(
             data_quality=0.8,
             explanation={},
             features_used={},
-            created_at=dt.datetime.utcnow(),
+            created_at=match.kickoff_utc - dt.timedelta(minutes=15),
         )
         db.add(prediction)
         db.flush()
@@ -747,7 +753,7 @@ def _seed_settled_predictions_with_edge(
             data_quality=0.8,
             explanation={},
             features_used={},
-            created_at=dt.datetime.utcnow(),
+            created_at=match.kickoff_utc - dt.timedelta(minutes=15),
         )
         db.add(prediction)
         db.flush()

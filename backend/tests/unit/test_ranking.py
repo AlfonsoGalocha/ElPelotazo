@@ -120,14 +120,14 @@ def test_stale_odds_disabled_by_default():
 
 def test_stale_odds_excluded_when_threshold_configured():
     settings = Settings(max_odds_age_minutes=60)
-    fresh = _prediction(created_at=dt.datetime.utcnow() - dt.timedelta(minutes=10))
-    stale = _prediction(created_at=dt.datetime.utcnow() - dt.timedelta(minutes=120))
+    fresh = _prediction(odds_origin_at=dt.datetime.utcnow() - dt.timedelta(minutes=10))
+    stale = _prediction(odds_origin_at=dt.datetime.utcnow() - dt.timedelta(minutes=120))
     assert evaluate_quality_gate(fresh, settings) is None
     assert evaluate_quality_gate(stale, settings) == ExclusionReason.STALE_ODDS
 
 
-def test_odds_age_minutes_reflects_created_at():
-    prediction = _prediction(created_at=dt.datetime.utcnow() - dt.timedelta(minutes=45))
+def test_odds_age_minutes_reflects_provider_update():
+    prediction = _prediction(odds_origin_at=dt.datetime.utcnow() - dt.timedelta(minutes=45))
     age = odds_age_minutes(prediction)
     assert 44.0 <= age <= 46.0
 

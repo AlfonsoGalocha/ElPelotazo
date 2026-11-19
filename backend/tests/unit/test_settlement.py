@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.matches import Match, MatchOdds
-from backend.app.db.models.modeling import Prediction, PredictionResult
+from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionResult
 from backend.app.ingestion.base import DataProvider, RawMatchRecord, RawOddsRecord
 from backend.app.main import app
 from backend.app.normalization.competitions import COMPETITIONS
@@ -87,6 +87,7 @@ def _setup_finished_match(competition_code: str, home_goals: int, away_goals: in
     with session_scope() as db:
         result = train_competition_models(db, competition_code)
         assert result["status"] == "trained"
+        db.get(ModelVersion, result["model_version_id"]).is_active = True
 
     with session_scope() as db:
         comp = db.query(Competition).filter_by(code=competition_code).one()
@@ -136,7 +137,7 @@ def _setup_finished_match(competition_code: str, home_goals: int, away_goals: in
 
     with session_scope() as db:
         db.query(Match).filter_by(id=match_id).update(
-            {"home_goals": home_goals, "away_goals": away_goals, "status": "finished"},
+            {"home_goals": home_goals, "away_goals": away_goals, "status": "finished", "kickoff_utc": dt.datetime.utcnow()},
             synchronize_session=False,
         )
 

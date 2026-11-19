@@ -233,7 +233,7 @@ def test_settlement_computes_closing_line_value_from_the_latest_recorded_odds():
 
         # Dos snapshots registrados en MatchOddsHistory: el mercado se movio
         # de 1.80 (cuando se genero la prediccion) a 1.50 (cierre real).
-        for price, hours_before in [(1.80, 3), (1.50, 1)]:
+        for price, hours_before in [(1.80, 3.1), (1.50, 2.5), (2.5, 1)]:
             db.add(
                 MatchOddsHistory(
                     match_id=match_id,
@@ -258,5 +258,5 @@ def test_settlement_computes_closing_line_value_from_the_latest_recorded_odds():
         # cuota bajo despues, es decir la seleccion se volvio mas probable
         # para el mercado -- quien tomo 1.80 consiguio mejor valor que
         # quien apostó al cierre).
-        assert result.closing_line_value > 0
+        assert result.closing_line_value == compute_clv(1.80, 1.50)
         assert result.closing_line_value == compute_clv(1.80, 1.50)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -67,7 +68,9 @@ def serialize_prediction(
 ) -> dict:
     settings = get_settings()
     age_minutes = odds_age_minutes(prediction)
-    is_stale = settings.max_odds_age_minutes is not None and age_minutes > settings.max_odds_age_minutes
+    is_stale = age_minutes is not None and age_minutes > (
+        settings.max_odds_age_minutes or settings.opportunity_max_odds_age_minutes
+    )
     return {
         "id": prediction.id,
         "match": prediction.match,
@@ -108,6 +111,7 @@ def serialize_prediction(
         "market_odds_max": prediction.market_odds_max,
         "market_odds_median": prediction.market_odds_median,
         "market_odds_average": prediction.market_odds_average,
+        "odds_origin_at": prediction.odds_origin_at,
         "market_quality": (
             market_quality_tier(
                 prediction.bookmakers_used,
@@ -119,7 +123,7 @@ def serialize_prediction(
             if prediction.bookmakers_used is not None
             else None
         ),
-        "odds_age_minutes": round(age_minutes, 1),
+        "odds_age_minutes": round(age_minutes, 1) if age_minutes is not None else None,
         "is_stale_odds": is_stale,
         "anomaly_flags": anomaly_flags or [],
         "is_best_prediction": is_best_prediction,
@@ -156,7 +160,7 @@ def predictions_today(
     query = (
         db.query(Prediction)
         .join(Match, Match.id == Prediction.match_id)
-        .filter(Match.status == "scheduled")
+        .filter(Match.status == "scheduled", ~Prediction.market.startswith("cards_"))
         .filter(Match.kickoff_utc >= now)
         .filter(Match.kickoff_utc <= horizon)
     )
@@ -252,7 +256,7 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
         return {"round": None, "predictions": []}
 
     predictions = (
-        db.query(Prediction).filter(Prediction.match_id.in_(round_info.match_ids)).all()
+        db.query(Prediction).filter(Prediction.match_id.in_(round_info.match_ids), ~Prediction.market.startswith("cards_")).all()
         if round_info.match_ids
         else []
     )
@@ -355,9 +359,9 @@ def _base_signal_query(
     paga la casa". Independiente de MAX_SIGNAL_ODDS (que limita la cuota
     de MERCADO para evitar tiros muy largos, no para segmentar por rango).
     """
-    query = db.query(Prediction).join(Match, Match.id == Prediction.match_id)
+    query = db.query(Prediction).join(Match, Match.id == Prediction.match_id).filter(~Prediction.market.startswith("cards_"))
     if upcoming_only:
-        query = query.filter(Match.status == "scheduled")
+        query = query.filter(Match.status == "scheduled", Match.kickoff_utc > dt.datetime.utcnow(), Prediction.created_at < Match.kickoff_utc)
         if date is not None:
             day_start = dt.datetime.combine(date, dt.time.min)
             day_end = day_start + dt.timedelta(days=1)
@@ -730,6 +734,11 @@ def best_predictions_debug(
     date: dt.date | None = Query(None),
     min_fair_odds: float | None = Query(None, ge=1.0),
     max_fair_odds: float | None = Query(None, ge=1.0),
+    min_edge: float | None = Query(None, ge=0),
+    min_bookmakers: int | None = Query(None, ge=1),
+    min_ev: float | None = Query(None, ge=0),
+    quality: str | None = QUALITY_QUERY,
+    summary_only: bool = Query(False),
     db: Session = Depends(get_db),
 ) -> dict:
     """Observabilidad (seccion 13): por cada prediccion candidata, si entro
@@ -737,7 +746,8 @@ def best_predictions_debug(
     aparece" sin tener que adivinar leyendo logs."""
     settings = _settings_for_opportunities(db, get_settings())
     candidates = _base_signal_query(
-        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code
+        db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code,
+        min_edge, min_bookmakers, min_ev=min_ev
     ).all()
     track_records = market_track_records(db, competition_code)
     # Procedencia de la fiabilidad (seccion 2.2, "fiabilidad jerarquica"):
@@ -759,7 +769,39 @@ def best_predictions_debug(
         }
 
     included, excluded = rank_signals_v3(candidates, settings, track_records)
+    by_match = _group_by_match(candidates)
+    main_count = sum(
+        is_strong_signal(compute_anomaly_flags(signal.prediction, by_match[signal.prediction.match_id], settings))
+        for signal in _filter_by_quality(included, quality, settings)
+    )
+    observation_reasons = {
+        "calibracion_no_disponible", "incertidumbre_no_disponible",
+        "origen_cuota_no_verificado", "cuota_desactualizada",
+        "fiabilidad_historica_insuficiente",
+    }
+    observations = [
+        item for item in excluded
+        if item.reason.value in observation_reasons and (item.prediction.expected_value or 0) > 0
+    ]
+    counts = {
+        "matches": len(by_match),
+        "matches_with_market": len({p.match_id for p in candidates if p.market_odds is not None}),
+        "candidates": len(candidates),
+        "candidates_with_valid_market": sum(
+            p.market_odds is not None and p.market_odds > 1 and p.market_probability is not None
+            for p in candidates
+        ),
+        "positive_estimated_ev": sum(p.expected_value is not None and p.expected_value > 0 for p in candidates),
+        "passed_gate": len(candidates) - len(excluded),
+        "opportunities": main_count,
+        "observation": len(observations),
+    }
+    reasons = dict(Counter(item.reason.value for item in excluded))
+    if summary_only:
+        return {"counts": counts, "reasons": reasons}
     return {
+        "counts": counts,
+        "reasons": reasons,
         "included": [
             {
                 "prediction_id": s.prediction.id,
@@ -844,7 +886,7 @@ def _build_explanation_summary(prediction: Prediction, serialized: dict) -> list
         lines.append(f"Estos datos de mercado se generaron hace {round(serialized['odds_age_minutes'])} minutos.")
     lines.append(
         f"Calidad de datos del modelo (informacion disponible de ambos equipos): "
-        f"{prediction.data_quality * 100:.0f}%. Confianza del modelo: {prediction.confidence * 100:.0f}%."
+        f"{prediction.data_quality:.2f} sobre 1. Confianza del modelo: {prediction.confidence:.2f} sobre 1."
     )
     return lines
 

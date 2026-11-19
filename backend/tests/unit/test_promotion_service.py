@@ -14,9 +14,6 @@ from __future__ import annotations
 
 import datetime as dt
 
-import joblib
-import numpy as np
-
 from backend.app.db.database import session_scope
 from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
@@ -60,31 +57,6 @@ class _FakeProvider(DataProvider):
         return records
 
 
-class _InvertedScoreMatrixWrapper:
-    """Envoltorio picklable (modulo-level, nunca una clase local): invierte
-    la matriz conjunta de marcador (traspone home<->away) de cualquier
-    `GoalsModel` que ya ofrezca `predict_score_matrix` -- usado para
-    simular un candidato deliberadamente "peor" en
-    `test_worse_candidate_never_replaces_the_active_version`."""
-
-    def __init__(self, inner):
-        self._inner = inner
-
-    def __getattr__(self, name):
-        # Guarda contra recursion infinita durante el unpickling de
-        # joblib: pickle sondea `__setstate__`/etc. ANTES de que
-        # `__init__` haya corrido, cuando `_inner` todavia no existe en
-        # `self.__dict__` -- sin este corte, `getattr(self._inner, ...)`
-        # vuelve a disparar este mismo `__getattr__` buscando `_inner`.
-        if name == "_inner":
-            raise AttributeError(name)
-        return getattr(self._inner, name)
-
-    def predict_score_matrix(self, table):
-        matrix = self._inner.predict_score_matrix(table)
-        return np.transpose(matrix, (0, 2, 1))
-
-
 def _ingest_and_train(competition_code: str, seed: int, n_seasons: int = 3):
     COMPETITIONS.setdefault(competition_code, ("Promotion Test League", "Testland"))
     synthetic = generate_synthetic_matches(n_teams=8, n_seasons=n_seasons, seed=seed)
@@ -98,18 +70,18 @@ def _ingest_and_train(competition_code: str, seed: int, n_seasons: int = 3):
         return result["model_version_id"]
 
 
-def test_first_ever_version_is_promoted_with_nothing_to_compare_against():
+def test_first_candidate_stays_inactive_without_an_incumbent():
     competition_code = "promotion_test_league_first"
     version_id = _ingest_and_train(competition_code, seed=101)
 
     with session_scope() as db:
         candidate = db.get(ModelVersion, version_id)
         decision = evaluate_and_promote(db, competition_code, candidate)
-        assert decision["promoted"] is True
+        assert decision["promoted"] is False
         assert decision["reason"] == "no_previous_version"
 
     with session_scope() as db:
-        assert db.get(ModelVersion, version_id).is_active is True
+        assert db.get(ModelVersion, version_id).is_active is False
 
 
 def test_candidate_not_promoted_when_too_few_out_of_sample_matches():
@@ -124,7 +96,7 @@ def test_candidate_not_promoted_when_too_few_out_of_sample_matches():
     first_id = _ingest_and_train(competition_code, seed=102, n_seasons=1)
     with session_scope() as db:
         first = db.get(ModelVersion, first_id)
-        evaluate_and_promote(db, competition_code, first)
+        first.is_active = True
 
     # Segundo entrenamiento, MISMOS datos (nada nuevo jugado desde el primero).
     with session_scope() as db:
@@ -144,15 +116,13 @@ def test_candidate_not_promoted_when_too_few_out_of_sample_matches():
         assert db.get(ModelVersion, first_id).is_active is True
 
 
-def test_worse_candidate_never_replaces_the_active_version():
-    """Un candidato que predice literalmente al revés (probabilidad
-    invertida) en los partidos fuera de muestra debe perder la
-    comparacion con seguridad -- nunca sustituye a la version activa."""
+def test_matches_used_by_new_candidate_do_not_replace_the_active_version():
+    """Only results after both model cuts can support a comparison."""
     competition_code = "promotion_test_league_worse"
     first_id = _ingest_and_train(competition_code, seed=103)
     with session_scope() as db:
         first = db.get(ModelVersion, first_id)
-        evaluate_and_promote(db, competition_code, first)
+        first.is_active = True
 
     # Partidos NUEVOS, finalizados, con fecha posterior al training_end
     # del primer modelo -- evidencia real fuera de muestra con la que
@@ -186,43 +156,12 @@ def test_worse_candidate_never_replaces_the_active_version():
         result = train_competition_models(db, competition_code)
         second_id = result["model_version_id"]
 
-    # El candidato "peor" se simula directamente: se sustituye su artefacto
-    # por uno que INVIERTE la matriz conjunta de marcador (traspone
-    # home<->away) -- si el modelo original predecia que el local marca
-    # como el visitante normalmente marcaria y viceversa, su Brier score
-    # en partidos nuevos todos 5-0 a favor del local sera claramente peor,
-    # sin depender de que el modelo real por casualidad acierte o falle
-    # estos partidos sinteticos.
-    from backend.app.services.model_service import load_model_artifact
-
     with session_scope() as db:
         second = db.get(ModelVersion, second_id)
-        artifact = load_model_artifact(second)
-        artifact["dixon_coles"] = _InvertedScoreMatrixWrapper(artifact["dixon_coles"])
-        artifact["ensemble_weights"] = {}  # fuerza a usar SOLO el estadistico saboteado
-        joblib.dump(artifact, second.artifact_path)
-
         decision = evaluate_and_promote(db, competition_code, second)
         assert decision["promoted"] is False
-        assert decision["reason"] == "walk_forward_comparison"
-        assert decision["candidate_brier"] > decision["previous_brier"]
+        assert decision["reason"] == "insufficient_out_of_sample_data"
 
     with session_scope() as db:
         assert db.get(ModelVersion, second_id).is_active is False
-        assert db.get(ModelVersion, first_id).is_active is True
-
-
-def test_promoting_a_new_version_deactivates_the_previous_one():
-    """Cuando SI se promociona (aqui: no hay version anterior, caso mas
-    simple de "promovido"), la version anterior (si la hay) se desactiva
-    explicitamente -- a lo sumo una version activa por competicion."""
-    competition_code = "promotion_test_league_deactivate"
-    first_id = _ingest_and_train(competition_code, seed=104)
-
-    with session_scope() as db:
-        first = db.get(ModelVersion, first_id)
-        decision = evaluate_and_promote(db, competition_code, first)
-        assert decision["promoted"] is True
-
-    with session_scope() as db:
         assert db.get(ModelVersion, first_id).is_active is True

@@ -40,6 +40,7 @@ class PredictionOut(BaseModel):
     calibrated_probability: float | None = None
     market_probability: float | None
     market_odds: float | None
+    odds_origin_at: UtcDatetime | None = None
     fair_odds: float
     edge: float | None
     expected_value: float | None
@@ -159,6 +160,8 @@ class HistoryPredictionOut(PredictionOut):
     pipeline, `services/evaluation_service.py`) -- nunca se infieren de
     otra forma."""
 
+    origin_status: str = "unverified"
+    settlement_verification: str = "not_applicable"
     actual_result: str | None = None
     # `None` mientras no haya PredictionResult (pendiente) O cuando la
     # liquidacion es "void" (partido cancelado) -- en ambos casos no hay

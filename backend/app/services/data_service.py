@@ -375,7 +375,9 @@ def _attach_odds_snapshots(
             (
                 m
                 for m in scheduled
-                if m.home_team_id == home_team_id
+                if (snapshot.provider_fixture_id is None or m.provider != "api_football"
+                    or m.provider_id == snapshot.provider_fixture_id)
+                and m.home_team_id == home_team_id
                 and m.away_team_id == away_team_id
                 and abs(m.kickoff_utc - snapshot.commence_time.replace(tzinfo=None)) <= MAX_KICKOFF_DRIFT
             ),
@@ -435,7 +437,7 @@ def _attach_odds_snapshots(
                 "%s.duplicate_odds_in_single_fetch: match_id=%d keys=%s",
                 log_prefix,
                 match.id,
-                sorted(duplicate_keys),
+                sorted(duplicate_keys, key=str),
             )
 
         # Bug real reportado por el usuario (cuotas de corners seguian
@@ -454,42 +456,26 @@ def _attach_odds_snapshots(
         markets_in_snapshot = {odds.market for odds in deduped_odds.values()}
         if markets_in_snapshot:
             db.query(MatchOdds).filter(
-                MatchOdds.match_id == match.id, MatchOdds.market.in_(markets_in_snapshot)
+                MatchOdds.match_id == match.id,
+                MatchOdds.market.in_(markets_in_snapshot),
+                MatchOdds.snapshot_type == "pre_match",
             ).delete(synchronize_session=False)
 
         for odds in deduped_odds.values():
-            db.add(
-                MatchOdds(
-                    match_id=match.id,
-                    bookmaker=odds.bookmaker,
-                    market=odds.market,
-                    line=odds.line,
-                    selection=odds.selection,
-                    price=odds.price,
-                    # "pre_match", no "live": son cuotas tomadas ANTES del
-                    # partido para un fixture programado, nunca cuotas en
-                    # vivo durante el juego (esta fuente no las provee).
-                    snapshot_type="pre_match",
-                    recorded_at=recorded_at,
-                )
-            )
-            # Append-only, EN PARALELO a la fila de arriba (que si se borra
-            # y reemplaza): unica forma de conservar el movimiento real de
-            # la cuota en el tiempo para poder calcular closing_line_value
-            # despues (ver market/clv.py) -- MatchOdds por si sola nunca
-            # lo conservaba (se sobrescribia en cada refresco).
-            db.add(
-                MatchOddsHistory(
-                    match_id=match.id,
-                    bookmaker=odds.bookmaker,
-                    market=odds.market,
-                    line=odds.line,
-                    selection=odds.selection,
-                    price=odds.price,
-                    snapshot_type="pre_match",
-                    recorded_at=recorded_at,
-                )
-            )
+            quote = {
+                "match_id": match.id,
+                "bookmaker": odds.bookmaker,
+                "market": odds.market,
+                "line": odds.line,
+                "selection": odds.selection,
+                "price": odds.price,
+                "snapshot_type": "pre_match",
+                "recorded_at": recorded_at,
+                "provider_updated_at": odds.provider_updated_at,
+                "fetched_at": odds.fetched_at,
+            }
+            db.add(MatchOdds(archived_quote=MatchOddsHistory(**quote), **quote))
+        db.flush()
         matched_match_ids.append(match.id)
 
     db.commit()

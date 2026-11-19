@@ -117,6 +117,8 @@ class Prediction(Base):
     market_odds_max: Mapped[float | None] = mapped_column(Float, nullable=True)
     market_odds_median: Mapped[float | None] = mapped_column(Float, nullable=True)
     market_odds_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    odds_origin_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    feature_set_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     # `signal_score` CONGELADO en el momento de generar la prediccion (ver
     # services/prediction_service.py::generate_predictions_for_competition):
@@ -195,6 +197,8 @@ class PredictionSnapshot(Base):
     market_odds_max: Mapped[float | None] = mapped_column(Float, nullable=True)
     market_odds_median: Mapped[float | None] = mapped_column(Float, nullable=True)
     market_odds_average: Mapped[float | None] = mapped_column(Float, nullable=True)
+    odds_origin_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    feature_set_version: Mapped[str | None] = mapped_column(String(128), nullable=True)
     signal_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Momento ORIGINAL en que se genero esa prediccion (copiado de

@@ -69,7 +69,11 @@ def compute_total_column(table: pd.DataFrame, stat_family: str) -> pd.Series:
     reportado por el usuario en `has_real_count_data`."""
     if stat_family == "corners":
         cols = STAT_FAMILY_TOTAL_COLUMNS["corners"]
-        return table[cols[0]] + table[cols[1]]
+        home, away = table[cols[0]], table[cols[1]]
+        total = (home + away).where(home.ge(0) & away.ge(0))
+        if "observed_total_corners" in table:
+            total = table["observed_total_corners"].combine_first(total)
+        return total
     raise ValueError(f"Familia de estadistica desconocida: {stat_family}")
 
 
@@ -95,8 +99,7 @@ def has_real_count_data(table: pd.DataFrame, stat_family: str) -> pd.Series:
     resultado real de corners nunca se supo. Se usa este filtro ANTES de
     entrenar, evaluar o liquidar: un partido sin datos reales de corners
     se excluye del todo, nunca se trata como si tuviera 0."""
-    cols = STAT_FAMILY_TOTAL_COLUMNS[stat_family]
-    return table[cols[0]].notna() & table[cols[1]].notna()
+    return compute_total_column(table, stat_family).notna()
 
 
 def label_for_secondary_market(table: pd.DataFrame, market_key: str) -> pd.Series:
@@ -107,7 +110,7 @@ def label_for_secondary_market(table: pd.DataFrame, market_key: str) -> pd.Serie
     spec = SECONDARY_MARKET_DEFINITIONS[market_key]
     total = compute_total_column(table, spec.stat_family)
     label = total > spec.line if spec.kind == "over" else total < spec.line
-    return label.where(total.notna())
+    return label.where(has_real_count_data(table, spec.stat_family))
 
 
 class TotalCountPoissonModel:

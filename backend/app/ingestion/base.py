@@ -70,6 +70,8 @@ class RawOddsRecord:
     selection: str
     price: float
     snapshot_type: str = "closing"
+    provider_updated_at: dt.datetime | None = None
+    fetched_at: dt.datetime | None = None
 
 
 @dataclass
@@ -84,6 +86,7 @@ class FixtureOddsSnapshot:
     away_team_raw: str
     commence_time: dt.datetime
     odds: list[RawOddsRecord]
+    provider_fixture_id: str | None = None
 
 
 class DataProvider(ABC):

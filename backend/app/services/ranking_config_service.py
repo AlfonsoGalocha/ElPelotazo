@@ -1,7 +1,7 @@
 """Preferencia de usuario editable en runtime para la banda de cuotas de
 "Mejores oportunidades" (ver db/models/core.py::RankingConfig). Fila UNICA
 (siempre `id=1`): se crea sola, con los valores por defecto de `Settings`,
-en el primer GET/PUT -- nunca hace falta una migracion de datos a mano.
+en el primer PUT. Las lecturas sin configuración usan los valores por defecto.
 """
 
 from __future__ import annotations
@@ -27,7 +27,9 @@ def get_opportunity_odds_band(db: Session, settings: Settings | None = None) -> 
     """(min, max) vigentes: la preferencia guardada si existe, si no los
     valores por defecto de `Settings` -- nunca None, nunca inventado."""
     settings = settings or get_settings()
-    config = _get_or_create(db)
+    config = db.get(RankingConfig, RANKING_CONFIG_ID)
+    if config is None:
+        return settings.min_opportunity_odds, settings.max_opportunity_odds
     min_odds = config.min_opportunity_odds if config.min_opportunity_odds is not None else settings.min_opportunity_odds
     max_odds = config.max_opportunity_odds if config.max_opportunity_odds is not None else settings.max_opportunity_odds
     return min_odds, max_odds
