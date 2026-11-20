@@ -42,7 +42,7 @@ def record_ingestion_run(
             finished_at=finished_at,
             fixtures_fetched=fixtures_fetched,
             matched=matched,
-            error=error,
+            error=error if error is None or len(error) <= 2000 else error[:1999] + "…",
         )
     )
     db.flush()

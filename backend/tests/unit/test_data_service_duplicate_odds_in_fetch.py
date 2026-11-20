@@ -65,16 +65,16 @@ def test_duplicate_bookmaker_odds_in_a_single_fetch_do_not_accumulate():
 
     # Misma (bookmaker, market, line, selection) tres veces en UNA sola
     # respuesta -- exactamente el patron real visto en produccion (ahi
-    # eran 10 veces para "Marathonbet" a linea 1.5).
+    # eran 10 veces para "Bet365" a linea 1.5).
     snapshot = FixtureOddsSnapshot(
         home_team_raw="DuplicateOddsHome",
         away_team_raw="DuplicateOddsAway",
         commence_time=kickoff.replace(tzinfo=dt.timezone.utc),
         odds=[
-            RawOddsRecord("Marathonbet", "over_under_goals", 1.5, "over", 1.09),
-            RawOddsRecord("Marathonbet", "over_under_goals", 1.5, "over", 1.33),
-            RawOddsRecord("Marathonbet", "over_under_goals", 1.5, "over", 11.75),  # la ultima debe ganar
-            RawOddsRecord("Marathonbet", "over_under_goals", 1.5, "under", 5.5),  # selection distinta, no duplicado
+            RawOddsRecord("Bet365", "over_under_goals", 1.5, "over", 1.09),
+            RawOddsRecord("Bet365", "over_under_goals", 1.5, "over", 1.33),
+            RawOddsRecord("Bet365", "over_under_goals", 1.5, "over", 11.75),  # la ultima debe ganar
+            RawOddsRecord("Bet365", "over_under_goals", 1.5, "under", 5.5),  # selection distinta, no duplicado
         ],
     )
 
