@@ -125,7 +125,7 @@ def assess_opportunity(prediction, odds, market_key, settings, now, reliability,
     score = None
     if not reasons:
         data_quality = prediction.data_quality if valid_probability(prediction.data_quality) else 0
-        source_quality = min(len({row.bookmaker for _, row in current}) / 4, 1)
+        source_quality = min(len({row.bookmaker for _, row in current}) / settings.market_quality_medium_min_bookmakers, 1)
         score = ranking_score(
             probability, ev, reliability.value if reliability else 0,
             (data_quality + source_quality) / 2,

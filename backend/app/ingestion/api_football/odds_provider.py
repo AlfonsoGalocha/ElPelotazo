@@ -364,6 +364,9 @@ class ApiFootballOddsProvider(ApiFootballClient):
                             for market_key, hints, value_kind, excludes in MARKET_NAME_HINTS
                             if any(hint in bet_name_lower for hint in hints)
                             and not any(exclude in bet_name_lower for exclude in excludes)
+                            and (market_key != "match_result" or (
+                                str(bet["id"]) == "1" if bet.get("id") is not None else bet_name_lower.strip() in hints
+                            ))
                         ),
                         None,
                     )
