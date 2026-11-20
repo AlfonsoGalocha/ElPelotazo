@@ -143,17 +143,12 @@ Activacion:
    autenticacion, son los mismos datos).
 3. `football-edge update-secondary-odds` (o `refresh`, que ya lo incluye).
 
-**Nota de honestidad (actualizada tras verificacion real)**: este adapter
-se escribio originalmente siguiendo solo la documentacion publica de
-API-Football, sin poder probarse contra la API real (mismo entorno con
-el egress de red restringido). Desde entonces SI se ha verificado
-end-to-end con datos reales pegados por el usuario desde su propio
-entorno (ver `scripts/debug_match_odds.py`): el mercado de corners real
-se llama literalmente "Corners Over Under", y el matching por subcadena
-tenia que excluir ademas "Home/Away Corners Over/Under" (corners de un
-solo equipo), "Multicorners" y variantes de rango/ventana temporal — ver
-`CORNERS_EXCLUDE` en el propio adapter para el detalle de cada caso real
-encontrado.
+La ingesta prepartido identifica los mercados de API-Football por ID.
+Los IDs admitidos son 1 para resultado a tiempo completo, 5 para total
+de goles, 8 para ambos marcan, 12 para doble oportunidad y 45 para total
+de córners Over/Under. El mercado 85 (total de córners a tres vías)
+tiene liquidación distinta y queda excluido. Si falta el ID, el adaptador
+solo acepta nombres completos conocidos.
 
 ## The Odds API — implementada, deshabilitada por defecto
 

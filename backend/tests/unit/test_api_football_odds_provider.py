@@ -630,3 +630,13 @@ def test_match_winner_does_not_use_other_1x2_markets():
         {"id": 176, "name": "ShotOnTarget 1x2", "values": [{"value": "Home", "odd": "1.18"}]},
     ]}]}])
     assert [(r.market, r.selection, r.price) for r in records] == [("match_result", "home", 1.42)]
+
+
+def test_corners_two_way_keeps_its_price_when_three_way_has_the_same_line():
+    records, _ = ApiFootballOddsProvider._parse_odds_response([{"bookmakers": [{"name": "Bet365", "bets": [
+        {"id": 45, "name": "Corners Over Under", "values": [{"value": "Over 9.5", "odd": "1.80"}]},
+        {"id": 85, "name": "Total Corners (3 way)", "values": [{"value": "Over 9.5", "odd": "2.20"}]},
+    ]}]}])
+    assert [(r.market, r.line, r.selection, r.price) for r in records] == [
+        ("corners_total", 9.5, "over", 1.8),
+    ]
