@@ -177,3 +177,15 @@ def test_double_chance_market_always_treated_as_single_sided():
     assert result.market_probability_source == "consensus_raw"
     assert result.bookmakers_count == 3
     assert result.market_odds == 1.57  # mediana de 1.55/1.57/1.61
+
+
+def test_tight_cluster_does_not_discard_small_real_probability_differences():
+    from backend.app.market.consensus import _drop_outliers
+
+    probabilities = {
+        "William Hill": .658011, "Bet365": .672560, "Betfair": .675676,
+        "Pinnacle": .680997, "1xBet": .674706,
+    }
+    kept, discarded = _drop_outliers(probabilities)
+    assert kept == probabilities
+    assert discarded == []

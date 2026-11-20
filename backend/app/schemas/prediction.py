@@ -155,7 +155,7 @@ class BookmakerOddsOut(BaseModel):
     price: float
     snapshot_type: str
     diff_from_consensus: float | None  # price - market_odds_median (positivo = mejor que el consenso)
-    is_outlier: bool  # descartada del consenso por market/consensus.py (MAD), ver Prediction.market_probability_source
+    is_outlier: bool | None  # descartada del consenso por market/consensus.py (MAD), ver Prediction.market_probability_source
 
 
 class SignalDetailOut(PredictionOut):
@@ -165,6 +165,8 @@ class SignalDetailOut(PredictionOut):
     certeza ("apuesta segura", "ganadora", "100%"), solo los numeros."""
 
     bookmaker_odds: list[BookmakerOddsOut]
+    odds_fetched_at: UtcDatetime | None = None
+    bookmaker_odds_from_archive: bool = False
     explanation_summary: list[str]
 
 

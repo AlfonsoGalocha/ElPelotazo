@@ -12,6 +12,9 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
 
   const signal = await getPredictionDetail(predictionId).catch(() => null);
   if (!signal) notFound();
+  const probability = signal.calibrated_probability ?? signal.model_probability;
+  const gap = signal.market_probability === null ? null : probability - signal.market_probability;
+  const signed = (value: number) => (value >= 0 ? "+" : "") + (value * 100).toFixed(1);
 
   return (
     <div className="flex flex-col gap-6">
@@ -44,18 +47,18 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
         <StatTile label="Cuota" value={signal.market_odds !== null ? signal.market_odds.toFixed(2) : "—"} />
         <StatTile
           label="EV estimado"
-          value={signal.ev_calibrated !== null ? `+${(signal.ev_calibrated * 100).toFixed(1)}%` : "—"}
+          value={signal.ev_calibrated !== null ? `${signed(signal.ev_calibrated)}%` : "—"}
         />
         <StatTile
           label="EV conservador"
-          value={signal.ev_conservative !== null ? `+${(signal.ev_conservative * 100).toFixed(1)}%` : "—"}
+          value={signal.ev_conservative !== null ? `${signed(signal.ev_conservative)}%` : "—"}
         />
         <StatTile
           label="Mercado (prob.)"
           value={signal.market_probability !== null ? `${(signal.market_probability * 100).toFixed(1)}%` : "—"}
         />
         <StatTile label="Casas" value={String(signal.bookmakers_used ?? "—")} />
-        <StatTile label="Cuota justa" value={signal.fair_odds.toFixed(2)} />
+        <StatTile label="Cuota justa" value={probability > 0 ? (1 / probability).toFixed(2) : "—"} />
         <StatTile
           label="Dispersión"
           value={
@@ -65,12 +68,16 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
           }
         />
         <StatTile
-          label="Actualizado"
+          label="Origen del proveedor"
           value={signal.odds_age_minutes !== null ? `hace ${Math.round(signal.odds_age_minutes)} min` : "—"}
         />
         <StatTile
-          label="Edge (info)"
-          value={signal.edge !== null ? `${signal.edge >= 0 ? "+" : ""}${(signal.edge * 100).toFixed(1)} pp` : "—"}
+          label="Última consulta de esta captura"
+          value={signal.odds_fetched_at ? formatMatchDateTime(signal.odds_fetched_at) : "Sin registro"}
+        />
+        <StatTile
+          label="Diferencia vs. consenso"
+          value={gap !== null ? `${signed(gap)} pp` : "—"}
           muted
         />
       </div>
@@ -131,7 +138,7 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
                           DESCARTADA DEL CONSENSO (OUTLIER)
                         </span>
                       ) : (
-                        <span className="text-xs text-slate-500">en el consenso</span>
+                        <span className="text-xs text-slate-500">{row.is_outlier === null ? "Sin clasificación archivada" : "No marcada como atípica"}</span>
                       )}
                     </td>
                   </tr>
@@ -140,9 +147,9 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
             </table>
           </div>
           <p className="mt-2 text-xs text-slate-500">
-            La cuota usada para calcular el EV y el edge es la MEDIANA del consenso ({signal.market_odds_median?.toFixed(2) ?? "—"}
-            ), no la mejor cuota disponible ni una casa aislada — ver{" "}
-            <code className="rounded bg-black/40 px-1 py-0.5">backend/app/market/consensus.py</code>.
+            {signal.bookmaker_odds_from_archive
+              ? "Cuotas archivadas al generar este pronóstico. El EV de esta ficha usa la cuota de consenso. Oportunidades calcula su EV con la cuota de la casa seleccionada."
+              : "Cuotas operativas de referencia. Esta predicción no conserva las cuotas individuales de su captura."}
           </p>
         </section>
       )}
