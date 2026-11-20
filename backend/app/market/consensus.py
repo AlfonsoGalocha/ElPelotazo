@@ -90,11 +90,13 @@ def _drop_outliers(probabilities: dict[str, float]) -> tuple[dict[str, float], l
     kept: dict[str, float] = {}
     removed: list[str] = []
     for bookmaker, prob in probabilities.items():
+        # A tight cluster can yield a high z-score for a trivial gap.
+        # Require at least 2.5 percentage points as well as the MAD test.
         # 0.6745 normaliza el MAD para que sea comparable a una desviacion
         # estandar bajo normalidad (constante estandar de la literatura de
         # deteccion de outliers robusta, p.ej. Iglewicz & Hoaglin).
         modified_z_score = 0.6745 * (prob - median) / mad
-        if abs(modified_z_score) > OUTLIER_MAD_MULTIPLIER:
+        if abs(prob - median) >= 0.025 and abs(modified_z_score) > OUTLIER_MAD_MULTIPLIER:
             removed.append(bookmaker)
         else:
             kept[bookmaker] = prob

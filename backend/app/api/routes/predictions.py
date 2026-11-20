@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from backend.app.config.settings import Settings, get_settings
 from backend.app.db.database import get_db
-from backend.app.db.models.matches import Match, MatchOdds
+from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory
 from backend.app.db.models.modeling import Prediction
 from backend.app.prediction.anomaly import (
     best_prediction_per_match,
@@ -1045,7 +1045,11 @@ def _build_explanation_summary(prediction: Prediction, serialized: dict) -> list
     """Explicacion en lenguaje llano, SOLO con numeros reales (seccion 17):
     nunca "apuesta segura"/"ganadora"/"100%". Cada linea es trazable a un
     campo concreto de la respuesta, para poder verificarla a mano."""
-    lines = [f"El modelo estima {prediction.model_probability * 100:.1f}% de probabilidad para esta seleccion."]
+    probability = calibrated_probability_or_fallback(prediction)
+    label = "calibrada" if prediction.calibrated_probability is not None else "sin calibrar"
+    lines = [f"Probabilidad del modelo ({label}): {probability * 100:.1f}%."]
+    if prediction.calibrated_probability is not None:
+        lines.append(f"Estimación original antes de calibrar: {prediction.model_probability * 100:.1f}%.")
     if prediction.market_probability is not None:
         lines.append(
             f"El mercado (consenso de {prediction.bookmakers_used or 0} casa"
@@ -1054,18 +1058,19 @@ def _build_explanation_summary(prediction: Prediction, serialized: dict) -> list
         )
     else:
         lines.append("No hay cuota de mercado disponible para esta seleccion todavia.")
-    if prediction.edge is not None:
-        lines.append(f"Diferencia entre modelo y mercado (edge) = {prediction.edge * 100:+.1f} puntos porcentuales.")
+    if prediction.market_probability is not None:
+        lines.append(f"Diferencia frente al consenso: {(probability - prediction.market_probability) * 100:+.1f} puntos porcentuales.")
     if prediction.market_odds is not None:
         lines.append(f"Cuota de mercado disponible: {prediction.market_odds:.2f}.")
-    lines.append(f"Cuota justa segun el modelo (1 / probabilidad del modelo): {prediction.fair_odds:.2f}.")
+    if probability > 0:
+        lines.append(f"Cuota justa según esa probabilidad: {1 / probability:.2f}.")
     if serialized["market_quality"] is not None:
         lines.append(
             f"Calidad de mercado: {serialized['market_quality']} "
             f"({prediction.bookmakers_used or 0} casas respaldando el consenso)."
         )
     if serialized["odds_age_minutes"] is not None:
-        lines.append(f"Estos datos de mercado se generaron hace {round(serialized['odds_age_minutes'])} minutos.")
+        lines.append(f"El dato de origen del proveedor tiene {round(serialized['odds_age_minutes'])} minutos.")
     lines.append(
         f"Calidad de datos del modelo (informacion disponible de ambos equipos): "
         f"{prediction.data_quality:.2f} sobre 1. Confianza del modelo: {prediction.confidence:.2f} sobre 1."
@@ -1080,7 +1085,6 @@ def get_prediction_detail(prediction_id: int, db: Session = Depends(get_db)) -> 
     consenso (y si esa casa se descarto como outlier, ver
     `market/consensus.py`), mas una explicacion en lenguaje llano de por
     que aparece esta senhal, trazable a los datos reales."""
-    from backend.app.market.consensus import compute_market_consensus
     from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP
 
     prediction = db.get(Prediction, prediction_id)
@@ -1089,33 +1093,39 @@ def get_prediction_detail(prediction_id: int, db: Session = Depends(get_db)) -> 
 
     serialized = serialize_prediction(prediction)
 
-    raw_market = ALL_MARKET_TO_ODDS_LOOKUP.get(prediction.market, (None, None, None))[0]
-    bookmaker_odds: list[dict] = []
-    if raw_market is not None:
-        match = db.get(Match, prediction.match_id)
-        odds_rows = [
-            o
-            for o in match.odds
-            if o.market == raw_market and o.line == prediction.line and o.selection == prediction.selection
-        ]
-        consensus = compute_market_consensus(match.odds, raw_market, prediction.line, prediction.selection)
-        outlier_names = set(consensus.outliers_removed)
-        median = consensus.median_odds
-        bookmaker_odds = [
+    market_key = ALL_MARKET_TO_ODDS_LOOKUP.get(prediction.market)
+    metadata = prediction.features_used or {}
+    archive_ids = metadata.get("consensus_input_history_ids")
+    bookmaker_odds = []
+    fetched_at = None
+    if market_key is not None:
+        raw_market, line, selection = market_key
+        source = MatchOddsHistory if archive_ids else MatchOdds
+        rows = db.query(source).filter(
+            source.match_id == prediction.match_id, source.market == raw_market, source.line == line,
+            source.snapshot_type == "pre_match",
+        )
+        if archive_ids:
+            rows = rows.filter(source.id.in_(archive_ids))
+        market_rows = rows.all()
+        outliers = metadata.get("consensus_outliers") if archive_ids else None
+        fetched_at = max((row.fetched_at for row in market_rows if row.fetched_at), default=None) if archive_ids else None
+        bookmaker_odds = sorted([
             {
                 "bookmaker": row.bookmaker,
                 "price": row.price,
                 "snapshot_type": row.snapshot_type,
-                "diff_from_consensus": (row.price - median) if median is not None else None,
-                "is_outlier": row.bookmaker in outlier_names,
+                "diff_from_consensus": row.price - prediction.market_odds if prediction.market_odds is not None else None,
+                "is_outlier": row.bookmaker in outliers if outliers is not None else None,
             }
-            for row in odds_rows
-        ]
-        bookmaker_odds.sort(key=lambda r: r["price"])
+            for row in market_rows if row.selection == selection
+        ], key=lambda r: r["price"])
 
     return {
         **serialized,
         "bookmaker_odds": bookmaker_odds,
+        "odds_fetched_at": fetched_at,
+        "bookmaker_odds_from_archive": bool(archive_ids),
         "explanation_summary": _build_explanation_summary(prediction, serialized),
     }
 

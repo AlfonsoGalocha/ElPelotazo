@@ -308,11 +308,13 @@ export interface BookmakerOdds {
   price: number;
   snapshot_type: string;
   diff_from_consensus: number | null;
-  is_outlier: boolean;
+  is_outlier: boolean | null;
 }
 
 export interface SignalDetail extends Prediction {
   bookmaker_odds: BookmakerOdds[];
+  odds_fetched_at: string | null;
+  bookmaker_odds_from_archive: boolean;
   explanation_summary: string[];
 }
 

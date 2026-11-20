@@ -37,8 +37,10 @@ function PredictionTable({ predictions }: { predictions: Prediction[] }) {
           </tr>
         </thead>
         <tbody>
-          {predictions.map((p) => (
-            <tr key={p.id} className="border-t border-surface-border">
+          {predictions.map((p) => {
+            const probability = p.calibrated_probability ?? p.model_probability;
+            const gap = p.market_probability === null ? null : probability - p.market_probability;
+            return <tr key={p.id} className="border-t border-surface-border">
               <td className="px-3 py-2 text-slate-200">
                 {p.has_market ? (
                   <Link href={`/signals/${p.id}`} className="hover:underline">
@@ -51,19 +53,19 @@ function PredictionTable({ predictions }: { predictions: Prediction[] }) {
                   </>
                 )}
               </td>
-              <td className="px-3 py-2">{(p.model_probability * 100).toFixed(1)}%</td>
+              <td className="px-3 py-2">{(probability * 100).toFixed(1)}% {p.calibrated_probability === null && <span className="text-xs text-slate-400">(sin calibrar)</span>}</td>
               <td className="px-3 py-2">
                 {p.market_probability !== null ? `${(p.market_probability * 100).toFixed(1)}%` : "—"}
               </td>
               <td className="px-3 py-2">{p.market_odds !== null ? p.market_odds.toFixed(2) : "—"}</td>
               <td className="px-3 py-2 text-slate-400">{p.bookmakers_used ?? "—"}</td>
-              <td className="px-3 py-2">{p.edge !== null ? `${(p.edge * 100).toFixed(1)} pp` : "—"}</td>
-              <td className="px-3 py-2">{p.fair_odds.toFixed(2)}</td>
+              <td className="px-3 py-2">{gap !== null ? `${(gap * 100).toFixed(1)} pp` : "—"}</td>
+              <td className="px-3 py-2">{probability > 0 ? (1 / probability).toFixed(2) : "—"}</td>
               <td className="px-3 py-2">
                 <SignalBadge tier={p.signal_tier} />
               </td>
-            </tr>
-          ))}
+            </tr>;
+          })}
         </tbody>
       </table>
     </div>

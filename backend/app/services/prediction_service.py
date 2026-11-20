@@ -272,6 +272,7 @@ def generate_predictions_for_competition(
                     and o.provider_updated_at <= o.fetched_at <= o.recorded_at
                     for o in market_rows
                 ) else None,
+                "consensus_outliers": consensus.outliers_removed,
                 "history_quote_ids": sorted(o.history_quote_id for o in market_rows)
                 if all(o.history_quote_id is not None for o in market_rows) else None,
                 "market_probability": consensus.market_probability,
@@ -408,6 +409,7 @@ def generate_predictions_for_competition(
                 "feature_names": [f["feature"] for f in output.explanation],
                 "model_artifact_sha256": model_artifact_sha256,
                 "consensus_input_history_ids": captured_market.get("history_quote_ids"),
+                "consensus_outliers": captured_market.get("consensus_outliers"),
             },
             market_probability_source=output.market_probability_source,
             bookmakers_count=output.bookmakers_count,
