@@ -39,7 +39,9 @@ def build_match_feature_table(matches: pd.DataFrame) -> pd.DataFrame:
     matches = matches.copy()
     matches["date"] = pd.to_datetime(matches["date"])
 
-    team_long = build_team_match_long(matches)
+    # The reconciled total is a label. Keep it on the match table, away from
+    # the team expansion that would otherwise prefix it with home_/away_.
+    team_long = build_team_match_long(matches.drop(columns=["observed_total_corners"], errors="ignore"))
     team_long = compute_form_features(team_long)
     team_long = compute_home_away_split_features(team_long, window=HOME_AWAY_WINDOW)
     team_long = compute_rest_days(team_long)
@@ -83,6 +85,12 @@ def build_match_feature_table(matches: pd.DataFrame) -> pd.DataFrame:
     table["attack_strength_difference"] = table["home_attack_strength"] - table["away_defense_strength"]
     table["defense_strength_difference"] = table["away_attack_strength"] - table["home_defense_strength"]
 
+    if "observed_total_corners" in matches:
+        # Older artifacts may expect these names. Supply missing values,
+        # never the final score of the same market.
+        table["home_observed_total_corners"] = float("nan")
+        table["away_observed_total_corners"] = float("nan")
+
     return table
 
 
@@ -100,6 +108,7 @@ RAW_MATCH_DAY_STAT_COLUMNS = {
     "home_shots", "away_shots",
     "home_shots_on_target", "away_shots_on_target",
     "home_corners", "away_corners", "observed_total_corners",
+    "home_observed_total_corners", "away_observed_total_corners",
     "home_fouls", "away_fouls",
     "home_yellow_cards", "away_yellow_cards",
     "home_red_cards", "away_red_cards",

@@ -121,3 +121,12 @@ def test_feature_columns_excludes_raw_same_match_statistics():
     # Las versiones rolling (legitimas) si deben seguir presentes.
     assert "home_shots_for_avg_last5" in cols
     assert "home_yellow_cards_for_avg_last5" in cols
+
+
+def test_reconciled_corner_total_stays_a_label():
+    matches = generate_synthetic_matches(n_teams=6, n_seasons=1, seed=5)
+    matches["observed_total_corners"] = 11
+    table = build_match_feature_table(matches)
+    assert (table["observed_total_corners"] == 11).all()
+    assert table[["home_observed_total_corners", "away_observed_total_corners"]].isna().all().all()
+    assert not any("observed_total_corners" in column for column in feature_columns(table))
