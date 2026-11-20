@@ -423,7 +423,7 @@ def real_performance_report(
         odds = np.array([p.market_odds if p.market_odds is not None else np.nan for p, _r in items])
 
         quality = model_quality_metrics(y_true, y_prob)
-        has_odds = ~np.isnan(odds)
+        has_odds = np.isfinite(odds) & (odds > 1)
         strategy = (
             market_strategy_metrics(y_true[has_odds], y_prob[has_odds], odds[has_odds])
             if has_odds.any()
@@ -451,6 +451,7 @@ def real_performance_report(
                 "market": market_key,
                 "model_version_id": model_version,
                 "n_settled": len(items),
+                "n_with_market_odds": int(has_odds.sum()),
                 "n_void": n_void,
                 "accuracy": accuracy,
                 "accuracy_confidence_interval_95": [accuracy_ci_low, accuracy_ci_high],

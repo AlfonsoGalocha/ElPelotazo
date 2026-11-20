@@ -206,7 +206,7 @@ services:
             # necesitarlo mas a menudo.
             football-edge train || echo "[scheduler] fallo train (reentrenamiento), se reintenta en 6h";
           fi
-          football-edge reconcile-published-corners --limit 5 || echo "[scheduler] fallo verificación de córners";
+          football-edge reconcile-corners --limit 5 || echo "[scheduler] fallo verificación de córners";
           football-edge evaluate || echo "[scheduler] fallo evaluate/settle, se reintenta en 1h";
           football-edge predict-upcoming || echo "[scheduler] fallo predict-upcoming, se reintenta en 1h";
           sleep 3600;

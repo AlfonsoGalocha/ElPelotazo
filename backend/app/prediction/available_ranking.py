@@ -10,12 +10,20 @@ from backend.app.prediction.ranking import (
 )
 
 
-def rank_available(predictions, reliability, *, per_match=1, limit=None):
+def has_available_price(prediction, *, all_prices=False):
+    price = prediction.market_odds
+    return (
+        price is not None and math.isfinite(price) and price > 1
+        and (all_prices or 1.35 <= price <= 1.90)
+        and prediction.market_probability_source != "derived_double_chance"
+        and not prediction.market.startswith("cards_")
+    )
+
+
+def rank_available(predictions, reliability, *, per_match=1, limit=None, all_prices=False):
     candidates = [
         p for p in predictions
-        if p.market_odds is not None and 1.35 <= p.market_odds <= 1.90
-        and p.market_probability_source != "derived_double_chance"
-        and not p.market.startswith("cards_")
+        if has_available_price(p, all_prices=all_prices)
         and math.isfinite(calibrated_probability_or_fallback(p))
         and 0 <= calibrated_probability_or_fallback(p) <= 1
     ]

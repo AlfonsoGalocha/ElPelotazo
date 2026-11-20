@@ -64,7 +64,9 @@ def compare(matches):
         if spec.kind == "over":
             poisson_under = 1 - poisson_under
             nb_under = 1 - nb_under
+        historical_rate = (label_for_secondary_market(train, market).sum() + 1) / (len(train) + 2)
         markets[market] = {
+            "league_frequency": measure(y, np.full(len(test), historical_rate)),
             "poisson": measure(y, poisson_under),
             "negative_binomial": measure(y, nb_under),
         }

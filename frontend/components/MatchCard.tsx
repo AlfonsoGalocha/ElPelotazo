@@ -70,10 +70,10 @@ export default function MatchCard({ prediction }: { prediction: Prediction }) {
           ) : (
             <div className="text-xs text-slate-500">sin cuota</div>
           )}
-          {prediction.ev_conservative !== null && (
+          {prediction.calibrated_probability !== null && prediction.ev_conservative !== null && (
             <div
               className={
-                "text-sm font-bold " + (evPositive ? "text-edge-positive" : "text-slate-500")
+                "text-sm font-bold " + (evPositive && prediction.has_statistical_value ? "text-edge-positive" : "text-slate-500")
               }
             >
               {evPositive ? "+" : ""}

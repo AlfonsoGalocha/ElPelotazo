@@ -120,7 +120,7 @@ export interface TopSignalsOptions {
 // `sortBy`: "score" (por defecto, ranking compuesto) o "edge" (de mayor a
 // menor edge en crudo) -- solo cambia el ORDEN, el filtro de calidad es
 // el mismo.
-export function getTopSignals(opts: TopSignalsOptions = {}, available = false): Promise<Prediction[]> {
+export function getTopSignals(opts: TopSignalsOptions & { allPrices?: boolean } = {}, available = false): Promise<Prediction[]> {
   const {
     limit = 20,
     date,
@@ -138,6 +138,7 @@ export function getTopSignals(opts: TopSignalsOptions = {}, available = false): 
   } = opts;
   const qs = new URLSearchParams({ limit: String(limit) });
   if (date) qs.set("date", date);
+  if (available && opts.allPrices) qs.set("all_prices", "true");
   if (perMatch !== undefined) qs.set("per_match", String(perMatch));
   if (sortBy) qs.set("sort_by", sortBy);
   if (scope) qs.set("scope", scope);
@@ -174,6 +175,10 @@ export interface OpportunityDiagnostics {
   counts: {
     matches: number;
     matches_with_market: number;
+    matches_with_available_price: number;
+    matches_with_preferred_price: number;
+    candidates_with_available_price: number;
+    candidates_with_preferred_price: number;
     candidates_with_valid_market: number;
     positive_estimated_ev: number;
     passed_gate: number;
@@ -408,6 +413,10 @@ export function getPublication(matchId: number) {
 
 export function getPublicationCoverage() {
   return apiFetch<{
+    training_corpus: { first_season: string; last_season: string; finished_matches: number;
+      matches_with_corners: number; matches_with_closing_prices: number;
+      matches_with_closing_result: number; matches_with_closing_goals_2_5: number;
+      matches_with_closing_corners: number; };
     historical_liquidated: number;
     historical_before_kickoff: number;
     historical_after_kickoff: number;
