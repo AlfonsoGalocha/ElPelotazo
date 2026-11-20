@@ -120,7 +120,7 @@ export interface TopSignalsOptions {
 // `sortBy`: "score" (por defecto, ranking compuesto) o "edge" (de mayor a
 // menor edge en crudo) -- solo cambia el ORDEN, el filtro de calidad es
 // el mismo.
-export function getTopSignals(opts: TopSignalsOptions & { allPrices?: boolean } = {}, available = false): Promise<Prediction[]> {
+export function getTopSignals(opts: TopSignalsOptions & { allPrices?: boolean; valueOnly?: boolean; opportunityView?: "main" | "high" | "explore" } = {}, available = false): Promise<Prediction[]> {
   const {
     limit = 20,
     date,
@@ -138,6 +138,8 @@ export function getTopSignals(opts: TopSignalsOptions & { allPrices?: boolean } 
   } = opts;
   const qs = new URLSearchParams({ limit: String(limit) });
   if (date) qs.set("date", date);
+  if (available && opts.opportunityView) qs.set("opportunity_view", opts.opportunityView);
+  if (available && opts.valueOnly) qs.set("value_only", "true");
   if (available && opts.allPrices) qs.set("all_prices", "true");
   if (perMatch !== undefined) qs.set("per_match", String(perMatch));
   if (sortBy) qs.set("sort_by", sortBy);
@@ -184,12 +186,19 @@ export interface OpportunityDiagnostics {
     passed_gate: number;
     opportunities: number;
     observation: number;
+    candidates: number;
+    candidates_in_band: number;
+    usable_probabilities: number;
+    high_confidence: number;
   };
   reasons: Record<string, number>;
+  first_reasons: Record<string, number>;
+  min_odds: number;
+  max_odds: number;
 }
 
 export function getOpportunityDiagnostics(filters: Record<string, string | number | undefined>) {
-  const qs = new URLSearchParams({ summary_only: "true" });
+  const qs = new URLSearchParams({ summary_only: "true", execution: "true" });
   for (const [key, value] of Object.entries(filters)) {
     if (value !== undefined) qs.set(key, String(value));
   }

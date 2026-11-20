@@ -549,7 +549,7 @@ def _shrink_toward_backup(
 
 
 def market_track_records_with_provenance(
-    db: Session, competition_code: str | None = None
+    db: Session, competition_code: str | None = None, *, as_of: dt.datetime | None = None
 ) -> dict[tuple[str, str], TrackRecordEstimate]:
     """Fiabilidad historica JERARQUICA por (competicion, mercado) (pedido
     real del usuario, mision "oportunidades" seccion 2.2): antes, una
@@ -598,6 +598,8 @@ def market_track_records_with_provenance(
     by_exact: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
     by_tier: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
     by_market: dict[str, list[tuple[bool, float]]] = defaultdict(list)
+    if as_of is not None:
+        query = query.filter(PredictionResult.settled_at <= as_of, Match.kickoff_utc < as_of)
     for prediction, result, competition in historical_evidence(query).all():
         if _is_void(result):
             continue  # partido cancelado: no es evidencia de calibracion del mercado

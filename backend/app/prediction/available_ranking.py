@@ -20,7 +20,7 @@ def has_available_price(prediction, *, all_prices=False):
     )
 
 
-def rank_available(predictions, reliability, *, per_match=1, limit=None, all_prices=False):
+def rank_available(predictions, reliability, *, per_match=1, limit=None, all_prices=False, value_ids=frozenset(), prefer_calibrated=False):
     candidates = [
         p for p in predictions
         if has_available_price(p, all_prices=all_prices)
@@ -31,6 +31,8 @@ def rank_available(predictions, reliability, *, per_match=1, limit=None, all_pri
     def order(p):
         age = odds_age_minutes(p)
         return (
+            p.id in value_ids,
+            prefer_calibrated and p.calibrated_probability is not None,
             conservative_probability(p),
             calibrated_probability_or_fallback(p),
             ev_with_probability(conservative_probability(p), p.market_odds),
@@ -66,7 +68,7 @@ def rank_available(predictions, reliability, *, per_match=1, limit=None, all_pri
 
     for p in sorted(candidates, key=order, reverse=True):
         family = family_for(p)
-        if family_budget is not None and family_counts.get(family, 0) >= family_budget:
+        if p.id not in value_ids and family_budget is not None and family_counts.get(family, 0) >= family_budget:
             postponed.append((p, family))
         else:
             add(p, family)

@@ -87,6 +87,7 @@ class FixtureOddsSnapshot:
     commence_time: dt.datetime
     odds: list[RawOddsRecord]
     provider_fixture_id: str | None = None
+    suspended_markets: frozenset[str] = frozenset()
 
 
 class DataProvider(ABC):

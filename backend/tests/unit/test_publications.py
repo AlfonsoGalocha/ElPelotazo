@@ -4,7 +4,7 @@ import pytest
 
 from backend.app.api.routes.publications import publication_detail
 from backend.app.db.models.core import Competition, Season, Team
-from backend.app.db.models.matches import Match
+from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory
 from backend.app.db.models.modeling import ModelVersion, Prediction
 from backend.app.db.models.publication import FixtureRankingRevision
 from backend.app.services.publication_service import capture_publications, publication_report, selection_outcome
@@ -43,8 +43,21 @@ def test_draw_evaluates_probabilities_but_does_not_win_the_principal_forecast(db
         )
         predictions.append(prediction)
         db.add(prediction)
+    if verified:
+        data = dict(match_id=match.id, bookmaker="Book", market="match_result", line=None,
+                    selection="home", price=1.60, snapshot_type="pre_match",
+                    provider_updated_at=kickoff-dt.timedelta(minutes=50),
+                    fetched_at=kickoff-dt.timedelta(minutes=49), recorded_at=kickoff-dt.timedelta(minutes=48))
+        archived = MatchOddsHistory(**data)
+        db.add(archived)
+        db.flush()
+        quote = MatchOdds(**data, history_quote_id=archived.id)
+        db.add(quote)
+        db.flush()
     capture_publications(db, predictions, {(league.code, "home_win"): .8}, timestamp=kickoff-dt.timedelta(minutes=30))
     predictions[0].model_probability = .10
+    if verified:
+        quote.price = 1.85
     capture_publications(db, predictions, {(league.code, "home_win"): .8}, timestamp=kickoff-dt.timedelta(minutes=10))
     capture_publications(db, predictions, {(league.code, "home_win"): .8}, timestamp=kickoff)
     assert db.query(FixtureRankingRevision).filter_by(match_id=match.id).count() == 2
@@ -64,6 +77,9 @@ def test_draw_evaluates_probabilities_but_does_not_win_the_principal_forecast(db
     if verified:
         assert len(report["recommendations"]) == 1
         assert report["recommendations"][0]["market"] == "home_win"
+        assert report["recommendations"][0]["odds"] == 1.60
+        assert report["recommendations"][0]["bookmaker"] == "Book"
+        assert report["recommendations"][0]["quote_history_id"] == archived.id
         if terminal_status == "finished":
             assert report["performance"]["profit_units"] == -1
             assert report["performance"]["roi"] == -1

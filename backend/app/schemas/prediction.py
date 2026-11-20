@@ -108,9 +108,29 @@ class PredictionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class OpportunityOut(BaseModel):
+    bookmaker: str | None
+    quote_id: int | None
+    quote_price: float | None
+    reference_bookmaker: str | None
+    max_age_minutes: int
+    quote_origin: UtcDatetime | None
+    quote_fetched: UtcDatetime | None
+    quote_age_minutes: float | None
+    break_even: float | None
+    edge: float | None
+    ev: float | None
+    conservative_ev: float | None
+    reasons: tuple[str, ...]
+    confidence_reasons: tuple[str, ...]
+    high_confidence: bool
+    score: float | None
+
+
 class AvailablePredictionOut(PredictionOut):
     has_statistical_value: bool
     value_exclusion: str | None = None
+    opportunity: OpportunityOut | None = None
 
 
 class ExcludedSignalOut(BaseModel):

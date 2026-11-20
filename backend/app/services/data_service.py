@@ -453,7 +453,7 @@ def _attach_odds_snapshots(
         # sobrevivia indefinidamente en la BD, mezclada con el consenso.
         # Se borran TODOS los mercados que trae este snapshot para este
         # partido ANTES de insertar nada, no clave a clave.
-        markets_in_snapshot = {odds.market for odds in deduped_odds.values()}
+        markets_in_snapshot = {odds.market for odds in deduped_odds.values()} | snapshot.suspended_markets
         if markets_in_snapshot:
             db.query(MatchOdds).filter(
                 MatchOdds.match_id == match.id,

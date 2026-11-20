@@ -297,12 +297,14 @@ class ApiFootballOddsProvider(ApiFootballClient):
             commence_time = dt.datetime.fromisoformat(fixture_payload["fixture"]["date"])
 
             odds_response = self._get("/odds", {"fixture": fixture_id})
-            odds_records, seen = self._parse_odds_response(odds_response)
+            suspended_markets: set[str] = set()
+            odds_records, seen = self._parse_odds_response(odds_response, suspended_markets=suspended_markets)
             market_names_seen |= seen
-            if odds_records:
-                snapshots.append(
-                    FixtureOddsSnapshot(home_name, away_name, commence_time, odds_records, f"api-football-{fixture_id}")
-                )
+            if odds_records or suspended_markets:
+                snapshots.append(FixtureOddsSnapshot(
+                    home_name, away_name, commence_time, odds_records, f"api-football-{fixture_id}",
+                    frozenset(suspended_markets),
+                ))
 
         if fixtures and not any(s.odds for s in snapshots):
             logger.warning(
@@ -328,13 +330,16 @@ class ApiFootballOddsProvider(ApiFootballClient):
                 s.commence_time,
                 [r for r in s.odds if r.market == "corners_total"],
                 s.provider_fixture_id,
+                s.suspended_markets & {"corners_total"},
             )
             for s in snapshots
         ]
-        return [s for s in secondary if s.odds]
+        return [s for s in secondary if s.odds or s.suspended_markets]
 
     @staticmethod
-    def _parse_odds_response(odds_response: list[dict]) -> tuple[list[RawOddsRecord], set[str]]:
+    def _parse_odds_response(
+        odds_response: list[dict], *, suspended_markets: set[str] | None = None,
+    ) -> tuple[list[RawOddsRecord], set[str]]:
         records: list[RawOddsRecord] = []
         names_seen: set[str] = set()
         fetched_at = dt.datetime.utcnow()
@@ -365,7 +370,15 @@ class ApiFootballOddsProvider(ApiFootballClient):
                     if spec is None:
                         continue
                     market_key, value_kind = spec
+                    if bet.get("suspended") is True or bet.get("blocked") is True:
+                        if suspended_markets is not None:
+                            suspended_markets.add(market_key)
+                        continue
                     for value in bet.get("values", []):
+                        if suspended_markets is not None and (
+                            value.get("suspended") is True or value.get("blocked") is True
+                        ):
+                            suspended_markets.add(market_key)
                         record = ApiFootballOddsProvider._parse_value(
                             bookmaker_key, market_key, value_kind, value
                         )
@@ -379,6 +392,8 @@ class ApiFootballOddsProvider(ApiFootballClient):
     def _parse_value(
         bookmaker: str, market_key: str, value_kind: str, value: dict
     ) -> RawOddsRecord | None:
+        if value.get("suspended") is True or value.get("blocked") is True:
+            return None
         raw_value = str(value.get("value", ""))
         try:
             price = float(value.get("odd"))

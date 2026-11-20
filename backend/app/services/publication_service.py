@@ -9,12 +9,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from backend.app.db.models.matches import Match
 from backend.app.db.models.publication import FixturePublication, FixtureRankingRevision
 from backend.app.config.settings import get_settings
-from backend.app.prediction.anomaly import compute_anomaly_flags, is_strong_signal
-from backend.app.prediction.available_ranking import rank_available
+from backend.app.prediction.anomaly import compute_anomaly_flags
+from backend.app.prediction.opportunities import assess_opportunity
 from backend.app.prediction.ranking import (
     calibrated_probability_or_fallback,
     conservative_probability,
-    evaluate_quality_gate_v3,
 )
 
 GROUPS = {
@@ -40,6 +39,10 @@ def freeze(p, as_of):
 
 def capture_publications(db, predictions, reliability, *, timestamp=None):
     """First successful generation in the final hour, once per fixture."""
+    from backend.app.services.evaluation_service import market_track_records_with_provenance
+    from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP
+    from backend.app.services.ranking_config_service import get_opportunity_odds_band
+
     timestamp = timestamp or dt.datetime.utcnow()
     if not predictions:
         return
@@ -48,6 +51,10 @@ def capture_publications(db, predictions, reliability, *, timestamp=None):
         by_match[prediction.match_id].append(prediction)
     db.flush()
     insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
+    provenance = None
+    settings = get_settings()
+    min_odds, max_odds = get_opportunity_odds_band(db, settings)
+    settings = settings.model_copy(update={"min_opportunity_odds": min_odds, "max_opportunity_odds": max_odds})
     for match_id, rows in by_match.items():
         match = db.get(Match, match_id)
         remaining = match.kickoff_utc - timestamp
@@ -64,28 +71,41 @@ def capture_publications(db, predictions, reliability, *, timestamp=None):
                 groups[family] = {"principal": principal, "alternatives": alternatives}
         if not groups:
             continue
-        ordered = rank_available(rows, reliability, per_match=3)
-        settings = get_settings()
-        recommended = next((
-            p for p in ordered
-            if evaluate_quality_gate_v3(
-                p, settings, market_track_record=reliability.get((match.competition.code, p.market))
-            ) is None and is_strong_signal(compute_anomaly_flags(p, rows, settings))
-        ), None)
-        ranked_rows = [
-            {**freeze(p, timestamp), "position": position}
-            for position, p in enumerate(ordered, start=1)
-        ]
+        if provenance is None:
+            provenance = market_track_records_with_provenance(db, as_of=timestamp)
+        assessed = [(p, assess_opportunity(
+            p, match.odds, ALL_MARKET_TO_ODDS_LOOKUP.get(p.market), settings, timestamp,
+            provenance.get((match.competition.code, p.market)), compute_anomaly_flags(p, rows, settings),
+        )) for p in rows]
+        assessed.sort(key=lambda item: (item[1].score is not None, item[1].score or 0, -item[0].id), reverse=True)
+        ranked_rows = []
+        for position, (prediction, item) in enumerate(assessed, start=1):
+            quote = item.quote
+            ranked_rows.append({
+                **freeze(prediction, timestamp), "position": position,
+                "odds": quote.price if quote else None,
+                "bookmaker": quote.bookmaker if quote else None,
+                "quote_history_id": quote.history_quote_id if quote else None,
+                "odds_origin_at": quote.provider_updated_at.isoformat() if quote else None,
+                "odds_fetched_at": quote.fetched_at.isoformat() if quote else None,
+                "odds_recorded_at": quote.recorded_at.isoformat() if quote else None,
+                "estimated_ev": item.ev,
+                "conservative_ev": item.conservative_ev,
+                "opportunity_score": item.score,
+                "reasons": list(item.reasons),
+                "confidence_reasons": list(item.confidence_reasons),
+                "high_confidence": item.high_confidence,
+            })
+        recommended = next((row for row in ranked_rows if not row["reasons"]), None)
         db.execute(insert(FixtureRankingRevision).values(
             match_id=match_id, captured_at=timestamp, scheduled_kickoff=match.kickoff_utc,
-            ranking_version="relative-v1", ranking=ranked_rows,
+            ranking_version="execution-v2", ranking=ranked_rows,
         ).on_conflict_do_nothing(index_elements=["match_id", "captured_at"]))
         db.execute(insert(FixturePublication).values(
             match_id=match_id, captured_at=timestamp, scheduled_kickoff=match.kickoff_utc,
-            ranking_version="relative-v1", groups=groups,
+            ranking_version="execution-v2", groups=groups,
             ranking=ranked_rows,
-            recommendation={**freeze(recommended, timestamp), "position": ordered.index(recommended) + 1}
-            if recommended else None,
+            recommendation=recommended,
         ).on_conflict_do_nothing(index_elements=["match_id"]))
 
 
