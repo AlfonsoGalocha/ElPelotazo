@@ -266,9 +266,10 @@ export function getFinishedFixtures(competitionCode?: string, limit = 50): Promi
 
 // Fase 4: "Historico" -- partidos finalizados con TODAS sus predicciones
 // y el resultado real (liquidado por el backend, nunca inferido aqui).
-export function getHistory(competitionCode?: string, limit = 30): Promise<MatchHistory[]> {
+export function getHistory(competitionCode?: string, limit = 30, withPredictions = false): Promise<MatchHistory[]> {
   const qs = new URLSearchParams({ limit: String(limit) });
   if (competitionCode) qs.set("competition_code", competitionCode);
+  if (withPredictions) qs.set("with_predictions", "true");
   return apiFetch<MatchHistory[]>(`/history?${qs.toString()}`);
 }
 
@@ -403,4 +404,14 @@ export function getPublication(matchId: number) {
     recommendation: PublicationSelection | null;
     feature_snapshots: { id: number; is_home: boolean; as_of: string; features: Record<string, unknown> }[];
   }>(`/publications/${matchId}`);
+}
+
+export function getPublicationCoverage() {
+  return apiFetch<{
+    historical_liquidated: number;
+    historical_before_kickoff: number;
+    historical_after_kickoff: number;
+    official_captures: number;
+    official_finished: number;
+  }>("/publications/coverage");
 }

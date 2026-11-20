@@ -8,8 +8,8 @@ import { StatTileSkeleton } from "./Skeleton";
 const TILES: { key: keyof Summary; label: string; icon: typeof CalendarClock }[] = [
   { key: "matches_pending", label: "Partidos pendientes", icon: CalendarClock },
   { key: "competitions_count", label: "Ligas activas", icon: Trophy },
-  { key: "opportunities_count", label: "Oportunidades con edge", icon: Target },
-  { key: "high_quality_count", label: "Señales de alta calidad", icon: Gem },
+  { key: "opportunities_count", label: "Con valor estadístico", icon: Target },
+  { key: "high_quality_count", label: "Con valor y alta confianza", icon: Gem },
 ];
 
 export default function StatsFooter({ summary }: { summary: Summary | null }) {

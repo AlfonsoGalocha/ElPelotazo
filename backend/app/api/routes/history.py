@@ -63,7 +63,8 @@ def _latest_corners(db: Session, match_ids: list[int]) -> dict[int, int]:
 @router.get("", response_model=list[MatchHistoryOut])
 def list_history(
     competition_code: str | None = Query(None),
-    limit: int = Query(30, ge=1, le=200),
+    limit: int = Query(30, ge=1, le=500),
+    with_predictions: bool = Query(False),
     only_settled: bool = Query(
         False, description="Si True, solo partidos con AL MENOS una prediccion ya liquidada"
     ),
@@ -75,6 +76,8 @@ def list_history(
         if competition is None:
             return []
         query = query.filter(Match.competition_id == competition.id)
+    if with_predictions:
+        query = query.filter(db.query(Prediction.id).filter(Prediction.match_id == Match.id).exists())
     matches = query.order_by(Match.kickoff_utc.desc()).limit(limit).all()
 
     match_ids = [m.id for m in matches]
@@ -96,6 +99,9 @@ def list_history(
         if only_settled and not any(p.result is not None for p in predictions):
             continue
         best = best_by_match.get(match.id)
+        if with_predictions:
+            # The jornada list has one row per fixture. Full markets stay on the detail endpoint.
+            predictions = [best] if best is not None else predictions[:1]
         out.append(
             {
                 "match": match,

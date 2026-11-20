@@ -51,7 +51,7 @@ export default function DashboardBoard() {
         scope: "current_round",
         competitionCode: competitionCode ?? undefined,
         quality,
-      })
+      }, true)
         .then(setPredictions)
         .catch(() => setError("Arranca el backend (uvicorn backend.app.main:app) o revisa NEXT_PUBLIC_API_URL."))
         .finally(() => setLoading(false));
@@ -126,13 +126,13 @@ export default function DashboardBoard() {
       </section>
 
       <section>
-        <div className="mb-3 text-sm font-semibold text-slate-200">Mejores oportunidades</div>
+        <div className="mb-3 text-sm font-semibold text-slate-200">Mejores selecciones de la jornada</div>
         {error && <ErrorState message={error} />}
         {!error && loading && <MatchCardSkeletonGrid count={6} />}
         {!error && !loading && predictions.length === 0 && (
           <EmptyState
-            title="No hay oportunidades de alta fiabilidad para los criterios actuales"
-            description="Prueba a quitar el filtro de liga/confianza, o ejecuta football-edge update-odds para traer cuotas nuevas."
+            title="No hay selecciones con cuota para estos filtros"
+            description="Puedes consultar todos los encuentros en Partidos."
           />
         )}
         {!error && !loading && predictions.length > 0 && (

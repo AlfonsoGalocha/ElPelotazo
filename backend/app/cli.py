@@ -543,7 +543,7 @@ def reconcile_published_corners(limit: int = typer.Option(5, min=1, max=20)) -> 
     from backend.app.db.models.publication import FixturePublication
     from backend.app.ingestion.api_football.client import ApiFootballClient
     from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
-    from scripts.reconcile_corners import reconcile
+    from backend.app.services.corner_reconciliation import reconcile
 
     import httpx
 

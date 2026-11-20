@@ -108,6 +108,11 @@ class PredictionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AvailablePredictionOut(PredictionOut):
+    has_statistical_value: bool
+    value_exclusion: str | None = None
+
+
 class ExcludedSignalOut(BaseModel):
     prediction_id: int
     match: MatchOut

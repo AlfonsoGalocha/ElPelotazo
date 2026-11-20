@@ -5,7 +5,7 @@ import pytest
 from backend.app.db.models.core import Competition, ProviderResponse, Season
 from backend.app.db.models.matches import CornerObservation, Match
 from backend.app.prediction.eligibility import corner_verification
-from scripts.reconcile_corners import extract_corner_total, reconcile
+from backend.app.services.corner_reconciliation import extract_corner_total, reconcile
 
 
 def response(team_id, count):

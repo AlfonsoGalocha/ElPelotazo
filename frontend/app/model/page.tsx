@@ -1,5 +1,5 @@
 import { BarChart3 } from "lucide-react";
-import { getHistory, getModelPerformance, getPublications } from "@/lib/api";
+import { getHistory, getModelPerformance, getPublicationCoverage, getPublications } from "@/lib/api";
 import CalibrationChart from "@/components/CalibrationChart";
 import ModelPerformanceTabs, { type Tab } from "@/components/ModelPerformanceTabs";
 
@@ -20,7 +20,7 @@ export default async function ModelPerformancePage({
   searchParams: { tab?: string };
 }) {
   const initialTab = VALID_TABS.includes(searchParams.tab as Tab) ? (searchParams.tab as Tab) : "resumen";
-  const [report, history, publications] = await Promise.all([
+  const [report, history, publications, coverage] = await Promise.all([
     getModelPerformance().catch(() => ({ segments: [] })),
     // Limite alto, sin filtrar por liga server-side: la subseccion
     // "Jornadas" agrupa/filtra en el cliente (mismo patron que el
@@ -28,6 +28,7 @@ export default async function ModelPerformancePage({
     // vuelta al backend para la vista por defecto.
     getHistory(undefined, 150).catch(() => []),
     getPublications().catch(() => null),
+    getPublicationCoverage().catch(() => null),
   ]);
 
   return (
@@ -38,9 +39,18 @@ export default async function ModelPerformancePage({
           Laboratorio del modelo
         </h1>
         <p className="text-sm text-slate-400">
-          El acierto se mide sobre el pronóstico principal. La calibración usa todas las probabilidades de 1X2.
+          Aquí puedes ver cuántos pronósticos acierta el modelo y si los porcentajes que anuncia coinciden con lo que ocurre.
         </p>
       </div>
+      {coverage && <section className="rounded-xl border border-surface-border bg-card p-4">
+        <h2 className="font-semibold">Qué datos cuentan</h2>
+        <p className="mt-2 text-sm text-slate-300">
+          Hay {coverage.historical_liquidated.toLocaleString("es-ES")} pronósticos históricos liquidados. {coverage.historical_before_kickoff.toLocaleString("es-ES")} constan como registrados antes del inicio y {coverage.historical_after_kickoff.toLocaleString("es-ES")} se excluyen porque se registraron al inicio o después.
+        </p>
+        <p className="mt-2 text-sm text-slate-400">
+          El seguimiento oficial tiene {coverage.official_captures} partidos capturados y {coverage.official_finished} finalizados. Las recomendaciones registradas se evalúan por separado.
+        </p>
+      </section>}
       <section className="grid gap-4 lg:grid-cols-3" aria-label="Capturas prepartido">
         {publications?.metrics.length ? publications.metrics.map(metric => (
           <article key={metric.family} className="rounded-xl border border-surface-border p-4">
@@ -61,10 +71,10 @@ export default async function ModelPerformancePage({
             </details>
           </article>
         )) : <p className="text-sm text-slate-400">
-          {publications ? "Aún no hay capturas oficiales liquidadas." : "No se pudieron consultar las capturas oficiales."}
+          {publications ? "La evaluación de las capturas nuevas aparecerá al finalizar los primeros partidos registrados. Abajo tienes las estadísticas anteriores." : "No se pudieron consultar las capturas oficiales."}
         </p>}
       </section>
-      <h2 className="text-lg font-semibold">Evaluación histórica anterior a las capturas oficiales</h2>
+      <h2 className="text-lg font-semibold">Estadísticas históricas</h2>
       <ModelPerformanceTabs segments={report.segments} historyRows={history} initialTab={initialTab} />
     </div>
   );

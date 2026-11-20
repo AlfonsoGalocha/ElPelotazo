@@ -10,7 +10,7 @@ from backend.app.prediction.ranking import (
 )
 
 
-def rank_available(predictions, reliability, *, per_match=1):
+def rank_available(predictions, reliability, *, per_match=1, limit=None):
     candidates = [
         p for p in predictions
         if p.market_odds is not None and 1.35 <= p.market_odds <= 1.90
@@ -33,18 +33,39 @@ def rank_available(predictions, reliability, *, per_match=1):
             -p.id,
         )
 
+    def family_for(p):
+        if p.market.startswith("corners_"):
+            return "corners"
+        if p.market.startswith(("over_", "under_")):
+            return "goals"
+        if p.market in {"home_win", "draw", "away_win"} or p.market.startswith("double_chance_"):
+            return "result"
+        return p.market
+
     ranked = []
     by_match = {}
-    for p in sorted(candidates, key=order, reverse=True):
+    family_counts = {}
+    postponed = []
+    family_budget = math.ceil(limit / 3) if limit is not None else None
+
+    def add(p, family):
         chosen = by_match.setdefault(p.match_id, set())
-        # One selection per market family for additional picks in the same match.
-        family = "corners" if p.market.startswith("corners_") else (
-            "goals" if p.market.startswith(("over_", "under_")) else (
-                "result" if p.market in {"home_win", "draw", "away_win"}
-                or p.market.startswith("double_chance_") else p.market
-            )
-        )
-        if len(chosen) < per_match and family not in chosen:
-            chosen.add(family)
-            ranked.append(p)
+        if len(chosen) >= per_match or family in chosen:
+            return
+        chosen.add(family)
+        family_counts[family] = family_counts.get(family, 0) + 1
+        ranked.append(p)
+
+    for p in sorted(candidates, key=order, reverse=True):
+        family = family_for(p)
+        if family_budget is not None and family_counts.get(family, 0) >= family_budget:
+            postponed.append((p, family))
+        else:
+            add(p, family)
+        if limit is not None and len(ranked) == limit:
+            return ranked
+    for p, family in postponed:
+        add(p, family)
+        if len(ranked) == limit:
+            break
     return ranked

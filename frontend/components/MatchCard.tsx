@@ -91,7 +91,9 @@ export default function MatchCard({ prediction }: { prediction: Prediction }) {
 
       <div className="flex items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
-          <SignalBadge tier={prediction.signal_tier} />
+          {prediction.has_statistical_value === undefined ? <SignalBadge tier={prediction.signal_tier} /> : (
+            <span className="text-xs text-slate-300">{prediction.has_statistical_value ? "Valor estadístico" : "Selección disponible"}</span>
+          )}
           <MarketQualityBadge quality={prediction.market_quality} />
           <AnomalyBadges flags={prediction.anomaly_flags} />
         </div>

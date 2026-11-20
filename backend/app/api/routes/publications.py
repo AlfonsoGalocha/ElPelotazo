@@ -1,9 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.app.db.database import get_db
 from backend.app.db.models.features import TeamMatchFeatures
+from backend.app.db.models.matches import Match
+from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.db.models.publication import FixturePublication, FixtureRankingRevision
 from backend.app.services.publication_service import publication_report
 
@@ -24,6 +27,26 @@ def publications(
     return publication_report(
         db, competition, market, model_version, min_probability, matchday, outcome, max_probability
     )
+
+
+@router.get("/coverage")
+def publication_coverage(db: Session = Depends(get_db)):
+    total, before = db.query(
+        func.count(PredictionResult.id),
+        func.count(PredictionResult.id).filter(Prediction.created_at < Match.kickoff_utc),
+    ).join(Prediction, Prediction.id == PredictionResult.prediction_id).join(
+        Match, Match.id == Prediction.match_id
+    ).filter(Match.status == "finished").one()
+    official = db.query(FixturePublication).join(Match, Match.id == FixturePublication.match_id).filter(
+        FixturePublication.captured_at < Match.kickoff_utc
+    )
+    return {
+        "historical_liquidated": total,
+        "historical_before_kickoff": before,
+        "historical_after_kickoff": total - before,
+        "official_captures": official.count(),
+        "official_finished": official.filter(Match.status == "finished").count(),
+    }
 
 
 @router.get("/{match_id}")

@@ -28,6 +28,7 @@ from backend.app.schemas.prediction import (
     BestOfDayOut,
     CurrentRoundPredictionsOut,
     PredictionOut,
+    AvailablePredictionOut,
     SignalDetailOut,
     SummaryOut,
 )
@@ -576,7 +577,7 @@ def top_signals(
     ]
 
 
-@router.get("/available")
+@router.get("/available", response_model=list[AvailablePredictionOut])
 def available_predictions(
     limit: int = Query(10, ge=1, le=30),
     per_match: int = Query(1, ge=1, le=3),
@@ -610,7 +611,7 @@ def available_predictions(
     provenance = market_track_records_with_provenance(db, competition_code)
     reliability = {key: value.value for key, value in provenance.items()}
     rows = []
-    for prediction in rank_available(candidates, reliability, per_match=per_match)[:limit]:
+    for prediction in rank_available(candidates, reliability, per_match=per_match, limit=limit):
         flags = compute_anomaly_flags(prediction, by_match[prediction.match_id], settings)
         reason = evaluate_quality_gate_v3(
             prediction, settings, reliability.get((prediction.match.competition.code, prediction.market))

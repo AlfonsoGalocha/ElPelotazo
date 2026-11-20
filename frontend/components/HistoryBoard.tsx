@@ -157,7 +157,7 @@ function groupByCompetitionLatestMatchday(rows: MatchHistory[]): CompetitionGrou
   return groups.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
+export default function HistoryBoard({ rows, simple = false }: { rows: MatchHistory[]; simple?: boolean }) {
   const groups = groupByCompetitionLatestMatchday(rows);
   // Pedido real del usuario: "ponme el mismo filtro de oportunidades en
   // todas las secciones de la app" -- un unico desplegable con optgroup
@@ -187,11 +187,11 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
     setDeepLoading(true);
     setSeason(null);
     setMatchday(null);
-    getHistory(selected, 500)
+    getHistory(selected, 500, simple)
       .then(setDeepRows)
       .catch(() => setDeepRows([]))
       .finally(() => setDeepLoading(false));
-  }, [selected]);
+  }, [selected, simple]);
 
   const clubGroups = groups.filter((g) => !isInternationalCompetition(g.code));
   const internationalGroups = groups.filter((g) => isInternationalCompetition(g.code));
@@ -214,7 +214,7 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
 
   return (
     <div className="flex flex-col gap-6">
-      {groups.length > 1 && (
+      {(groups.length > 1 || (simple && groups.length > 0)) && (
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-slate-500">Liga:</span>
           <select
@@ -241,7 +241,7 @@ export default function HistoryBoard({ rows }: { rows: MatchHistory[] }) {
             )}
           </select>
 
-          {selected && seasons.length > 0 && (
+          {!simple && selected && seasons.length > 0 && (
             <>
               <span className="ml-2 text-slate-500">Temporada:</span>
               <select

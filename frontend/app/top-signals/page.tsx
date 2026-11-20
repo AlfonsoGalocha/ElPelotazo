@@ -131,6 +131,7 @@ export default async function TopSignalsPage({
             ? `De los próximos ${days} días (sin restricción de jornada).`
             : `${SCOPE_LABELS[scope]} de cada competición — nunca un partido de otra jornada aunque tenga más edge.`}{" "}
         Cuotas entre 1,35 y 1,90, con ambos límites incluidos. La etiqueta «Valor estadístico» exige cuota verificable, calibración y EV conservador positivo.{" "}
+        El Top combina mercados cuando hay alternativas. API-Football aporta cuotas y conteos; «sin calibrar» indica que la probabilidad del modelo aún no tiene un ajuste temporal validado.{" "}
         {hasFairOddsFilter && (
           <>
             Filtrado además a cuota justa del modelo entre {minFairOdds ?? "0"} y {maxFairOdds ?? "∞"}.
