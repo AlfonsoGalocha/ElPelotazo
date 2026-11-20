@@ -9,6 +9,22 @@ import MarketQualityBadge from "@/components/MarketQualityBadge";
 import AnomalyBadges from "@/components/AnomalyBadge";
 import { EmptyState } from "@/components/EmptyState";
 
+const EXCLUSION_LABELS: Record<string, string> = {
+  sin_mercado: "Sin cuota para ese mercado",
+  cuota_fuera_de_banda: "Fuera del rango 1,35–1,90 de la estrategia",
+  cuota_desactualizada: "Cuota desactualizada",
+  origen_cuota_no_verificado: "Hora de la cuota sin verificar",
+  calibracion_no_disponible: "Probabilidad sin calibrar",
+  calibracion_en_extremo: "Calibración en 0 % o 100 % pendiente de validar",
+  ajuste_calibracion_sin_respaldo: "Ajuste de calibración superior a 15 puntos sin evidencia de la liga y mercado",
+  incertidumbre_elevada_o_no_disponible: "Intervalo amplio o no disponible",
+  cuota_sin_frescura_alta: "Cuota fuera del límite de alta confianza",
+  incertidumbre_no_disponible: "Incertidumbre sin estimar",
+  ev_estimado_no_positivo: "Sin ventaja estimada a esa cuota",
+  ev_conservador_no_positivo: "Sin ventaja con la estimación conservadora",
+  fiabilidad_historica_insuficiente: "Evidencia histórica insuficiente",
+};
+
 const SCOPE_LABELS: Record<SignalScope, string> = {
   current_round: "Jornada actual",
   next_round: "Próxima jornada",
@@ -37,6 +53,7 @@ export default async function TopSignalsPage({
     limit?: string;
     per_match?: string;
     prices?: string;
+    view?: string;
     scope?: SignalScope;
     competition_code?: string;
     days?: string;
@@ -50,7 +67,9 @@ export default async function TopSignalsPage({
 }) {
   const { date, competition_code: competitionCode } = searchParams;
   const limit = searchParams.limit === "5" ? 5 : 10;
-  const allPrices = searchParams.prices === "all";
+  const view = searchParams.view === "explore" ? "explore" : searchParams.view === "high" ? "high" : "main";
+  const valueOnly = view !== "explore";
+  const allPrices = searchParams.prices !== "preferred";
   const perMatch = searchParams.per_match === "2" ? 2 : 1;
   // `date` tiene prioridad sobre `scope` (ver backend); mostrarlo como su
   // propio modo evita que el selector de jornada contradiga al de fecha.
@@ -64,7 +83,7 @@ export default async function TopSignalsPage({
   const quality = searchParams.quality ?? "ALL";
   const hasFairOddsFilter = minFairOdds !== undefined || maxFairOdds !== undefined;
   const hasAnyFilter =
-    allPrices || Boolean(date) ||
+    view !== "main" || !allPrices || Boolean(date) ||
     hasFairOddsFilter ||
     Boolean(competitionCode) ||
     scope !== "current_round" ||
@@ -86,11 +105,12 @@ export default async function TopSignalsPage({
     minEv !== undefined ||
     quality !== "ALL";
 
-  const [predictions, competitions, diagnostics] = await Promise.all([
+  const [rows, competitions, diagnostics] = await Promise.all([
     getTopSignals({
       limit,
       perMatch,
       allPrices,
+      opportunityView: view,
       date,
       scope,
       days,
@@ -101,7 +121,7 @@ export default async function TopSignalsPage({
       minBookmakers,
       minEv,
       quality,
-    }, true).catch(() => []),
+    }, true).catch(() => null),
     getCompetitions().catch(() => []),
     getOpportunityDiagnostics({
       date, scope, days, competition_code: competitionCode,
@@ -114,6 +134,7 @@ export default async function TopSignalsPage({
   // competiciones de selecciones (15 a la vez, seccion 18 de
   // architecture_audit.md) en su propio grupo separado dentro del MISMO
   // desplegable (nunca mezcladas en una sola lista plana).
+  const predictions = rows ?? [];
   const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code));
   const internationalCompetitions = competitions.filter((c) => isInternationalCompetition(c.code));
 
@@ -133,14 +154,22 @@ export default async function TopSignalsPage({
           : scope === "all_upcoming"
             ? `De los próximos ${days} días (sin restricción de jornada).`
             : `${SCOPE_LABELS[scope]} de cada competición — nunca un partido de otra jornada aunque tenga más edge.`}{" "}
-        {allPrices ? "Todos los rangos de cuota." : "Cuotas entre 1,35 y 1,90."} La etiqueta «Valor estadístico» exige cuota verificable, calibración y EV conservador positivo.{" "}
-        El Top combina mercados cuando hay alternativas. API-Football aporta cuotas y conteos; «sin calibrar» indica que la probabilidad del modelo aún no tiene un ajuste temporal validado.{" "}
+        {view === "explore" ? "Exploración de selecciones con cuota." : "La estrategia exige una cuota verificable, probabilidad calibrada y valor esperado positivo."}{" "}
+        {view === "high" && "Alta confianza exige además historial suficiente, pronta actualización y valor conservador positivo."}{" "}
         {hasFairOddsFilter && (
           <>
             Filtrado además a cuota justa del modelo entre {minFairOdds ?? "0"} y {maxFairOdds ?? "∞"}.
           </>
         )}
       </p>
+
+      <nav aria-label="Categorías de oportunidades" className="mb-4 flex flex-wrap gap-4 text-sm">
+        {([["main", "Mejores oportunidades"], ["high", "Alta confianza"], ["explore", "Candidatos y descartes"]] as const).map(([key, label]) => (
+          <Link key={key} aria-current={view === key ? "page" : undefined}
+            className={view === key ? "font-semibold text-accent" : "text-slate-400 hover:text-slate-100"}
+            href={{ pathname: "/top-signals", query: { ...searchParams, view: key } }}>{label}</Link>
+        ))}
+      </nav>
 
       <form className="mb-6 flex flex-wrap items-center gap-2 text-sm text-slate-400">
         <label htmlFor="scope">Jornada:</label>
@@ -181,11 +210,12 @@ export default async function TopSignalsPage({
             </optgroup>
           )}
         </select>
-        <label htmlFor="prices">Cuotas</label>
+        <input type="hidden" name="view" value={view} />
+        {view === "explore" && <><label htmlFor="prices">Cuotas</label>
         <select id="prices" name="prices" defaultValue={allPrices ? "all" : "preferred"} className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200">
           <option value="preferred">1,35–1,90</option>
           <option value="all">Todos los rangos</option>
-        </select>
+        </select></>}
         <button type="submit" className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-1 font-medium text-slate-100 transition-colors hover:bg-accent/20">
           Aplicar
         </button>
@@ -316,7 +346,7 @@ export default async function TopSignalsPage({
       </form>
       {predictions.length > 0 && !predictions.some(p => p.has_statistical_value) && (
         <p className="mb-4 rounded-lg border border-surface-border p-3 text-sm text-slate-300">
-          No se han identificado oportunidades con valor demostrado para esta jornada. Estas son las selecciones mejor clasificadas por el modelo.
+          No se han identificado oportunidades con valor demostrado para esta jornada. Puedes consultar abajo las selecciones con cuota y el motivo por el que se descartaron.
         </p>
       )}
       {diagnostics && (
@@ -325,22 +355,29 @@ export default async function TopSignalsPage({
           <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               ["Partidos analizados", diagnostics.counts.matches],
-              ["Partidos con alguna cuota disponible", diagnostics.counts.matches_with_available_price],
-              ["Partidos con cuota de 1,35 a 1,90", diagnostics.counts.matches_with_preferred_price],
-              ["Selecciones con cuota disponible", diagnostics.counts.candidates_with_available_price],
-              ["Selecciones con cuota de 1,35 a 1,90", diagnostics.counts.candidates_with_preferred_price],
-              ["Selecciones con EV estimado positivo", diagnostics.counts.positive_estimated_ev],
-              ["Selecciones que superan el filtro", diagnostics.counts.passed_gate],
-              ["Oportunidades", diagnostics.counts.opportunities],
-              ["En observación", diagnostics.counts.observation],
+              ["Selecciones analizadas", diagnostics.counts.candidates],
+              ["Con cuota real", diagnostics.counts.candidates_with_valid_market],
+              [`Dentro de ${diagnostics.min_odds}–${diagnostics.max_odds}`, diagnostics.counts.candidates_in_band],
+              ["Con probabilidad utilizable", diagnostics.counts.usable_probabilities],
+              ["Con EV positivo", diagnostics.counts.positive_estimated_ev],
+              ["Superan los requisitos", diagnostics.counts.passed_gate],
+              ["Alta confianza antes de agrupar por partido", diagnostics.counts.high_confidence],
+              ["En el ranking de 10 partidos", diagnostics.counts.opportunities],
             ].map(([label, value]) => (
               <div key={label}><dt className="text-slate-400">{label}</dt><dd>{value}</dd></div>
             ))}
           </dl>
+          <p className="mt-2 text-xs text-slate-400">Motivos simultáneos. Una selección puede contar varias veces.</p>
+          <details className="mt-2 text-xs text-slate-400">
+            <summary>Primer fallo por selección</summary>
+            {Object.entries(diagnostics.first_reasons).map(([reason, count]) => (
+              <p key={reason}>{EXCLUSION_LABELS[reason] ?? reason.replaceAll("_", " ")} · {count}</p>
+            ))}
+          </details>
           {Object.keys(diagnostics.reasons).length > 0 && (
             <ul className="mt-3 space-y-1 border-t border-surface-border pt-2">
               {Object.entries(diagnostics.reasons).sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
-                <li key={reason}>{reason.replaceAll("_", " ")} · {count}</li>
+                <li key={reason}>{EXCLUSION_LABELS[reason] ?? reason.replaceAll("_", " ")} · {count}</li>
               ))}
             </ul>
           )}
@@ -348,13 +385,14 @@ export default async function TopSignalsPage({
       )}
 
       <div className="overflow-hidden rounded-xl border border-surface-border bg-card">
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto"><table className="w-full text-sm">
           <thead className="bg-surface-alt/60 text-left text-[11px] uppercase text-slate-500">
             <tr>
               <th className="px-3 py-2">Partido</th>
               <th className="px-3 py-2">Fecha</th>
               <th className="px-3 py-2">Mercado</th>
-              <th className="px-3 py-2">Prob. calibrada</th>
+              <th className="px-3 py-2">Prob. modelo</th>
+              <th className="px-3 py-2">Prob. mercado</th>
               <th className="px-3 py-2">Cuota</th>
               <th className="px-3 py-2">Casas</th>
               <th className="px-3 py-2">EV estimado</th>
@@ -367,12 +405,19 @@ export default async function TopSignalsPage({
             </tr>
           </thead>
           <tbody>
-            {predictions.map((p) => (
-              <tr key={p.id} className="border-t border-surface-border hover:bg-surface-alt/40">
+            {predictions.map((p) => {
+              const assessment = p.opportunity;
+              const price = assessment?.quote_price;
+              const ev = assessment?.ev;
+              const conservative = assessment?.conservative_ev;
+              const edge = assessment?.edge;
+              const age = assessment?.quote_age_minutes;
+              return <tr key={p.id} className="border-t border-surface-border hover:bg-surface-alt/40">
                 <td className="px-3 py-2 text-slate-200">
                   <Link href={`/signals/${p.id}`} className="hover:underline">
                     {p.match.home_team.canonical_name} vs {p.match.away_team.canonical_name}
                   </Link>
+                  <div className="text-xs text-slate-400">{p.match.competition.name}</div>
                 </td>
                 <td className="px-3 py-2 text-slate-400">
                   {formatMatchDateOnly(p.match.kickoff_utc, {
@@ -387,22 +432,41 @@ export default async function TopSignalsPage({
                     ? `${(p.calibrated_probability * 100).toFixed(1)}%`
                     : `${(p.model_probability * 100).toFixed(1)}% (sin calibrar)`}
                 </td>
-                <td className="px-3 py-2">{p.market_odds !== null ? p.market_odds.toFixed(2) : "—"}</td>
-                <td className="px-3 py-2 text-slate-400">{p.bookmakers_used ?? "—"}</td>
-                <td className="px-3 py-2 text-edge-positive">
-                  {p.ev_calibrated !== null ? `${p.ev_calibrated >= 0 ? "+" : ""}${(p.ev_calibrated * 100).toFixed(1)}%` : "—"}
+                <td className="px-3 py-2 text-slate-300">
+                  {p.market_probability !== null
+                    ? `${(p.market_probability * 100).toFixed(1)}% ${p.market_probability_source?.endsWith("_no_vig") ? "(sin margen)" : "(estimada)"}`
+                    : "—"}
                 </td>
-                <td className="px-3 py-2 text-edge-positive">
-                  {p.calibrated_probability !== null && p.ev_conservative !== null ? `${p.ev_conservative >= 0 ? "+" : ""}${(p.ev_conservative * 100).toFixed(1)}%` : "—"}
+                <td className="px-3 py-2">
+                  {price != null ? (
+                    <>
+                      {price.toFixed(2)}
+                      <div className="text-xs text-slate-400">{assessment?.bookmaker ?? "Referencia"}</div>
+                      <div className="text-xs text-slate-400">{(100 / price).toFixed(1)}% equilibrio</div>
+                    </>
+                  ) : "—"}
+                </td>
+                <td className="px-3 py-2 text-slate-400">{p.bookmakers_used ?? "—"}</td>
+                <td className={ev != null && ev > 0 && p.has_statistical_value ? "px-3 py-2 text-emerald-400" : "px-3 py-2 text-slate-300"}>
+                  {ev != null ? `${ev >= 0 ? "+" : ""}${(ev * 100).toFixed(1)}%` : "—"}
+                </td>
+                <td className={conservative != null && conservative > 0 && p.has_statistical_value ? "px-3 py-2 text-emerald-400" : "px-3 py-2 text-slate-300"}>
+                  {conservative != null ? `${conservative >= 0 ? "+" : ""}${(conservative * 100).toFixed(1)}%` : "—"}
                 </td>
                 <td className="px-3 py-2 text-slate-600">
-                  {p.edge !== null ? `${p.edge >= 0 ? "+" : ""}${(p.edge * 100).toFixed(1)} pp` : "—"}
+                  {edge != null ? `${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(1)} pp` : "—"}
                 </td>
                 <td className="px-3 py-2">
                   <div className="flex flex-wrap items-center gap-1">
                     <span className={p.has_statistical_value ? "font-semibold text-emerald-400" : "text-slate-400"}>
-                      {p.has_statistical_value ? "Valor estadístico" : "Selección disponible"}
+                      {p.has_statistical_value ? (assessment?.high_confidence ? "Alta confianza" : "Valor estimado · confianza limitada") : "Descartada"}
                     </span>
+                    <span className="text-xs text-slate-400">
+                      {(p.has_statistical_value ? assessment?.confidence_reasons : assessment?.reasons)?.map(
+                        (reason) => EXCLUSION_LABELS[reason] ?? reason.replaceAll("_", " ")
+                      ).join(" · ")}
+                    </span>
+                    {p.has_statistical_value && <span className="text-xs text-slate-400">EV positivo con cuota verificable</span>}
                     <AnomalyBadges flags={p.anomaly_flags} />
                   </div>
                 </td>
@@ -427,16 +491,21 @@ export default async function TopSignalsPage({
                 <td className="px-3 py-2 text-slate-400">
                   <span className="flex items-center gap-1">
                     {p.is_stale_odds && <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" />}
-                    {p.odds_age_minutes !== null ? `hace ${Math.round(p.odds_age_minutes)} min` : "Origen sin verificar"}
+                    {age != null ? `hace ${Math.round(age)} min` : "Origen sin verificar"}
                   </span>
                 </td>
-              </tr>
-            ))}
+              </tr>;
+            })}
           </tbody>
-        </table>
+        </table></div>
         {predictions.length === 0 && (
           <div className="p-2">
-            <EmptyState title="No hay selecciones con cuota válida para los criterios actuales" />
+            <EmptyState title={!rows ? "No se pudieron consultar las selecciones" : valueOnly ? (view === "high" ? "Ninguna selección reúne la evidencia adicional de alta confianza" : "Ninguna selección combina cuota verificable y valor esperado positivo") : "No hay selecciones con cuota válida para los criterios actuales"} />
+            {rows && valueOnly && (
+              <Link href={{ pathname: "/top-signals", query: { ...searchParams, view: "explore" } }} className="block pb-4 text-center text-sm text-accent underline">
+                Explorar selecciones con cuota
+              </Link>
+            )}
           </div>
         )}
       </div>

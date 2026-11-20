@@ -40,6 +40,7 @@ from dataclasses import dataclass
 
 from backend.app.db.models.matches import MatchOdds
 from backend.app.market.implied_probability import implied_probability
+from backend.app.normalization.bookmakers import is_excluded_bookmaker
 from backend.app.market.vig import no_vig_probabilities
 from backend.app.utils.logging import get_logger
 
@@ -110,7 +111,10 @@ def compute_market_consensus(
     """Calcula el consenso de mercado para (market, line, selection) a
     partir de TODAS las cuotas disponibles de TODOS los bookmakers, en vez
     de confiar en una unica casa."""
-    candidates = [o for o in odds_rows if o.market == market and o.line == line]
+    candidates = [
+        o for o in odds_rows
+        if o.market == market and o.line == line and not is_excluded_bookmaker(o.bookmaker)
+    ]
     if not candidates:
         return MarketConsensus(None, None, None, 0, 0, None, None, None, None, [])
 

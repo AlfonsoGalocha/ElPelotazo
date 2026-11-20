@@ -143,6 +143,19 @@ export interface Prediction {
   market_odds_median: number | null;
   has_statistical_value?: boolean;
   value_exclusion?: string | null;
+  opportunity?: {
+    bookmaker: string | null;
+    quote_price: number | null;
+    quote_age_minutes: number | null;
+    break_even: number | null;
+    edge: number | null;
+    ev: number | null;
+    conservative_ev: number | null;
+    reasons: string[];
+    confidence_reasons: string[];
+    high_confidence: boolean;
+    score: number | null;
+  } | null;
   market_odds_average: number | null;
   odds_origin_at?: string | null;
   market_quality: "HIGH" | "MEDIUM" | "LOW" | null;

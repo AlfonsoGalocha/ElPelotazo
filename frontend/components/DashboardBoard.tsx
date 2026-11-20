@@ -19,11 +19,6 @@ const QUALITY_LABELS: Record<QualityFilter, string> = {
   LOW: "Baja confianza",
 };
 
-// Dashboard del rediseño: banner de destacados (las 3 de mayor score),
-// filtros (competicion/confianza), y el resto de la jornada actual como
-// ranking de tarjetas -- UNA sola llamada a /predictions/top-signals
-// (nunca dos) de la que se derivan tanto el banner como la rejilla
-// completa, para no duplicar peticiones.
 export default function DashboardBoard() {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [competitionCode, setCompetitionCode] = useState<string | null>(null);
@@ -48,6 +43,7 @@ export default function DashboardBoard() {
     const timeout = setTimeout(() => {
       getTopSignals({
         limit: 24,
+        opportunityView: "explore",
         scope: "current_round",
         competitionCode: competitionCode ?? undefined,
         quality,
@@ -59,7 +55,8 @@ export default function DashboardBoard() {
     return () => clearTimeout(timeout);
   }, [competitionCode, quality]);
 
-  const featured = predictions.slice(0, 3);
+  const featured = predictions.filter((p) => p.has_statistical_value).slice(0, 3);
+  const remaining = predictions.filter((p) => !featured.some((item) => item.id === p.id));
   // Pedido real del usuario: "ponme el mismo filtro de oportunidades en
   // todas las secciones de la app" -- mismo desplegable con optgroup
   // Ligas/Selecciones que /top-signals, nunca botones sueltos.
@@ -72,9 +69,9 @@ export default function DashboardBoard() {
         <section>
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-200">
             <Sparkles className="h-4 w-4 text-opportunity" />
-            Destacados de la jornada
+            Oportunidades con valor
           </div>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {featured.map((p) => (
               <MatchCard key={`featured-${p.id}`} prediction={p} />
             ))}
@@ -126,7 +123,7 @@ export default function DashboardBoard() {
       </section>
 
       <section>
-        <div className="mb-3 text-sm font-semibold text-slate-200">Mejores selecciones de la jornada</div>
+        <div className="mb-3 text-sm font-semibold text-slate-200">Selecciones con cuota</div>
         {error && <ErrorState message={error} />}
         {!error && loading && <MatchCardSkeletonGrid count={6} />}
         {!error && !loading && predictions.length === 0 && (
@@ -135,9 +132,9 @@ export default function DashboardBoard() {
             description="Puedes consultar todos los encuentros en Partidos."
           />
         )}
-        {!error && !loading && predictions.length > 0 && (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {predictions.map((p) => (
+        {!error && !loading && remaining.length > 0 && (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {remaining.map((p) => (
               <MatchCard key={p.id} prediction={p} />
             ))}
           </div>

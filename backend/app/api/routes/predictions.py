@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
-from collections import Counter
+from collections import Counter, defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from backend.app.config.settings import Settings, get_settings
 from backend.app.db.database import get_db
-from backend.app.db.models.matches import Match
+from backend.app.db.models.matches import Match, MatchOdds
 from backend.app.db.models.modeling import Prediction
 from backend.app.prediction.anomaly import (
     best_prediction_per_match,
@@ -17,6 +17,7 @@ from backend.app.prediction.anomaly import (
 )
 from backend.app.prediction.confidence import signal_tier
 from backend.app.prediction.market_quality import market_quality_tier
+from backend.app.prediction.opportunities import assess_opportunity, select_ranked, valid_probability
 from backend.app.prediction.ranking import (
     calibrated_probability_or_fallback,
     conservative_probability,
@@ -577,6 +578,48 @@ def top_signals(
     ]
 
 
+def _execution_assessments(db, candidates, settings, provenance, now):
+    from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP
+
+    by_match = _group_by_match(candidates)
+    odds = defaultdict(list)
+    for quote in db.query(MatchOdds).options(joinedload(MatchOdds.archived_quote)).filter(
+        MatchOdds.match_id.in_(by_match), MatchOdds.snapshot_type == "pre_match"
+    ):
+        odds[quote.match_id].append(quote)
+
+    return [
+        (p, assess_opportunity(
+            p, odds[p.match_id], ALL_MARKET_TO_ODDS_LOOKUP.get(p.market), settings, now,
+            _reliability_for(p, provenance), compute_anomaly_flags(p, by_match[p.match_id], settings),
+        ))
+        for p in candidates
+    ]
+
+
+def _execution_details(assessment):
+    quote, reference = assessment.quote, assessment.reference_quote
+    return {
+        "bookmaker": quote.bookmaker if quote else None,
+        "quote_id": quote.history_quote_id if quote else None,
+        "quote_price": reference.price if reference else None,
+        "reference_bookmaker": reference.bookmaker if reference else None,
+        "quote_origin": reference.provider_updated_at if reference else None,
+        "quote_fetched": reference.fetched_at if reference else None,
+        "max_age_minutes": assessment.max_age_minutes,
+        "quote_age_minutes": assessment.age_minutes,
+        "break_even": assessment.break_even,
+        "edge": assessment.probability - assessment.break_even
+        if assessment.break_even and valid_probability(assessment.probability) else None,
+        "ev": assessment.ev,
+        "conservative_ev": assessment.conservative_ev,
+        "reasons": assessment.reasons,
+        "confidence_reasons": assessment.confidence_reasons,
+        "high_confidence": assessment.high_confidence,
+        "score": assessment.score,
+    }
+
+
 @router.get("/available", response_model=list[AvailablePredictionOut])
 def available_predictions(
     limit: int = Query(10, ge=1, le=30),
@@ -592,9 +635,11 @@ def available_predictions(
     min_ev: float | None = Query(None),
     quality: str | None = QUALITY_QUERY,
     all_prices: bool = Query(False),
+    value_only: bool = Query(False),
+    opportunity_view: str | None = Query(None, pattern="^(main|high|explore)$"),
     db: Session = Depends(get_db),
 ):
-    from backend.app.prediction.available_ranking import rank_available
+    from backend.app.prediction.available_ranking import has_available_price, rank_available
     from backend.app.prediction.ranking import evaluate_quality_gate_v3
 
     settings = _settings_for_opportunities(db, get_settings())
@@ -611,15 +656,54 @@ def available_predictions(
     by_match = _group_by_match(candidates)
     provenance = market_track_records_with_provenance(db, competition_code)
     reliability = {key: value.value for key, value in provenance.items()}
-    rows = []
-    for prediction in rank_available(candidates, reliability, per_match=per_match, limit=limit, all_prices=all_prices):
+    if opportunity_view:
+        pairs = _execution_assessments(db, candidates, settings, provenance, dt.datetime.utcnow())
+        qualified = [(p, item) for p, item in pairs if not item.reasons]
+        if opportunity_view == "high":
+            qualified = [(p, item) for p, item in qualified if item.high_confidence]
+        ranked = select_ranked(qualified, limit)
+        if opportunity_view == "explore" and len(ranked) < limit:
+            by_id = {p.id: item for p, item in pairs}
+            included_matches = {p.match_id for p, _ in ranked}
+            remaining = [p for p in candidates if p.match_id not in included_matches]
+            ranked.extend((p, by_id[p.id]) for p in rank_available(
+                remaining, reliability, per_match=per_match, limit=limit - len(ranked),
+                all_prices=all_prices, prefer_calibrated=True,
+            ))
+        return [
+            {
+                **serialize_prediction(p, compute_anomaly_flags(p, by_match[p.match_id], settings),
+                                       reliability=_reliability_for(p, provenance)),
+                "has_statistical_value": not item.reasons,
+                "value_exclusion": item.reasons[0] if item.reasons else None,
+                "opportunity": _execution_details(item),
+            }
+            for p, item in ranked
+        ]
+
+    def assess(prediction):
         flags = compute_anomaly_flags(prediction, by_match[prediction.match_id], settings)
         reason = evaluate_quality_gate_v3(
             prediction, settings, reliability.get((prediction.match.competition.code, prediction.market))
         )
+        return flags, reason, reason is None and is_strong_signal(flags)
+
+    assessments = {
+        p.id: assess(p) for p in candidates if has_available_price(p, all_prices=all_prices)
+    }
+    value_ids = {prediction_id for prediction_id, assessment in assessments.items() if assessment[2]}
+    if value_only:
+        candidates = [p for p in candidates if p.id in value_ids]
+
+    rows = []
+    for prediction in rank_available(
+        candidates, reliability, per_match=per_match, limit=limit, all_prices=all_prices,
+        value_ids=value_ids, prefer_calibrated=True,
+    ):
+        flags, reason, has_value = assessments[prediction.id]
         rows.append({
             **serialize_prediction(prediction, flags, reliability=_reliability_for(prediction, provenance)),
-            "has_statistical_value": reason is None and is_strong_signal(flags),
+            "has_statistical_value": has_value,
             "value_exclusion": reason.value if reason else None,
         })
     return rows
@@ -788,6 +872,7 @@ def best_predictions_debug(
     min_ev: float | None = Query(None, ge=0),
     quality: str | None = QUALITY_QUERY,
     summary_only: bool = Query(False),
+    execution: bool = Query(False),
     db: Session = Depends(get_db),
 ) -> dict:
     """Observabilidad (seccion 13): por cada prediccion candidata, si entro
@@ -798,6 +883,46 @@ def best_predictions_debug(
         db, market_family, upcoming_only, days, date, min_fair_odds, max_fair_odds, scope, competition_code,
         min_edge, min_bookmakers, min_ev=min_ev
     ).all()
+    if execution:
+        if quality and quality.upper() != "ALL":
+            candidates = [p for p in candidates if market_quality_tier(
+                p.bookmakers_used, p.market_odds_min, p.market_odds_max, p.market_odds_median, settings
+            ) == quality.upper()]
+        provenance = market_track_records_with_provenance(db, competition_code)
+        pairs = _execution_assessments(db, candidates, settings, provenance, dt.datetime.utcnow())
+        items = [item for _, item in pairs]
+        qualified = [(p, item) for p, item in pairs if not item.reasons]
+        summary = {
+            "counts": {
+                "matches": len({p.match_id for p in candidates}),
+                "candidates": len(items),
+                "candidates_with_valid_market": sum("sin_mercado" not in item.reasons for item in items),
+                "candidates_in_band": sum(
+                    "sin_mercado" not in item.reasons and "cuota_fuera_de_banda" not in item.reasons for item in items
+                ),
+                "usable_probabilities": sum(not any(
+                    reason in item.reasons for reason in ("probabilidad_invalida", "calibracion_no_disponible", "calibracion_en_extremo",
+                                   "ajuste_calibracion_sin_respaldo")
+                ) for item in items),
+                "positive_estimated_ev": sum(item.ev is not None and item.ev > 0 for item in items),
+                "passed_gate": len(qualified),
+                "high_confidence": sum(item.high_confidence for item in items),
+                "opportunities": len(select_ranked(qualified, 10)),
+            },
+            "reasons": dict(Counter(reason for item in items for reason in item.reasons)),
+            "first_reasons": dict(Counter(item.reasons[0] for item in items if item.reasons)),
+            "min_odds": settings.min_opportunity_odds,
+            "max_odds": settings.max_opportunity_odds,
+        }
+        if not summary_only:
+            summary["candidates"] = [
+                {"prediction_id": p.id, "match_id": p.match_id, "market": p.market,
+                 "model_probability": p.model_probability if valid_probability(p.model_probability) else None,
+                 "calibrated_probability": p.calibrated_probability if valid_probability(p.calibrated_probability) else None,
+                 **_execution_details(item)} for p, item in pairs
+            ]
+        return summary
+
     track_records = market_track_records(db, competition_code)
     # Procedencia de la fiabilidad (seccion 2.2, "fiabilidad jerarquica"):
     # `track_records` (arriba) sigue siendo el dict plano que ya consumia

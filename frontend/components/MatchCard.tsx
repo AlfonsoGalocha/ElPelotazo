@@ -19,7 +19,11 @@ import AnomalyBadges from "./AnomalyBadge";
 // conservador; el edge nunca decide que se muestra como recomendado).
 export default function MatchCard({ prediction }: { prediction: Prediction }) {
   const match = prediction.match;
-  const evPositive = prediction.ev_conservative !== null && prediction.ev_conservative > 0;
+  const assessment = prediction.opportunity;
+  const price = assessment ? assessment.quote_price : prediction.market_odds;
+  const ev = assessment ? assessment.ev : prediction.ev_conservative;
+  const edge = assessment ? assessment.edge : prediction.edge;
+  const evPositive = ev !== null && ev > 0;
   const calibratedProbability = prediction.calibrated_probability ?? prediction.model_probability;
 
   return (
@@ -42,48 +46,55 @@ export default function MatchCard({ prediction }: { prediction: Prediction }) {
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-center gap-2.5">
           <TeamLogo name={match.home_team.canonical_name} logoUrl={match.home_team.logo_url} size="md" />
-          <span className="truncate text-sm font-medium text-slate-100">{match.home_team.canonical_name}</span>
+          <span className="break-words text-sm font-medium text-slate-100">{match.home_team.canonical_name}</span>
         </div>
         <span className="shrink-0 px-1 text-xs font-medium text-slate-600">vs</span>
         <div className="flex min-w-0 flex-1 items-center justify-end gap-2.5 text-right">
-          <span className="truncate text-sm font-medium text-slate-100">{match.away_team.canonical_name}</span>
+          <span className="break-words text-sm font-medium text-slate-100">{match.away_team.canonical_name}</span>
           <TeamLogo name={match.away_team.canonical_name} logoUrl={match.away_team.logo_url} size="md" />
         </div>
       </div>
 
-      <div className="flex items-center justify-between gap-3 rounded-lg bg-surface-alt/60 px-3 py-2.5">
+      <div className="grid gap-2 rounded-lg bg-surface-alt/60 px-3 py-2.5">
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium text-slate-100">
+          <div className="break-words text-sm font-medium text-slate-100">
             {MARKET_DISPLAY_NAMES[prediction.market] ?? prediction.market}
           </div>
-          <div className="mt-0.5 flex items-center gap-1 text-lg font-bold text-slate-100">
+          <div className="mt-0.5 flex flex-wrap items-center gap-1 text-lg font-bold text-slate-100">
             <Gauge className="h-3.5 w-3.5 text-slate-500" />
+            <span className="text-xs font-normal text-slate-400">Modelo</span>
             {(calibratedProbability * 100).toFixed(1)}%
             {prediction.calibrated_probability === null && (
               <span className="text-xs font-normal text-slate-500">(sin calibrar)</span>
             )}
           </div>
         </div>
-        <div className="shrink-0 text-right">
-          {prediction.market_odds !== null ? (
-            <div className="text-sm font-semibold text-slate-100">cuota {prediction.market_odds.toFixed(2)}</div>
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          {price !== null ? (
+            <div className="text-sm font-semibold text-slate-100">cuota {price.toFixed(2)} {assessment?.bookmaker ?? (assessment ? "· referencia" : "")}</div>
           ) : (
             <div className="text-xs text-slate-500">sin cuota</div>
           )}
-          {prediction.calibrated_probability !== null && prediction.ev_conservative !== null && (
+          {prediction.market_probability !== null && (
+            <div className="text-xs text-slate-300">
+              Mercado {(prediction.market_probability * 100).toFixed(1)}%
+              {prediction.market_probability_source?.endsWith("_no_vig") ? " sin margen" : ""}
+            </div>
+          )}
+          {prediction.calibrated_probability !== null && ev !== null && (
             <div
               className={
                 "text-sm font-bold " + (evPositive && prediction.has_statistical_value ? "text-edge-positive" : "text-slate-500")
               }
             >
               {evPositive ? "+" : ""}
-              {(prediction.ev_conservative * 100).toFixed(1)}% EV
+              {(ev * 100).toFixed(1)}% EV
             </div>
           )}
-          {prediction.edge !== null && (
+          {edge !== null && (
             <div className="text-xs text-slate-600">
-              edge {prediction.edge >= 0 ? "+" : ""}
-              {(prediction.edge * 100).toFixed(1)}pp
+              edge {edge >= 0 ? "+" : ""}
+              {(edge * 100).toFixed(1)}pp
             </div>
           )}
         </div>
@@ -92,7 +103,7 @@ export default function MatchCard({ prediction }: { prediction: Prediction }) {
       <div className="flex items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           {prediction.has_statistical_value === undefined ? <SignalBadge tier={prediction.signal_tier} /> : (
-            <span className="text-xs text-slate-300">{prediction.has_statistical_value ? "Valor estadístico" : "Selección disponible"}</span>
+            <span className="text-xs text-slate-300">{prediction.has_statistical_value ? (assessment?.high_confidence ? "Alta confianza" : "Valor estimado") : "Selección disponible"}</span>
           )}
           <MarketQualityBadge quality={prediction.market_quality} />
           <AnomalyBadges flags={prediction.anomaly_flags} />
