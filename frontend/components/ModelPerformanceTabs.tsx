@@ -5,7 +5,6 @@ import type { MatchHistory, PerformanceSegment } from "@/types";
 import HistoryBoard from "./HistoryBoard";
 import ModelPerformanceBoard from "./ModelPerformanceBoard";
 import ModelVersionsBoard from "./ModelVersionsBoard";
-import PerformanceEvolutionChart from "./PerformanceEvolutionChart";
 import StatsOverview from "./StatsOverview";
 import { EmptyState } from "./EmptyState";
 
@@ -64,7 +63,6 @@ export default function ModelPerformanceTabs({
         ) : (
           <div className="flex flex-col gap-6">
             <StatsOverview segments={segments} />
-            <PerformanceEvolutionChart />
           </div>
         ))}
 

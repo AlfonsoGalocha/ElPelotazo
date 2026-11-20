@@ -393,6 +393,7 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     # predicciones "sin mercado" permanentes, sin cuota real con la que
     # compararse -- ver docstring de secondary_markets.py.
     secondary_models: dict[str, TotalCountPoissonModel] = {}
+    corner_calibration = {}
     for stat_family in ("corners",):
         try:
             model = TotalCountPoissonModel(stat_family).fit(train_table)
@@ -427,6 +428,21 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
                         "log_loss": log_loss_score(y_true, p),
                     }
                 }
+
+            for market_key, probabilities in probs.items():
+                labels = label_for_secondary_market(eval_rows, market_key).to_numpy(dtype=bool)
+                if len(labels) < MIN_CALIBRATION_MATCHES or len(set(labels)) < 2:
+                    corner_calibration[market_key] = {
+                        "accepted": False, "reason": "insufficient_labels", "n_holdout": len(labels)
+                    }
+                    continue
+                calibrator, report = _fit_validated_isotonic_calibrator(
+                    probabilities, labels, eval_rows["date"].to_numpy()
+                )
+                corner_calibration[market_key] = report
+                if calibrator is not None:
+                    calibrators[market_key] = calibrator
+    metrics["corners_calibration"] = corner_calibration
 
     version = dt.datetime.utcnow().isoformat()
     artifact_dir = settings.model_artifacts_path / competition_code

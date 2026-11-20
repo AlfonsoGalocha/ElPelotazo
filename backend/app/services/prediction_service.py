@@ -306,7 +306,8 @@ def generate_predictions_for_competition(
     )
     if "corners_model" in artifact:
         outputs += predict_secondary_markets_for_table(
-            target_matches, artifact["corners_model"], market_quotes=market_quotes
+            target_matches, artifact["corners_model"], market_quotes=market_quotes,
+            calibrators=artifact.get("calibrators"),
         )
 
     # Sin esto, cada `predict`/`predict-upcoming`/`refresh` que se ejecuta

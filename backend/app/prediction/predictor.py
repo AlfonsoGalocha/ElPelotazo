@@ -221,6 +221,7 @@ def predict_secondary_markets_for_table(
     table: pd.DataFrame,
     corners_model: TotalCountPoissonModel,
     market_quotes: dict[tuple[int, str], dict] | None = None,
+    calibrators: dict | None = None,
 ) -> list[MarketPredictionOutput]:
     """Mercado de corners (seccion 18/19). `market_quotes`: igual forma
     que en `predict_markets_for_table` — opcional, porque las fuentes
@@ -238,7 +239,8 @@ def predict_secondary_markets_for_table(
     for model in (corners_model,):
         probs_by_market = model.predict_market_probabilities(table)
         for market_key, probs in probs_by_market.items():
-            spec = SECONDARY_MARKET_DEFINITIONS[market_key]
+            calibrator = (calibrators or {}).get(market_key)
+            calibrated = calibrator.transform(np.asarray(probs)) if calibrator is not None else None
             for i, (_, row) in enumerate(table.iterrows()):
                 quote = (market_quotes or {}).get((row["match_id"], market_key))
                 market_probability = quote["market_probability"] if quote else None
@@ -271,6 +273,7 @@ def predict_secondary_markets_for_table(
                         match_id=int(row["match_id"]),
                         market=market_key,
                         model_probability=float(probs[i]),
+                        calibrated_probability=float(calibrated[i]) if calibrated is not None else None,
                         fair_odds=float(fair_odds(probs[i])),
                         market_probability=market_probability,
                         market_odds=market_odds,

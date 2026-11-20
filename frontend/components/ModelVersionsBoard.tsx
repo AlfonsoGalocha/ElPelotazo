@@ -80,6 +80,8 @@ export default function ModelVersionsBoard() {
     <div className="flex flex-col gap-6">
       {competitionCodes.map((code) => {
         const rows = byCompetition.get(code)!;
+        const current = [...rows].sort((a, b) => b.version.created_at.localeCompare(a.version.created_at))
+          .find(({ version }) => version.is_active !== false)?.version.id;
         return (
           <div key={code}>
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">{code}</h2>
@@ -112,12 +114,12 @@ export default function ModelVersionsBoard() {
                         {weightedBrier !== null ? weightedBrier.toFixed(4) : "sin liquidar aún"}
                       </td>
                       <td className="px-3 py-2">
-                        {version.is_active !== false ? (
+                        {version.id === current ? (
                           <span className="flex items-center gap-1 text-xs font-semibold text-edge-positive">
                             <CheckCircle2 className="h-3.5 w-3.5" /> ACTIVA
                           </span>
                         ) : (
-                          <span className="text-xs text-slate-500">rechazada (no mejoró fuera de muestra)</span>
+                          <span className="text-xs text-slate-500">{version.is_active === false ? "Sin promocionar" : "Versión anterior"}</span>
                         )}
                       </td>
                     </tr>
