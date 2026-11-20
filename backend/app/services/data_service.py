@@ -359,6 +359,11 @@ def _attach_odds_snapshots(
     EXISTENTE y programado. Nunca crea partidos nuevos: si no hay un
     `Match` que case, esa cuota se descarta (se devuelve como ejemplo en
     `unmatched_examples` en vez de perderse en silencio)."""
+    # A manual refresh and the scheduler can fetch at the same time.
+    # Serialize replacement of the active rows after fetching, before any delete.
+    if snapshots and db.get_bind().dialect.name == "postgresql":
+        db.query(Competition.id).filter(Competition.id == competition_id).with_for_update().one()
+
     scheduled = (
         db.query(Match)
         .filter(Match.competition_id == competition_id, Match.status == "scheduled")

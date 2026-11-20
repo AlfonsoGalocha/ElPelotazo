@@ -178,3 +178,12 @@ def test_market_odds_freshness_never_counts_a_finished_match_as_scheduled(db_ses
 
     freshness = market_odds_freshness(db_session)
     assert freshness["scheduled_matches_with_odds"] == 0
+
+
+def test_ingestion_error_is_bounded_to_database_column(db_session):
+    now = dt.datetime.utcnow()
+    original = "duplicate key uq_current_prematch_odds " + "x" * 5000
+    record_ingestion_run(db_session, "api_football", "update_odds", "laliga", now, now, error=original)
+    saved = db_session.query(OddsIngestionRun).one().error
+    assert saved == original[:1999] + "…"
+    assert len(saved) == 2000
