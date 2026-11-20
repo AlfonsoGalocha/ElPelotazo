@@ -126,8 +126,8 @@ class Settings(BaseSettings):
     # calibracion del modelo (eso es `confidence`, prediction/confidence.py).
     # Umbrales de partida, no un estandar universal: ajustar segun cuantas
     # casas cubre realmente tu fuente de cuotas.
-    market_quality_high_min_bookmakers: int = 10
-    market_quality_medium_min_bookmakers: int = 4
+    market_quality_high_min_bookmakers: int = 5
+    market_quality_medium_min_bookmakers: int = 3
     # Dispersion relativa = (cuota_max - cuota_min) / cuota_mediana. Por
     # encima de este umbral, muchas casas respaldando el mercado ya NO
     # basta para "HIGH": una dispersion grande sugiere que el "consenso"

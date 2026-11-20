@@ -620,3 +620,13 @@ def test_fetch_odds_for_window_pauses_between_fixtures_to_avoid_the_per_minute_r
     odds_calls = [c for c in fake_client.calls if c[0] == "/odds"]
     assert len(odds_calls) == 3
     assert sleep_calls == [1, 1]  # 2 pausas entre 3 peticiones, nunca antes de la primera
+
+
+def test_match_winner_does_not_use_other_1x2_markets():
+    from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
+    records, _ = ApiFootballOddsProvider._parse_odds_response([{"bookmakers": [{"name": "Bet365", "bets": [
+        {"id": 1, "name": "Match Winner", "values": [{"value": "Home", "odd": "1.42"}]},
+        {"id": 55, "name": "Corners 1x2", "values": [{"value": "Home", "odd": "1.25"}]},
+        {"id": 176, "name": "ShotOnTarget 1x2", "values": [{"value": "Home", "odd": "1.18"}]},
+    ]}]}])
+    assert [(r.market, r.selection, r.price) for r in records] == [("match_result", "home", 1.42)]

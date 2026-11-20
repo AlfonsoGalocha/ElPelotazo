@@ -47,7 +47,7 @@ KNOWN_ALIASES: dict[str, str] = {
 # mercado ni fuente. Se comprueba sobre la clave normalizada (minusculas,
 # sin acentos/espacios), igual que KNOWN_ALIASES, para que no dependa de
 # que mayusculas/espacios exactos coincidan con los de la fuente.
-EXCLUDED_BOOKMAKERS: frozenset[str] = frozenset({"betano", "marathonbet"})
+EXCLUDED_BOOKMAKERS: frozenset[str] = frozenset({"betano", "marathonbet", "betvictor", "dafabet", "sbo", "sbobet"})
 
 
 def is_excluded_bookmaker(raw_name: str) -> bool:
