@@ -9,7 +9,7 @@ nunca hay cuota real de tarjetas? ¿La API no ofrece ese mercado para
 este partido, o lo llama de otra forma que no reconocemos?
 
 (El equivalente para corners ya se diagnostico y se arreglo -- ver
-CORNERS_EXCLUDE en odds_provider.py -- por eso aqui ya NO se vuelca el
+MARKET_SPECS en odds_provider.py -- por eso aqui ya NO se vuelca el
 bloque raw de corners: es el que inflaba tanto el log que se cortaba en
 la terminal del usuario. Si hiciera falta volver a verlo, los nombres de
 mercado SI siguen listados abajo, con "corner" incluido.)

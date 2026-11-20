@@ -59,127 +59,19 @@ logger = get_logger(__name__)
 # "over/under" generico: el nombre real de ese mercado en API-Football
 # tambien contiene la palabra "over/under" ("Corners Over Under"), asi
 # que si se comprobara el hint generico primero se clasificaria mal.
-CORNERS_EXCLUDE = (
-    "half",
-    "halves",
-    "team",
-    "result",
-    # Bug real reportado por el usuario (cuota de "mas de 8.5 corners" sin
-    # sentido -- no monotona respecto a "mas de 9.5", imposible en la
-    # realidad -- confirmada contra la respuesta real de la API):
-    # API-Football tambien manda "Home Corners Over/Under" y "Away Corners
-    # Over/Under" (corners de UN SOLO equipo, no del partido), que NO
-    # contienen la palabra "team" (a diferencia de los mercados de goles
-    # equivalentes, "Home/Away TEAM Total Goals", donde el exclude de
-    # arriba ya bastaba) -- se colaban mezclados con el valor real bajo la
-    # misma linea (8.5/9.5/10.5...), corrompiendo el consenso. Tambien
-    # confirmados en la misma respuesta real: "Multicorners" (linea 20.5,
-    # un mercado distinto con ese nombre), "Corners. total between 0 and
-    # 10m" (solo los primeros 10 minutos) y "Corners. Total (Range)" (apuesta
-    # por rangos tipo "6 - 8": sus dos valores extremos, "Under 6"/"Over 14",
-    # SI encajan con la regex over/under generica y se colaban tambien).
-    "home",
-    "away",
-    "multicorners",
-    "between",
-    "range",
-)
-MARKET_NAME_HINTS: list[tuple[str, tuple[str, ...], str, tuple[str, ...]]] = [
-    # (market_key interno, hints, tipo_de_valor, excluye)
-    ("corners_total", ("corner",), "over_under", CORNERS_EXCLUDE),
-    # Bug real reportado por el usuario (cuota de "ambos marcan" sin
-    # sentido, confirmado contra la respuesta real): API-Football devuelve
-    # "Both Teams Score" (partido completo, el unico correcto), PERO
-    # TAMBIEN "Both Teams Score - First Half", "Both Teams To Score -
-    # Second Half" y "Both Teams To Score in Both Halves" (esta variante
-    # ni siquiera usa "half" en singular, de ahi el "halves" en el
-    # excluye) -- las cuatro contienen "both teams score"/"both teams to
-    # score" como subcadena, mismo bug que en goles (ver mas abajo). NO se
-    # excluye "team" aqui (a diferencia de los demas mercados): el propio
-    # hint correcto "both teams score"/"both teams to score" ya contiene
-    # "team", excluirlo autoexcluiria el caso bueno.
-    (
-        "btts",
-        ("both teams score", "both teams to score", "btts"),
-        "yes_no",
-        ("half", "halves", "result"),
-    ),
-    (
-        "match_result",
-        ("match winner", "1x2", "full time result", "fulltime result"),
-        "match_result",
-        (),
-    ),
-    # Bug real reportado por el usuario (cuota de "Más de 1.5 goles" no
-    # coincidia con la real del todo): API-Football devuelve "Goals
-    # Over/Under" (partido completo, el unico correcto aqui), PERO TAMBIEN
-    # "Goals Over/Under First Half", "Goals Over/Under - Second Half" y
-    # "Home/Away Team Total Goals(1st/2nd Half)" -- todos contienen
-    # "over/under"/"total goals" como subcadena, asi que antes del
-    # `excluye` de abajo se clasificaban TAMBIEN como `over_under_goals`
-    # del partido completo. Como varios bets del MISMO bookmaker acababan
-    # compitiendo por la misma clave (bookmaker, linea, seleccion), el que
-    # se procesara ULTIMO ganaba en silencio -- en produccion, el valor
-    # guardado para "Over 1.5 goles" de Bet365 era en realidad el de la
-    # SEGUNDA PARTE (1.57), no el del partido completo (1.10 real).
-    # "Result/Total Goals" (p.ej. "Home/Over 3.5", un mercado compuesto
-    # resultado+goles) tambien colaba via "total goals"; se excluye por
-    # contener "result".
-    (
-        "over_under_goals",
-        ("over/under", "goals over", "total goals"),
-        "over_under",
-        # "card": tarjetas se decidio NO soportar (ver docstring del
-        # modulo) -- pero si alguna casa algun dia nombra ese mercado
-        # "Cards Over/Under" (nunca confirmado, solo por si acaso), SIN
-        # este exclude caeria aqui por contener "over/under" y se
-        # guardaria como si fuera una linea de GOLES, mezclando dos
-        # estadisticas sin relacion. Mejor que un bet de tarjetas se
-        # ignore del todo (comportamiento ya correcto hoy, porque no hay
-        # ningun hint para "card") a que se clasifique mal.
-        #
-        # "corner": bug real reportado por el usuario (comparo contra una
-        # app de cuotas real: Real Madrid "Over 2.5 goles" de Bet365 a
-        # 1.83 en nuestra BD, 1.40 en bet365.com real) -- confirmado
-        # contra la respuesta real de /odds para ese partido: "Home
-        # Corners Over/Under"/"Away Corners Over/Under" (corners de UN
-        # SOLO equipo) SI estan excluidos del mercado "corners_total" (ver
-        # CORNERS_EXCLUDE, por contener "home"/"away"), pero al caer
-        # excluidos de ahi, el bucle de `_parse_odds_response` los vuelve
-        # a probar contra el SIGUIENTE market_key de esta lista -- y
-        # "Home/Away Corners Over/Under" SI contiene "Over/Under" (con
-        # barra), asi que sin este exclude se colaban aqui como si fueran
-        # una linea de GOLES, mezclando dos estadisticas sin relacion
-        # (igual que "Corners Over Under" del partido completo, que no
-        # tiene barra y por eso nunca coincidio con el hint -- solo las
-        # variantes "Home"/"Away" con barra son el problema real).
-        ("half", "halves", "team", "result", "card", "corner"),
-    ),
-    # Bug real reportado por el usuario (comparo contra una app de cuotas
-    # real: Sevilla-Betis "Doble Oportunidad 1X" a 1.57-1.61 segun la casa,
-    # la app mostraba 1.70): el comentario anterior de este modulo (y de
-    # prediction_service.py) decia "ningun proveedor actual trae doble
-    # oportunidad como mercado propio" -- FALSO, nunca confirmado contra
-    # una respuesta real, solo asumido. API-Football SI devuelve "Double
-    # Chance" como mercado propio (agregando las mismas casas reales:
-    # bet365, Sportium, 1xBet, Betway, bwin...), con margen real de cada
-    # casa -- mientras tanto, la app mostraba un precio SIN margen (1 /
-    # P(1)+P(X) derivado del consenso de 1X2), que por construccion
-    # matematica siempre sale MAS ALTO que cualquier cuota real con margen.
-    # Ahora se ingesta el mercado real; `_add_derived_double_chance_quotes`
-    # (prediction_service.py) sigue derivandolo SOLO si esta fuente no trae
-    # nada para un partido concreto (nunca lo sobreescribe si ya hay dato
-    # real, logica que ya existia sin usarse).
-    # Mismo patron de bug ya confirmado arriba para over_under_goals
-    # (un bet de primera/segunda parte cuela bajo el hint generico del
-    # partido completo): Bet365 (y probablemente otras casas) tambien
-    # ofrece "Double Chance - First Half" -- sin este exclude, se
-    # guardaria mezclado con la Doble Oportunidad del PARTIDO COMPLETO
-    # bajo la misma clave (bookmaker, "double_chance_1x"/etc), corrompiendo
-    # el consenso exactamente igual que el bug ya corregido de "Goals
-    # Over/Under First Half" mezclandose con el del partido completo.
-    ("double_chance", ("double chance",), "double_chance", ("half", "halves")),
-]
+# IDs de mercados prepartido confirmados en respuestas de /odds.
+# Si falta el ID, solo se aceptan nombres completos conocidos.
+MARKET_SPECS = {
+    "1": ("match_result", "match_result", ("match winner", "1x2", "full time result", "fulltime result")),
+    "5": ("over_under_goals", "over_under", ("goals over/under", "goals over under")),
+    "8": ("btts", "yes_no", ("both teams score", "both teams to score", "btts")),
+    "12": ("double_chance", "double_chance", ("double chance",)),
+    "45": ("corners_total", "over_under", ("corners over under", "corners over/under", "total corners")),
+}
+MARKET_SPECS_BY_NAME = {
+    name: (market, value_kind, names)
+    for market, value_kind, names in MARKET_SPECS.values() for name in names
+}
 
 # "Double Chance" NO es un mercado de 2 selecciones complementarias como
 # over/under o btts (cuyas probabilidades reales suman 1 y por eso se
@@ -357,22 +249,12 @@ class ApiFootballOddsProvider(ApiFootballClient):
                 for bet in bookmaker.get("bets", []):
                     bet_name = bet.get("name", "")
                     names_seen.add(bet_name)
-                    bet_name_lower = bet_name.lower()
-                    spec = next(
-                        (
-                            (market_key, value_kind)
-                            for market_key, hints, value_kind, excludes in MARKET_NAME_HINTS
-                            if any(hint in bet_name_lower for hint in hints)
-                            and not any(exclude in bet_name_lower for exclude in excludes)
-                            and (market_key != "match_result" or (
-                                str(bet["id"]) == "1" if bet.get("id") is not None else bet_name_lower.strip() in hints
-                            ))
-                        ),
-                        None,
-                    )
+                    bet_id = bet.get("id")
+                    spec = (MARKET_SPECS.get(str(bet_id)) if bet_id is not None
+                            else MARKET_SPECS_BY_NAME.get(bet_name.strip().lower()))
                     if spec is None:
                         continue
-                    market_key, value_kind = spec
+                    market_key, value_kind, _ = spec
                     if bet.get("suspended") is True or bet.get("blocked") is True:
                         if suspended_markets is not None:
                             suspended_markets.add(market_key)
