@@ -535,47 +535,69 @@ def publish_upcoming() -> None:
     typer.echo(f"[publish-upcoming] {checked} partidos comprobados")
 
 
-@app.command("reconcile-published-corners")
-def reconcile_published_corners(limit: int = typer.Option(5, min=1, max=20)) -> None:
-    """Fetch missing corner evidence on a bounded schedule."""
+@app.command("reconcile-published-corners", hidden=True)
+@app.command("reconcile-corners")
+def reconcile_corners(
+    limit: int = typer.Option(5, min=1, max=20),
+    dry_run: bool = typer.Option(False, help="Muestra los partidos pendientes sin llamar al proveedor."),
+) -> None:
+    """Recover missing verified corner results for finished API-Football fixtures."""
+    import httpx
+    from sqlalchemy import or_
+
     from backend.app.db.models.core import ProviderResponse
     from backend.app.db.models.matches import CornerObservation, MatchStatistics
     from backend.app.db.models.publication import FixturePublication
     from backend.app.ingestion.api_football.client import ApiFootballClient
-    from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
     from backend.app.services.corner_reconciliation import reconcile
 
-    import httpx
+    now = dt.datetime.utcnow()
+    with session_scope() as db:
+        last_attempt = {}
+        for response in db.query(ProviderResponse.params, ProviderResponse.fetched_at).filter(
+            ProviderResponse.operation == "reconcile_corners",
+        ).order_by(ProviderResponse.fetched_at):
+            last_attempt[str(response.params.get("fixture"))] = response.fetched_at
+
+        published = db.query(FixturePublication.match_id).filter(FixturePublication.match_id == Match.id).exists()
+        observed = db.query(CornerObservation.id).filter(CornerObservation.match_id == Match.id).exists()
+        rows = db.query(Match.id, Match.provider_id, published.label("published")).outerjoin(
+            MatchStatistics, MatchStatistics.match_id == Match.id
+        ).filter(
+            Match.status == "finished", Match.provider == "api_football", Match.kickoff_utc < now,
+            ~observed,
+            or_(MatchStatistics.home_corners.is_(None), MatchStatistics.home_corners < 0,
+                MatchStatistics.away_corners.is_(None), MatchStatistics.away_corners < 0),
+        ).order_by(published.desc(), Match.kickoff_utc.desc(), Match.id).all()
+
+        unattempted = []
+        retries = []
+        for match_id, provider_id, _ in rows:
+            prefix = "api-football-"
+            fixture = provider_id.removeprefix(prefix)
+            if fixture == provider_id or not fixture.isascii() or not fixture.isdigit():
+                continue
+            attempted = last_attempt.get(fixture)
+            if attempted is None:
+                unattempted.append(match_id)
+            elif attempted <= now - dt.timedelta(days=7):
+                retries.append(match_id)
+        ids = (unattempted + retries)[:limit]
+
+    if dry_run:
+        typer.echo(f"[reconcile-corners] Sin consultar: {len(unattempted)} · Reintentos: {len(retries)} · Lote: {ids}")
+        return
 
     with httpx.Client(timeout=30) as transport:
         client = ApiFootballClient(transport)
         if not client.is_available():
             return
-        with session_scope() as db:
-            now = dt.datetime.utcnow()
-            recent_fixtures = {
-                str(row.params.get("fixture"))
-                for row in db.query(ProviderResponse).filter(
-                    ProviderResponse.operation == "reconcile_corners",
-                    ProviderResponse.fetched_at >= now - dt.timedelta(hours=24),
-                )
-            }
-            rows = db.query(Match, FixturePublication).join(
-                FixturePublication, FixturePublication.match_id == Match.id
-            ).outerjoin(MatchStatistics, MatchStatistics.match_id == Match.id).filter(
-                Match.status == "finished", Match.provider == "api_football", Match.kickoff_utc < now,
-                ~Match.id.in_(db.query(CornerObservation.match_id)),
-                (MatchStatistics.home_corners.is_(None)) | (MatchStatistics.away_corners.is_(None)),
-            ).order_by(Match.kickoff_utc.desc()).all()
-            ids = [
-                match.id for match, publication in rows
-                if match.provider_id.rsplit("-", 1)[-1] not in recent_fixtures
-                and ("Córners 9.5" in publication.groups
-                     or (publication.recommendation or {}).get("market") in SECONDARY_MARKET_DEFINITIONS)
-            ][:limit]
+        verified = 0
         for match_id in ids:
             with session_scope() as db:
-                reconcile(db, client, match_id, persist=True)
+                total = reconcile(db, client, match_id, persist=True)
+                verified += total is not None
+        typer.echo(f"[reconcile-corners] Verificados {verified} de {len(ids)} partidos")
 
 
 @app.command()

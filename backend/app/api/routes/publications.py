@@ -1,11 +1,14 @@
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.app.db.database import get_db
+from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.features import TeamMatchFeatures
-from backend.app.db.models.matches import Match
+from backend.app.db.models.matches import CornerObservation, Match, MatchOdds, MatchStatistics
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.db.models.publication import FixturePublication, FixtureRankingRevision
 from backend.app.services.publication_service import publication_report
@@ -40,7 +43,46 @@ def publication_coverage(db: Session = Depends(get_db)):
     official = db.query(FixturePublication).join(Match, Match.id == FixturePublication.match_id).filter(
         FixturePublication.captured_at < Match.kickoff_utc
     )
+    today = date.today()
+    current_season_start = today.year - (today.month < 7)
+    seasons = [f"{year}/{(year + 1) % 100:02d}" for year in range(current_season_start - 6, current_season_start)]
+    verified_corners = (
+        (MatchStatistics.home_corners >= 0) & (MatchStatistics.away_corners >= 0)
+    ) | db.query(CornerObservation.id).filter(CornerObservation.match_id == Match.id).exists()
+    closing_prices = db.query(
+        MatchOdds.match_id,
+        func.count().filter(MatchOdds.market == "match_result").label("result_prices"),
+        func.count().filter(
+            (MatchOdds.market == "over_under_goals") & (MatchOdds.line == 2.5)
+        ).label("goals_prices"),
+        func.count().filter(MatchOdds.market == "corners_total").label("corner_prices"),
+    ).filter(
+        MatchOdds.snapshot_type == "closing", MatchOdds.price > 1
+    ).group_by(MatchOdds.match_id).subquery()
+    completed, corners, closing, result_prices, goals_prices, corner_prices = db.query(
+        func.count(Match.id), func.count(Match.id).filter(verified_corners),
+        func.count(closing_prices.c.match_id),
+        func.count().filter(closing_prices.c.result_prices > 0),
+        func.count().filter(closing_prices.c.goals_prices > 0),
+        func.count().filter(closing_prices.c.corner_prices > 0),
+    ).select_from(Match).join(Season, Season.id == Match.season_id).join(
+        Competition, Competition.id == Match.competition_id
+    ).outerjoin(MatchStatistics, MatchStatistics.match_id == Match.id).outerjoin(
+        closing_prices, closing_prices.c.match_id == Match.id
+    ).filter(
+        Competition.code.in_(("laliga", "bundesliga", "premier_league", "serie_a", "ligue_1")),
+        Season.label.in_(seasons), Match.status == "finished",
+        Match.home_goals.is_not(None), Match.away_goals.is_not(None),
+    ).one()
     return {
+        "training_corpus": {
+            "first_season": seasons[0], "last_season": seasons[-1],
+            "finished_matches": completed, "matches_with_corners": corners,
+            "matches_with_closing_prices": closing,
+            "matches_with_closing_result": result_prices,
+            "matches_with_closing_goals_2_5": goals_prices,
+            "matches_with_closing_corners": corner_prices,
+        },
         "historical_liquidated": total,
         "historical_before_kickoff": before,
         "historical_after_kickoff": total - before,

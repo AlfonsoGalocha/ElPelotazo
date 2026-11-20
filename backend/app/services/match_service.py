@@ -58,7 +58,7 @@ def load_matches_dataframe(db: Session, competition_id: int | None = None) -> pd
 
 
 def load_market_odds_column(db: Session, match_ids: list[int], market_key: str) -> dict[int, float]:
-    """Cuota de MERCADO (no sin vig) por match_id para un mercado del MVP,
+    """Cuota de cierre por partido, mercado, línea y selección,
     usada SOLO en backtesting para simular una estrategia hipotetica
     (`market_strategy_metrics`), nunca como feature de entrenamiento (evitaria
     "closing line leakage": la cuota de cierre no se conoce antes del partido).
@@ -71,7 +71,13 @@ def load_market_odds_column(db: Session, match_ids: list[int], market_key: str) 
 
     odds_by_match = (
         db.query(MatchOdds)
-        .filter(MatchOdds.match_id.in_(match_ids), MatchOdds.market == market, MatchOdds.line == line)
+        .filter(
+            MatchOdds.match_id.in_(match_ids),
+            MatchOdds.market == market,
+            MatchOdds.line == line,
+            MatchOdds.snapshot_type == "closing",
+            MatchOdds.price > 1,
+        )
         .all()
     )
     grouped: dict[int, list[MatchOdds]] = {}

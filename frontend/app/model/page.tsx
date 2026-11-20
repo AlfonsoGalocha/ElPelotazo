@@ -42,14 +42,26 @@ export default async function ModelPerformancePage({
           Aquí puedes ver cuántos pronósticos acierta el modelo y si los porcentajes que anuncia coinciden con lo que ocurre.
         </p>
       </div>
-      {coverage && <section className="rounded-xl border border-surface-border bg-card p-4">
-        <h2 className="font-semibold">Qué datos cuentan</h2>
-        <p className="mt-2 text-sm text-slate-300">
-          Hay {coverage.historical_liquidated.toLocaleString("es-ES")} pronósticos históricos liquidados. {coverage.historical_before_kickoff.toLocaleString("es-ES")} constan como registrados antes del inicio y {coverage.historical_after_kickoff.toLocaleString("es-ES")} se excluyen porque se registraron al inicio o después.
-        </p>
-        <p className="mt-2 text-sm text-slate-400">
-          El seguimiento oficial tiene {coverage.official_captures} partidos capturados y {coverage.official_finished} finalizados. Las recomendaciones registradas se evalúan por separado.
-        </p>
+      {coverage && <section className="grid gap-3 sm:grid-cols-3" aria-label="Muestras estadísticas">
+        <article className="rounded-xl border border-surface-border bg-card p-4">
+          <h2 className="font-semibold">Datos para entrenar y simular</h2>
+          <p className="mt-2 text-2xl">{coverage.training_corpus.finished_matches.toLocaleString("es-ES")} partidos</p>
+          <p className="mt-2 text-sm text-slate-400">Cinco ligas, de {coverage.training_corpus.first_season} a {coverage.training_corpus.last_season}.</p>
+          <p className="text-sm text-slate-300">{coverage.training_corpus.matches_with_corners.toLocaleString("es-ES")} con córners y {coverage.training_corpus.matches_with_closing_prices.toLocaleString("es-ES")} con cuotas de cierre guardadas.</p>
+          <p className="mt-2 text-xs text-slate-400">
+            Partidos con cuota de cierre por mercado · 1X2 {coverage.training_corpus.matches_with_closing_result.toLocaleString("es-ES")} · Goles 2,5 {coverage.training_corpus.matches_with_closing_goals_2_5.toLocaleString("es-ES")} · Córners {coverage.training_corpus.matches_with_closing_corners.toLocaleString("es-ES")}
+          </p>
+        </article>
+        <article className="rounded-xl border border-surface-border bg-card p-4">
+          <h2 className="font-semibold">Evaluación prepartido histórica</h2>
+          <p className="mt-2 text-2xl">{coverage.historical_before_kickoff.toLocaleString("es-ES")} pronósticos</p>
+          <p className="mt-2 text-sm text-slate-400">De {coverage.historical_liquidated.toLocaleString("es-ES")} pronósticos liquidados, {coverage.historical_after_kickoff.toLocaleString("es-ES")} se registraron al inicio o después. Sus partidos siguen disponibles para entrenamiento.</p>
+        </article>
+        <article className="rounded-xl border border-surface-border bg-card p-4">
+          <h2 className="font-semibold">Seguimiento oficial</h2>
+          <p className="mt-2 text-2xl">{coverage.official_captures} partidos capturados</p>
+          <p className="mt-2 text-sm text-slate-400">{coverage.official_finished} finalizados. La rentabilidad oficial solo usa recomendaciones guardadas antes del partido.</p>
+        </article>
       </section>}
       <section className="grid gap-4 lg:grid-cols-3" aria-label="Capturas prepartido">
         {publications?.metrics.length ? publications.metrics.map(metric => (

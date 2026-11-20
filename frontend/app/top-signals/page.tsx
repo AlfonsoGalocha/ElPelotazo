@@ -36,6 +36,7 @@ export default async function TopSignalsPage({
     date?: string;
     limit?: string;
     per_match?: string;
+    prices?: string;
     scope?: SignalScope;
     competition_code?: string;
     days?: string;
@@ -49,6 +50,7 @@ export default async function TopSignalsPage({
 }) {
   const { date, competition_code: competitionCode } = searchParams;
   const limit = searchParams.limit === "5" ? 5 : 10;
+  const allPrices = searchParams.prices === "all";
   const perMatch = searchParams.per_match === "2" ? 2 : 1;
   // `date` tiene prioridad sobre `scope` (ver backend); mostrarlo como su
   // propio modo evita que el selector de jornada contradiga al de fecha.
@@ -62,7 +64,7 @@ export default async function TopSignalsPage({
   const quality = searchParams.quality ?? "ALL";
   const hasFairOddsFilter = minFairOdds !== undefined || maxFairOdds !== undefined;
   const hasAnyFilter =
-    Boolean(date) ||
+    allPrices || Boolean(date) ||
     hasFairOddsFilter ||
     Boolean(competitionCode) ||
     scope !== "current_round" ||
@@ -88,6 +90,7 @@ export default async function TopSignalsPage({
     getTopSignals({
       limit,
       perMatch,
+      allPrices,
       date,
       scope,
       days,
@@ -130,7 +133,7 @@ export default async function TopSignalsPage({
           : scope === "all_upcoming"
             ? `De los próximos ${days} días (sin restricción de jornada).`
             : `${SCOPE_LABELS[scope]} de cada competición — nunca un partido de otra jornada aunque tenga más edge.`}{" "}
-        Cuotas entre 1,35 y 1,90, con ambos límites incluidos. La etiqueta «Valor estadístico» exige cuota verificable, calibración y EV conservador positivo.{" "}
+        {allPrices ? "Todos los rangos de cuota." : "Cuotas entre 1,35 y 1,90."} La etiqueta «Valor estadístico» exige cuota verificable, calibración y EV conservador positivo.{" "}
         El Top combina mercados cuando hay alternativas. API-Football aporta cuotas y conteos; «sin calibrar» indica que la probabilidad del modelo aún no tiene un ajuste temporal validado.{" "}
         {hasFairOddsFilter && (
           <>
@@ -177,6 +180,11 @@ export default async function TopSignalsPage({
               ))}
             </optgroup>
           )}
+        </select>
+        <label htmlFor="prices">Cuotas</label>
+        <select id="prices" name="prices" defaultValue={allPrices ? "all" : "preferred"} className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200">
+          <option value="preferred">1,35–1,90</option>
+          <option value="all">Todos los rangos</option>
         </select>
         <button type="submit" className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-1 font-medium text-slate-100 transition-colors hover:bg-accent/20">
           Aplicar
@@ -317,8 +325,10 @@ export default async function TopSignalsPage({
           <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
               ["Partidos analizados", diagnostics.counts.matches],
-              ["Partidos con cuota", diagnostics.counts.matches_with_market],
-              ["Selecciones con mercado", diagnostics.counts.candidates_with_valid_market],
+              ["Partidos con alguna cuota disponible", diagnostics.counts.matches_with_available_price],
+              ["Partidos con cuota de 1,35 a 1,90", diagnostics.counts.matches_with_preferred_price],
+              ["Selecciones con cuota disponible", diagnostics.counts.candidates_with_available_price],
+              ["Selecciones con cuota de 1,35 a 1,90", diagnostics.counts.candidates_with_preferred_price],
               ["Selecciones con EV estimado positivo", diagnostics.counts.positive_estimated_ev],
               ["Selecciones que superan el filtro", diagnostics.counts.passed_gate],
               ["Oportunidades", diagnostics.counts.opportunities],
@@ -383,7 +393,7 @@ export default async function TopSignalsPage({
                   {p.ev_calibrated !== null ? `${p.ev_calibrated >= 0 ? "+" : ""}${(p.ev_calibrated * 100).toFixed(1)}%` : "—"}
                 </td>
                 <td className="px-3 py-2 text-edge-positive">
-                  {p.ev_conservative !== null ? `${p.ev_conservative >= 0 ? "+" : ""}${(p.ev_conservative * 100).toFixed(1)}%` : "—"}
+                  {p.calibrated_probability !== null && p.ev_conservative !== null ? `${p.ev_conservative >= 0 ? "+" : ""}${(p.ev_conservative * 100).toFixed(1)}%` : "—"}
                 </td>
                 <td className="px-3 py-2 text-slate-600">
                   {p.edge !== null ? `${p.edge >= 0 ? "+" : ""}${(p.edge * 100).toFixed(1)} pp` : "—"}

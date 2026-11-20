@@ -591,6 +591,7 @@ def available_predictions(
     min_bookmakers: int | None = Query(None, ge=1),
     min_ev: float | None = Query(None),
     quality: str | None = QUALITY_QUERY,
+    all_prices: bool = Query(False),
     db: Session = Depends(get_db),
 ):
     from backend.app.prediction.available_ranking import rank_available
@@ -611,7 +612,7 @@ def available_predictions(
     provenance = market_track_records_with_provenance(db, competition_code)
     reliability = {key: value.value for key, value in provenance.items()}
     rows = []
-    for prediction in rank_available(candidates, reliability, per_match=per_match, limit=limit):
+    for prediction in rank_available(candidates, reliability, per_match=per_match, limit=limit, all_prices=all_prices):
         flags = compute_anomaly_flags(prediction, by_match[prediction.match_id], settings)
         reason = evaluate_quality_gate_v3(
             prediction, settings, reliability.get((prediction.match.competition.code, prediction.market))
@@ -831,7 +832,15 @@ def best_predictions_debug(
         item for item in excluded
         if item.reason.value in observation_reasons and (item.prediction.expected_value or 0) > 0
     ]
+    from backend.app.prediction.available_ranking import has_available_price
+
+    quoted = [p for p in candidates if has_available_price(p, all_prices=True)]
+    preferred = [p for p in quoted if has_available_price(p)]
     counts = {
+        "matches_with_available_price": len({p.match_id for p in quoted}),
+        "matches_with_preferred_price": len({p.match_id for p in preferred}),
+        "candidates_with_available_price": len(quoted),
+        "candidates_with_preferred_price": len(preferred),
         "matches": len(by_match),
         "matches_with_market": len({p.match_id for p in candidates if p.market_odds is not None}),
         "candidates": len(candidates),

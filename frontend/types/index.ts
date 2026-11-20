@@ -235,6 +235,7 @@ export interface PerformanceSegment {
   market: string;
   model_version_id: number;
   n_settled: number;
+  n_with_market_odds: number;
   // Predicciones de partidos CANCELADOS, liquidadas como "void" (stake
   // devuelto) -- excluidas de model_quality/market_strategy, nunca
   // contadas como "lost" (ver evaluation_service.py::void_cancelled_predictions).
