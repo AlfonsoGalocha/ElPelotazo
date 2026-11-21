@@ -163,3 +163,18 @@ def test_explicit_suspension_expires_the_active_market_even_with_no_prices():
     )
     assert odds == []
     assert suspended == {"match_result"}
+
+
+@pytest.mark.parametrize("market,line,side", [
+    ("over_under_goals", 2.5, "over"),
+    ("btts", None, "yes"),
+    ("corners_total", 9.5, "under"),
+    ("double_chance_1x", None, "yes"),
+])
+def test_high_confidence_accepts_other_markets_when_they_meet_the_same_evidence(market, line, side):
+    evidence = SimpleNamespace(value=.8, n_observations=30, source_level="competition_market")
+    item = assess_opportunity(
+        prediction(), [quote(market=market, line=line, selection=side)],
+        (market, line, side), Settings(), NOW, evidence, (),
+    )
+    assert item.high_confidence

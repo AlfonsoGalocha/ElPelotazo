@@ -193,6 +193,7 @@ export interface OpportunityDiagnostics {
   };
   reasons: Record<string, number>;
   first_reasons: Record<string, number>;
+  by_market?: Record<string, { qualified: number; high: number; confidence_reasons: Record<string, number> }>;
   min_odds: number;
   max_odds: number;
 }

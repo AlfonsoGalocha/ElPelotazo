@@ -892,6 +892,12 @@ def best_predictions_debug(
         pairs = _execution_assessments(db, candidates, settings, provenance, dt.datetime.utcnow())
         items = [item for _, item in pairs]
         qualified = [(p, item) for p, item in pairs if not item.reasons]
+        by_market = defaultdict(lambda: {"qualified": 0, "high": 0, "confidence_reasons": Counter()})
+        for prediction, item in qualified:
+            market = by_market[prediction.market]
+            market["qualified"] += 1
+            market["high"] += item.high_confidence
+            market["confidence_reasons"].update(item.confidence_reasons)
         summary = {
             "counts": {
                 "matches": len({p.match_id for p in candidates}),
@@ -910,6 +916,7 @@ def best_predictions_debug(
                 "opportunities": len(select_ranked(qualified, 10)),
             },
             "reasons": dict(Counter(reason for item in items for reason in item.reasons)),
+            "by_market": dict(by_market),
             "first_reasons": dict(Counter(item.reasons[0] for item in items if item.reasons)),
             "min_odds": settings.min_opportunity_odds,
             "max_odds": settings.max_opportunity_odds,

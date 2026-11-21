@@ -362,6 +362,22 @@ export default async function TopSignalsPage({
           No se han identificado oportunidades con valor demostrado para esta jornada. Puedes consultar abajo las selecciones con cuota y el motivo por el que se descartaron.
         </p>
       )}
+      {view === "high" && diagnostics?.by_market && Object.keys(diagnostics.by_market).length > 0 && (
+        <details open={predictions.length === 0} className="mb-4 rounded-lg border border-surface-border p-3 text-sm text-slate-300">
+          <summary className="cursor-pointer font-medium">Por qué cada mercado entra o queda fuera de Alta confianza</summary>
+          <div className="mt-3 space-y-3">
+            {Object.entries(diagnostics.by_market).sort(([, a], [, b]) => b.qualified - a.qualified).map(([market, stats]) => (
+              <div key={market}>
+                <p className="font-medium">{MARKET_DISPLAY_NAMES[market] ?? market} · {stats.high} de {stats.qualified} en alta confianza</p>
+                {Object.keys(stats.confidence_reasons).length > 0 && <p className="text-xs text-slate-400">
+                  {Object.entries(stats.confidence_reasons).map(([reason, count]) =>
+                    `${EXCLUSION_LABELS[reason] ?? reason.replaceAll("_", " ")} (${count})`).join(" · ")}
+                </p>}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
       {diagnostics && (
         <details className="mb-4 rounded-lg border border-surface-border p-3 text-sm text-slate-300">
           <summary className="cursor-pointer font-medium">Diagnóstico de oportunidades</summary>
@@ -513,8 +529,13 @@ export default async function TopSignalsPage({
         </table></div>
         {predictions.length === 0 && (
           <div className="p-2">
-            <EmptyState description={rows ? emptyExplanation : undefined} title={!rows ? "No se pudieron consultar las selecciones" : valueOnly ? (view === "high" ? "Ninguna selección reúne la evidencia adicional de alta confianza" : "Ninguna selección combina cuota verificable y valor esperado positivo") : "No hay selecciones con cuota válida para los criterios actuales"} />
-            {rows && valueOnly && (
+            <EmptyState description={rows && date && diagnostics?.counts.matches === 0
+              ? "Esta vista solo evalúa partidos pendientes. Si la fecha ya pasó, consulta el Histórico de predicciones."
+              : rows ? emptyExplanation : undefined} title={!rows ? "No se pudieron consultar las selecciones" : valueOnly ? (view === "high" ? "Ninguna selección reúne la evidencia adicional de alta confianza" : "Ninguna selección combina cuota verificable y valor esperado positivo") : "No hay selecciones con cuota válida para los criterios actuales"} />
+            {rows && date && diagnostics?.counts.matches === 0 && (
+              <Link href="/prediction-history" className="block pb-4 text-center text-sm text-accent underline">Abrir histórico</Link>
+            )}
+            {rows && valueOnly && diagnostics?.counts.matches !== 0 && (
               <Link href={{ pathname: "/top-signals", query: { ...searchParams, view: "explore" } }} className="block pb-4 text-center text-sm text-accent underline">
                 Explorar selecciones con cuota
               </Link>
