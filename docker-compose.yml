@@ -209,7 +209,13 @@ services:
           football-edge reconcile-corners --limit 5 || echo "[scheduler] fallo verificación de córners";
           football-edge evaluate || echo "[scheduler] fallo evaluate/settle, se reintenta en 1h";
           football-edge predict-upcoming || echo "[scheduler] fallo predict-upcoming, se reintenta en 1h";
-          sleep 3600;
+          deadline=$$(($$(date +%s) + 3600));
+          while [ "$$(date +%s)" -lt "$$deadline" ]; do
+            remaining=$$(($$deadline - $$(date +%s)));
+            if [ "$$remaining" -le 0 ]; then break; fi;
+            if [ "$$remaining" -gt 60 ]; then remaining=60; fi;
+            sleep "$$remaining";
+          done;
         done
 
 volumes:

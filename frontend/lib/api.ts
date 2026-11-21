@@ -416,6 +416,7 @@ export function getPublication(matchId: number) {
     ranking_version: string;
     groups: Record<string, { principal: string; alternatives: PublicationSelection[] }>;
     recommendation: PublicationSelection | null;
+    ranking: (PublicationSelection & { reasons?: string[]; estimated_ev?: number | null })[];
     feature_snapshots: { id: number; is_home: boolean; as_of: string; features: Record<string, unknown> }[];
   }>(`/publications/${matchId}`);
 }

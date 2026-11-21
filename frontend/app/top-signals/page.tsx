@@ -135,6 +135,19 @@ export default async function TopSignalsPage({
   // architecture_audit.md) en su propio grupo separado dentro del MISMO
   // desplegable (nunca mezcladas en una sola lista plana).
   const predictions = rows ?? [];
+  const firstReasons = diagnostics?.first_reasons;
+  const staleInBand = firstReasons?.cuota_desactualizada ?? 0;
+  const unavailableCalibration = firstReasons?.calibracion_no_disponible ?? 0;
+  const negativeEv = firstReasons?.ev_estimado_no_positivo ?? 0;
+  const inBand = diagnostics?.counts.candidates_in_band ?? 0;
+  const blockers = [
+    staleInBand > 0 && `${staleInBand} con cuota antigua`,
+    unavailableCalibration > 0 && `${unavailableCalibration} sin calibración`,
+    negativeEv > 0 && `${negativeEv} con EV no positivo`,
+  ].filter(Boolean);
+  const emptyExplanation = view === "main" && inBand > 0 && blockers.length
+    ? `De ${inBand} selecciones en el rango de la estrategia, estos fueron los principales descartes: ${blockers.join(", ")}.`
+    : undefined;
   const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code));
   const internationalCompetitions = competitions.filter((c) => isInternationalCompetition(c.code));
 
@@ -500,7 +513,7 @@ export default async function TopSignalsPage({
         </table></div>
         {predictions.length === 0 && (
           <div className="p-2">
-            <EmptyState title={!rows ? "No se pudieron consultar las selecciones" : valueOnly ? (view === "high" ? "Ninguna selección reúne la evidencia adicional de alta confianza" : "Ninguna selección combina cuota verificable y valor esperado positivo") : "No hay selecciones con cuota válida para los criterios actuales"} />
+            <EmptyState description={rows ? emptyExplanation : undefined} title={!rows ? "No se pudieron consultar las selecciones" : valueOnly ? (view === "high" ? "Ninguna selección reúne la evidencia adicional de alta confianza" : "Ninguna selección combina cuota verificable y valor esperado positivo") : "No hay selecciones con cuota válida para los criterios actuales"} />
             {rows && valueOnly && (
               <Link href={{ pathname: "/top-signals", query: { ...searchParams, view: "explore" } }} className="block pb-4 text-center text-sm text-accent underline">
                 Explorar selecciones con cuota
