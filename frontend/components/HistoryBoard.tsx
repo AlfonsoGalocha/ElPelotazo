@@ -10,12 +10,21 @@ import { isInternationalCompetition } from "@/lib/internationalCompetitions";
 import TeamLogo from "./TeamLogo";
 import { EmptyState } from "./EmptyState";
 
-function PublishedSelection({ selection, missing }: { selection?: PublishedHistorySelection | null; missing: string }) {
+function PublishedSelection({ selection, missing, model = false }: {
+  selection?: PublishedHistorySelection | null;
+  missing: string;
+  model?: boolean;
+}) {
   if (!selection) return <span className="text-xs text-slate-400">{missing}</span>;
   return (
     <div className="space-y-0.5">
       <div>{MARKET_DISPLAY_NAMES[selection.market] ?? selection.market} · {(selection.probability * 100).toFixed(1)} %</div>
-      {selection.odds != null && <div className="text-xs text-slate-400">Cuota {selection.odds.toFixed(2)}{selection.bookmaker ? ` · ${selection.bookmaker}` : ""}</div>}
+      {selection.odds != null ? (
+        <div className="text-xs text-slate-400">
+          {model ? "Cuota guardada (consenso)" : "Cuota"} {selection.odds.toFixed(2)}
+          {selection.bookmaker ? ` · ${selection.bookmaker}` : ""}
+        </div>
+      ) : model && <div className="text-xs text-slate-400">Sin cuota registrada</div>}
       {selection.ev != null && <div className="text-xs text-slate-400">EV estimado {(selection.ev * 100).toFixed(1)} %</div>}
       <div className={selection.is_correct === true ? "text-xs text-emerald-400" : selection.is_correct === false ? "text-xs text-red-400" : "text-xs text-slate-400"}>
         {selection.is_correct === true ? "Acierto" : selection.is_correct === false ? "Fallo" : "Resultado sin verificar"}
@@ -41,7 +50,7 @@ function HistoryMatchRow({ row }: { row: MatchHistory }) {
         {row.match.home_goals} - {row.match.away_goals}
       </td>
       <td className="px-3 py-2 text-slate-300">
-        <PublishedSelection selection={row.evaluated_model_pick} missing="Sin pronóstico prepartido evaluable" />
+        <PublishedSelection model selection={row.evaluated_model_pick} missing="Sin pronóstico prepartido evaluable" />
       </td>
       <td className="px-3 py-2 text-slate-300">
         <PublishedSelection selection={row.official_recommendation} missing="Sin recomendación registrada" />

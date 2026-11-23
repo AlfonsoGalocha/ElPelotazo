@@ -9,6 +9,7 @@ original ya paso).
 from __future__ import annotations
 
 from datetime import datetime
+from math import isfinite
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -77,16 +78,26 @@ def _published_selections(match, publication, corners, model_pick=None):
             "market": row["market"],
             "probability": row["calibrated"] if recommendation and row.get("calibrated") is not None else row["probability"],
             "is_correct": selection_outcome(row["market"], match.home_goals, match.away_goals, corners),
-            "odds": row.get("odds") if recommendation else None,
+            "odds": row.get("odds"),
             "bookmaker": row.get("bookmaker") if recommendation else None,
             "ev": row.get("estimated_ev") if recommendation else None,
         }
 
+    model_row = None
+    if model_pick:
+        price = model_pick.market_odds
+        has_price = (
+            price is not None and isfinite(price) and price > 1
+            and model_pick.market_probability_source != "derived_double_chance"
+        )
+        model_row = {
+            "market": model_pick.market, "probability": model_pick.model_probability,
+            "odds": price if has_price else None,
+        }
     return {
         "principal_1x2": evaluate(principal),
         "official_recommendation": evaluate(publication.recommendation, True) if publication else None,
-        "evaluated_model_pick": evaluate({"market": model_pick.market, "probability": model_pick.model_probability})
-        if model_pick else None,
+        "evaluated_model_pick": evaluate(model_row),
     }
 
 
