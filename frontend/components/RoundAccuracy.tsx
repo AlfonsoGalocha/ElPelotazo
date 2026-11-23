@@ -41,13 +41,14 @@ export default function RoundAccuracyPanel() {
     wins: sum.wins + row.wins, losses: sum.losses + row.losses,
     pending: sum.pending + row.pending, withoutForecast: sum.withoutForecast + row.without_forecast,
   }), { wins: 0, losses: 0, pending: 0, withoutForecast: 0 });
+  const awaitingSettlement = rounds.reduce((sum, row) => sum + row.awaiting_settlement, 0);
   const cancelled = rounds.reduce((sum, row) => sum + row.cancelled, 0);
 
   return (
     <section className="space-y-3 rounded-xl border border-surface-border bg-card p-4">
-      <h2 className="font-semibold text-slate-100">Acierto por jornada · 1X2</h2>
+      <h2 className="font-semibold text-slate-100">Acierto por jornada · todos los mercados</h2>
       <p className="text-sm text-slate-400">
-        Última jornada iniciada de cada liga. Se cuenta un pronóstico principal guardado antes de cada partido.
+        Última jornada iniciada de cada liga. Se cuenta una recomendación oficial guardada antes del partido, de cualquier mercado.
         El porcentaje usa solo los aciertos y fallos confirmados. Se actualiza cada minuto.
       </p>
       {status === "loading" && <p className="text-sm text-slate-400">Cargando resultados…</p>}
@@ -58,13 +59,14 @@ export default function RoundAccuracyPanel() {
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <strong className="text-2xl text-slate-100">{hitRate(total.wins, total.losses)}</strong>
             <span className="text-sm text-slate-300">{total.wins} aciertos · {total.losses} fallos</span>
-            <span className="text-sm text-slate-400">{total.pending} pendientes · {total.withoutForecast} finalizados sin captura 1X2 utilizable</span>
+            <span className="text-sm text-slate-400">{total.pending} pendientes · {total.withoutForecast} finalizados sin recomendación</span>
+            {awaitingSettlement > 0 && <span className="text-sm text-slate-400">{awaitingSettlement} sin liquidación verificable</span>}
             {cancelled > 0 && <span className="text-sm text-slate-400">{cancelled} anulados</span>}
           </div>
           <div className="overflow-x-auto">
             <table className="w-full whitespace-nowrap text-left text-sm">
               <thead className="text-slate-400">
-                <tr>{["Liga", "Jornada", "Acierto", "Aciertos", "Fallos", "Pendientes", "Sin captura", ...(cancelled ? ["Anulados"] : [])].map(label =>
+                <tr>{["Liga", "Jornada", "Acierto", "Aciertos", "Fallos", "Pendientes", "Sin recomendación", ...(awaitingSettlement ? ["Sin liquidar"] : []), ...(cancelled ? ["Anulados"] : [])].map(label =>
                   <th key={label} scope="col" className="px-2 py-2">{label}</th>
                 )}</tr>
               </thead>
@@ -72,7 +74,7 @@ export default function RoundAccuracyPanel() {
                 {rounds.map(row => (
                   <tr key={row.competition} className="border-t border-surface-border text-slate-300">
                     {[row.name, row.matchday, hitRate(row.wins, row.losses), row.wins, row.losses, row.pending, row.without_forecast,
-                      ...(cancelled ? [row.cancelled] : [])].map((value, index) =>
+                      ...(awaitingSettlement ? [row.awaiting_settlement] : []), ...(cancelled ? [row.cancelled] : [])].map((value, index) =>
                       <td key={index} className={index === 2 ? "px-2 py-2 font-semibold text-slate-100" : "px-2 py-2"}>{value}</td>
                     )}
                   </tr>

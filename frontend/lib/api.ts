@@ -431,6 +431,7 @@ export interface RoundAccuracy {
   losses: number;
   pending: number;
   without_forecast: number;
+  awaiting_settlement: number;
   cancelled: number;
 }
 

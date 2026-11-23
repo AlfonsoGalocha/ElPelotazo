@@ -11,6 +11,7 @@ from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.matches import CornerObservation, Match, MatchOdds, MatchStatistics
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.db.models.publication import FixturePublication, FixtureRankingRevision
+from backend.app.prediction.eligibility import observed_corner_total
 from backend.app.services.publication_service import publication_report, selection_outcome
 
 router = APIRouter(prefix="/publications", tags=["publications"])
@@ -93,7 +94,7 @@ def publication_coverage(db: Session = Depends(get_db)):
 
 @router.get("/round-accuracy")
 def round_accuracy(db: Session = Depends(get_db)):
-    """One frozen 1X2 forecast per fixture in each league's latest started round."""
+    """Track the frozen official recommendation, regardless of market."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     rounds = []
     leagues = db.query(Competition).filter(
@@ -108,7 +109,7 @@ def round_accuracy(db: Session = Depends(get_db)):
         if latest is None:
             continue
         matchday = eligible.filter(Match.season_id == latest.season_id).order_by(Match.matchday.desc()).first().matchday
-        fixtures = db.query(Match, FixturePublication).outerjoin(
+        fixtures = db.query(Match, FixturePublication, observed_corner_total()).outerjoin(
             FixturePublication, and_(
                 FixturePublication.match_id == Match.id,
                 FixturePublication.captured_at < Match.kickoff_utc,
@@ -118,19 +119,23 @@ def round_accuracy(db: Session = Depends(get_db)):
             Match.season_id == latest.season_id,
             Match.matchday == matchday,
         ).all()
-        counts = dict(wins=0, losses=0, pending=0, without_forecast=0, cancelled=0)
-        for match, publication in fixtures:
+        counts = dict(wins=0, losses=0, pending=0, without_forecast=0, cancelled=0, awaiting_settlement=0)
+        for match, publication, corners in fixtures:
             if match.status == "cancelled":
                 counts["cancelled"] += 1
             elif match.status != "finished":
                 counts["pending"] += 1
+            elif not publication or not publication.recommendation:
+                counts["without_forecast"] += 1
             else:
-                principal = publication.groups.get("1X2", {}).get("principal") if publication else None
-                actual = (
-                    selection_outcome(principal, match.home_goals, match.away_goals, None)
-                    if principal in ("home_win", "draw", "away_win") else None
+                stats = match.statistics
+                if corners is None and stats and stats.home_corners is not None and stats.away_corners is not None:
+                    if min(stats.home_corners, stats.away_corners) >= 0:
+                        corners = stats.home_corners + stats.away_corners
+                actual = selection_outcome(
+                    publication.recommendation["market"], match.home_goals, match.away_goals, corners,
                 )
-                counts["wins" if actual is True else "losses" if actual is False else "without_forecast"] += 1
+                counts["wins" if actual is True else "losses" if actual is False else "awaiting_settlement"] += 1
         rounds.append({
             "competition": league.code, "name": league.name, "matchday": matchday,
             "fixtures": len(fixtures), **counts,

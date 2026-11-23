@@ -41,9 +41,6 @@ function HistoryMatchRow({ row }: { row: MatchHistory }) {
         {row.match.home_goals} - {row.match.away_goals}
       </td>
       <td className="px-3 py-2 text-slate-300">
-        <PublishedSelection selection={row.principal_1x2} missing="Sin captura 1X2" />
-      </td>
-      <td className="px-3 py-2 text-slate-300">
         <PublishedSelection selection={row.official_recommendation} missing="Sin recomendación registrada" />
       </td>
     </tr>
@@ -58,8 +55,7 @@ function HistoryMatchTable({ rows }: { rows: MatchHistory[] }) {
           <tr>
             <th className="px-3 py-2">Partido</th>
             <th className="px-3 py-2">Resultado</th>
-            <th className="px-3 py-2">Pronóstico principal 1X2</th>
-            <th className="px-3 py-2">Recomendación prepartido</th>
+            <th className="px-3 py-2">Mejor selección prepartido · todos los mercados</th>
           </tr>
         </thead>
         <tbody>
