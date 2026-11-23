@@ -1,8 +1,8 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import func
+from sqlalchemy import and_, func
 from sqlalchemy.orm import Session
 
 from backend.app.db.database import get_db
@@ -11,7 +11,7 @@ from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.matches import CornerObservation, Match, MatchOdds, MatchStatistics
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.db.models.publication import FixturePublication, FixtureRankingRevision
-from backend.app.services.publication_service import publication_report
+from backend.app.services.publication_service import publication_report, selection_outcome
 
 router = APIRouter(prefix="/publications", tags=["publications"])
 
@@ -89,6 +89,54 @@ def publication_coverage(db: Session = Depends(get_db)):
         "official_captures": official.count(),
         "official_finished": official.filter(Match.status == "finished").count(),
     }
+
+
+@router.get("/round-accuracy")
+def round_accuracy(db: Session = Depends(get_db)):
+    """One frozen 1X2 forecast per fixture in each league's latest started round."""
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    rounds = []
+    leagues = db.query(Competition).filter(
+        Competition.code.in_(("laliga", "premier_league", "serie_a", "bundesliga", "ligue_1"))
+    ).order_by(Competition.name).all()
+    for league in leagues:
+        eligible = db.query(Match.season_id, Match.matchday).filter(
+            Match.competition_id == league.id, Match.matchday.is_not(None),
+            Match.kickoff_utc <= now, Match.status.in_(("scheduled", "finished")),
+        )
+        latest = eligible.order_by(Match.kickoff_utc.desc(), Match.id.desc()).first()
+        if latest is None:
+            continue
+        matchday = eligible.filter(Match.season_id == latest.season_id).order_by(Match.matchday.desc()).first().matchday
+        fixtures = db.query(Match, FixturePublication).outerjoin(
+            FixturePublication, and_(
+                FixturePublication.match_id == Match.id,
+                FixturePublication.captured_at < Match.kickoff_utc,
+            ),
+        ).filter(
+            Match.competition_id == league.id,
+            Match.season_id == latest.season_id,
+            Match.matchday == matchday,
+        ).all()
+        counts = dict(wins=0, losses=0, pending=0, without_forecast=0, cancelled=0)
+        for match, publication in fixtures:
+            if match.status == "cancelled":
+                counts["cancelled"] += 1
+            elif match.status != "finished":
+                counts["pending"] += 1
+            else:
+                principal = publication.groups.get("1X2", {}).get("principal") if publication else None
+                actual = (
+                    selection_outcome(principal, match.home_goals, match.away_goals, None)
+                    if principal in ("home_win", "draw", "away_win") else None
+                )
+                counts["wins" if actual is True else "losses" if actual is False else "without_forecast"] += 1
+        rounds.append({
+            "competition": league.code, "name": league.name, "matchday": matchday,
+            "fixtures": len(fixtures), **counts,
+        })
+
+    return rounds
 
 
 @router.get("/{match_id}")

@@ -178,3 +178,14 @@ def test_high_confidence_accepts_other_markets_when_they_meet_the_same_evidence(
         (market, line, side), Settings(), NOW, evidence, (),
     )
     assert item.high_confidence
+
+
+def test_same_fixture_prefers_higher_probability_after_value_and_price_checks():
+    favourite = prediction(id=1, model_probability=.76, calibrated_probability=.76)
+    lower_probability = prediction(id=2, model_probability=.63, calibrated_probability=.63,
+                                   uncertainty_low=.55, uncertainty_high=.69)
+    safe = assess([quote(price=1.35)], p=favourite)
+    larger_ev = assess([quote(price=1.90)], p=lower_probability)
+    assert not safe.reasons and not larger_ev.reasons
+    assert larger_ev.ev > safe.ev and larger_ev.score > safe.score
+    assert select_ranked([(lower_probability, larger_ev), (favourite, safe)], 5) == [(favourite, safe)]

@@ -210,10 +210,21 @@ export interface HistoryPrediction extends Prediction {
   origin_status?: string;
 }
 
+export interface PublishedHistorySelection {
+  market: string;
+  probability: number;
+  is_correct: boolean | null;
+  odds: number | null;
+  bookmaker: string | null;
+  ev: number | null;
+}
+
 export interface MatchHistory {
   match: Match;
   predictions: HistoryPrediction[];
   best_prediction_id: number | null;
+  principal_1x2?: PublishedHistorySelection | null;
+  official_recommendation?: PublishedHistorySelection | null;
 }
 
 // Fase 3 (seccion 16): respuesta de /predictions/best-of-day.

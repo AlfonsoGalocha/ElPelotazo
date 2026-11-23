@@ -1,3 +1,4 @@
+import RoundAccuracyPanel from "@/components/RoundAccuracy";
 import DashboardBoard from "@/components/DashboardBoard";
 import HeadToHeadWidget from "@/components/HeadToHeadWidget";
 
@@ -18,6 +19,7 @@ export default function TodayPage() {
         </p>
       </div>
 
+      <RoundAccuracyPanel />
       <DashboardBoard />
 
       <HeadToHeadWidget />

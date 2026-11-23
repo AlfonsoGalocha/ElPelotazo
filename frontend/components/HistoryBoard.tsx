@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { CheckCircle2, MinusCircle, XCircle } from "lucide-react";
-import type { HistoryPrediction, MatchHistory } from "@/types";
+import type { MatchHistory, PublishedHistorySelection } from "@/types";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import { getHistory } from "@/lib/api";
 import { formatMatchDateOnly, seasonLabelFor } from "@/lib/dates";
@@ -11,56 +10,21 @@ import { isInternationalCompetition } from "@/lib/internationalCompetitions";
 import TeamLogo from "./TeamLogo";
 import { EmptyState } from "./EmptyState";
 
-// Colores pedidos por el usuario para "Rendimiento del modelo": verde
-// acertada, rojo fallida, GRIS pendiente O anulada (mismo color, texto
-// distinto para no confundirlas), amarillo media ganancia/media perdida
-// (half_won/half_lost -- ningun mercado real los produce todavia, ver
-// architecture_audit.md, pero el badge ya sabe pintarlos si algun dia
-// los hay).
-function ResultBadge({ prediction }: { prediction: HistoryPrediction | undefined }) {
-  if (!prediction) {
-    return <span className="text-xs text-slate-500">sin resolver</span>;
-  }
-  if (prediction.settlement_status === "void") {
-    return (
-      <span className="flex items-center gap-1 text-xs font-semibold text-slate-500">
-        <MinusCircle className="h-3.5 w-3.5" /> ANULADA
-      </span>
-    );
-  }
-  if (prediction.settlement_status === "half_won" || prediction.settlement_status === "half_lost") {
-    return (
-      <span className="flex items-center gap-1 text-xs font-semibold text-amber-400">
-        {prediction.settlement_status === "half_won" ? "MEDIA GANANCIA" : "MEDIA PÉRDIDA"}
-      </span>
-    );
-  }
-  if (prediction.settlement_verification === "unverified" || prediction.settlement_verification === "disputed") {
-    return <span className="text-xs text-slate-400">{prediction.settlement_verification === "disputed" ? "Liquidación discrepante" : "Córners sin verificar"}</span>;
-  }
-  if (prediction.is_correct === null) {
-    return <span className="text-xs text-slate-500">sin resolver</span>;
-  }
-  return prediction.is_correct ? (
-    <span className="flex items-center gap-1 text-xs font-semibold text-edge-positive">
-      <CheckCircle2 className="h-3.5 w-3.5" /> ACERTADA
-    </span>
-  ) : (
-    <span className="flex items-center gap-1 text-xs font-semibold text-red-400">
-      <XCircle className="h-3.5 w-3.5" /> FALLADA
-    </span>
+function PublishedSelection({ selection, missing }: { selection?: PublishedHistorySelection | null; missing: string }) {
+  if (!selection) return <span className="text-xs text-slate-400">{missing}</span>;
+  return (
+    <div className="space-y-0.5">
+      <div>{MARKET_DISPLAY_NAMES[selection.market] ?? selection.market} · {(selection.probability * 100).toFixed(1)} %</div>
+      {selection.odds != null && <div className="text-xs text-slate-400">Cuota {selection.odds.toFixed(2)}{selection.bookmaker ? ` · ${selection.bookmaker}` : ""}</div>}
+      {selection.ev != null && <div className="text-xs text-slate-400">EV estimado {(selection.ev * 100).toFixed(1)} %</div>}
+      <div className={selection.is_correct === true ? "text-xs text-emerald-400" : selection.is_correct === false ? "text-xs text-red-400" : "text-xs text-slate-400"}>
+        {selection.is_correct === true ? "Acierto" : selection.is_correct === false ? "Fallo" : "Resultado sin verificar"}
+      </div>
+    </div>
   );
 }
 
-function bestPrediction(row: MatchHistory): HistoryPrediction | undefined {
-  return row.predictions.find((p) => p.id === row.best_prediction_id);
-}
-
-// Fila de partido compartida entre la vista por defecto ("Todas" las
-// ligas, su ultima jornada) y la vista de exploracion por
-// temporada/jornada (una sola liga) -- misma tabla, nunca duplicada.
 function HistoryMatchRow({ row }: { row: MatchHistory }) {
-  const best = bestPrediction(row);
   return (
     <tr className="border-t border-surface-border">
       <td className="px-3 py-2">
@@ -77,26 +41,10 @@ function HistoryMatchRow({ row }: { row: MatchHistory }) {
         {row.match.home_goals} - {row.match.away_goals}
       </td>
       <td className="px-3 py-2 text-slate-300">
-        {best
-          ? MARKET_DISPLAY_NAMES[best.market] ?? best.market
-          : row.predictions.length === 0
-            ? "Sin predicción (se descubrió ya jugado)"
-            : "—"}
+        <PublishedSelection selection={row.principal_1x2} missing="Sin captura 1X2" />
       </td>
-      <td className="px-3 py-2 text-slate-300">{best ? `${(best.model_probability * 100).toFixed(1)}%` : "—"}</td>
-      <td className="px-3 py-2 text-slate-300">{best?.market_odds != null ? best.market_odds.toFixed(2) : "—"}</td>
       <td className="px-3 py-2 text-slate-300">
-        {best?.expected_value != null ? (
-          <span className={best.expected_value >= 0 ? "text-edge-positive" : "text-edge-negative"}>
-            {best.expected_value >= 0 ? "+" : ""}
-            {(best.expected_value * 100).toFixed(1)}%
-          </span>
-        ) : (
-          "—"
-        )}
-      </td>
-      <td className="px-3 py-2">
-        <ResultBadge prediction={best} />
+        <PublishedSelection selection={row.official_recommendation} missing="Sin recomendación registrada" />
       </td>
     </tr>
   );
@@ -110,11 +58,8 @@ function HistoryMatchTable({ rows }: { rows: MatchHistory[] }) {
           <tr>
             <th className="px-3 py-2">Partido</th>
             <th className="px-3 py-2">Resultado</th>
-            <th className="px-3 py-2">Mejor predicción</th>
-            <th className="px-3 py-2">Modelo</th>
-            <th className="px-3 py-2">Cuota</th>
-            <th className="px-3 py-2">EV</th>
-            <th className="px-3 py-2">Estado</th>
+            <th className="px-3 py-2">Pronóstico principal 1X2</th>
+            <th className="px-3 py-2">Recomendación prepartido</th>
           </tr>
         </thead>
         <tbody>

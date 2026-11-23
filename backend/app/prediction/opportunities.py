@@ -138,9 +138,15 @@ def assess_opportunity(prediction, odds, market_key, settings, now, reliability,
     )
 
 
+def forecast_priority(item):
+    prediction, assessment = item
+    return assessment.probability, assessment.score, -prediction.id
+
+
 def select_ranked(candidates, limit):
-    ordered = sorted(candidates, key=lambda item: (item[1].score, item[1].probability, -item[0].id), reverse=True)
     by_fixture = {}
-    for prediction, assessment in ordered:
+    for prediction, assessment in sorted(candidates, key=forecast_priority, reverse=True):
         by_fixture.setdefault(prediction.match_id, (prediction, assessment))
-    return list(by_fixture.values())[:limit]
+    return sorted(
+        by_fixture.values(), key=lambda item: (item[1].score, *forecast_priority(item)), reverse=True,
+    )[:limit]

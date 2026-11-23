@@ -10,7 +10,7 @@ from backend.app.db.models.matches import Match
 from backend.app.db.models.publication import FixturePublication, FixtureRankingRevision
 from backend.app.config.settings import get_settings
 from backend.app.prediction.anomaly import compute_anomaly_flags
-from backend.app.prediction.opportunities import assess_opportunity
+from backend.app.prediction.opportunities import assess_opportunity, forecast_priority
 from backend.app.prediction.ranking import (
     calibrated_probability_or_fallback,
     conservative_probability,
@@ -77,7 +77,9 @@ def capture_publications(db, predictions, reliability, *, timestamp=None):
             p, match.odds, ALL_MARKET_TO_ODDS_LOOKUP.get(p.market), settings, timestamp,
             provenance.get((match.competition.code, p.market)), compute_anomaly_flags(p, rows, settings),
         )) for p in rows]
-        assessed.sort(key=lambda item: (item[1].score is not None, item[1].score or 0, -item[0].id), reverse=True)
+        qualified = sorted((item for item in assessed if not item[1].reasons), key=forecast_priority, reverse=True)
+        rejected = [item for item in assessed if item[1].reasons]
+        assessed = qualified + rejected
         ranked_rows = []
         for position, (prediction, item) in enumerate(assessed, start=1):
             quote = item.quote
@@ -99,11 +101,11 @@ def capture_publications(db, predictions, reliability, *, timestamp=None):
         recommended = next((row for row in ranked_rows if not row["reasons"]), None)
         db.execute(insert(FixtureRankingRevision).values(
             match_id=match_id, captured_at=timestamp, scheduled_kickoff=match.kickoff_utc,
-            ranking_version="execution-v2", ranking=ranked_rows,
+            ranking_version="execution-v3", ranking=ranked_rows,
         ).on_conflict_do_nothing(index_elements=["match_id", "captured_at"]))
         db.execute(insert(FixturePublication).values(
             match_id=match_id, captured_at=timestamp, scheduled_kickoff=match.kickoff_utc,
-            ranking_version="execution-v2", groups=groups,
+            ranking_version="execution-v3", groups=groups,
             ranking=ranked_rows,
             recommendation=recommended,
         ).on_conflict_do_nothing(index_elements=["match_id"]))

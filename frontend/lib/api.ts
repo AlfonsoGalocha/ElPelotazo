@@ -422,6 +422,22 @@ export function getPublication(matchId: number) {
   }>(`/publications/${matchId}`);
 }
 
+export interface RoundAccuracy {
+  competition: string;
+  name: string;
+  matchday: number;
+  fixtures: number;
+  wins: number;
+  losses: number;
+  pending: number;
+  without_forecast: number;
+  cancelled: number;
+}
+
+export function getRoundAccuracy() {
+  return apiFetch<RoundAccuracy[]>("/publications/round-accuracy");
+}
+
 export function getPublicationCoverage() {
   return apiFetch<{
     training_corpus: { first_season: string; last_season: string; finished_matches: number;

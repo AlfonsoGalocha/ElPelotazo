@@ -206,10 +206,21 @@ class HistoryPredictionOut(PredictionOut):
     settlement_status: str | None = None
 
 
+class PublishedHistorySelection(BaseModel):
+    market: str
+    probability: float
+    is_correct: bool | None
+    odds: float | None = None
+    bookmaker: str | None = None
+    ev: float | None = None
+
+
 class MatchHistoryOut(BaseModel):
     match: MatchOut
     predictions: list[HistoryPredictionOut]
     best_prediction_id: int | None
+    principal_1x2: PublishedHistorySelection | None = None
+    official_recommendation: PublishedHistorySelection | None = None
 
 
 class SummaryOut(BaseModel):

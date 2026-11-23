@@ -1,3 +1,4 @@
+import RoundAccuracyPanel from "@/components/RoundAccuracy";
 import { BarChart3 } from "lucide-react";
 import { getHistory, getModelPerformance, getPublicationCoverage, getPublications } from "@/lib/api";
 import CalibrationChart from "@/components/CalibrationChart";
@@ -42,6 +43,7 @@ export default async function ModelPerformancePage({
           Aquí puedes ver cuántos pronósticos acierta el modelo y si los porcentajes que anuncia coinciden con lo que ocurre.
         </p>
       </div>
+      <RoundAccuracyPanel />
       {coverage && <section className="grid gap-3 sm:grid-cols-3" aria-label="Muestras estadísticas">
         <article className="rounded-xl border border-surface-border bg-card p-4">
           <h2 className="font-semibold">Datos para entrenar y simular</h2>

@@ -19,10 +19,12 @@ from backend.app.db.models.core import Competition
 from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.matches import CornerObservation, Match, MatchOddsHistory
 from backend.app.db.models.modeling import Prediction, PredictionResult, PredictionSnapshot
+from backend.app.db.models.publication import FixturePublication
 from backend.app.prediction.eligibility import corner_verification, recorded_origin
 from backend.app.prediction.anomaly import best_prediction_per_match
 from backend.app.schemas.prediction import HistoryPredictionOut, MatchHistoryOut
 from backend.app.services.evaluation_service import fit_edge_reliability_curve
+from backend.app.services.publication_service import selection_outcome
 
 router = APIRouter(prefix="/history", tags=["history"])
 
@@ -60,6 +62,31 @@ def _latest_corners(db: Session, match_ids: list[int]) -> dict[int, int]:
     return dict(rows)
 
 
+def _published_selections(match, publication, corners):
+    if publication is None:
+        return {"principal_1x2": None, "official_recommendation": None}
+    stats = match.statistics
+    if corners is None and stats and stats.home_corners is not None and stats.away_corners is not None:
+        if min(stats.home_corners, stats.away_corners) >= 0:
+            corners = stats.home_corners + stats.away_corners
+    group = publication.groups.get("1X2", {})
+    principal = next((row for row in group.get("alternatives", []) if row["market"] == group.get("principal")), None)
+
+    def evaluate(row, recommendation=False):
+        if row is None:
+            return None
+        return {
+            "market": row["market"],
+            "probability": row["calibrated"] if recommendation and row.get("calibrated") is not None else row["probability"],
+            "is_correct": selection_outcome(row["market"], match.home_goals, match.away_goals, corners),
+            "odds": row.get("odds") if recommendation else None,
+            "bookmaker": row.get("bookmaker") if recommendation else None,
+            "ev": row.get("estimated_ev") if recommendation else None,
+        }
+
+    return {"principal_1x2": evaluate(principal), "official_recommendation": evaluate(publication.recommendation, True)}
+
+
 @router.get("", response_model=list[MatchHistoryOut])
 def list_history(
     competition_code: str | None = Query(None),
@@ -93,6 +120,9 @@ def list_history(
     )
 
     corner_totals = _latest_corners(db, match_ids)
+    publications = {p.match_id: p for p in db.query(FixturePublication).join(
+        Match, Match.id == FixturePublication.match_id,
+    ).filter(FixturePublication.match_id.in_(match_ids), FixturePublication.captured_at < Match.kickoff_utc)}
     out: list[dict] = []
     for match in matches:
         predictions = by_match.get(match.id, [])
@@ -110,6 +140,7 @@ def list_history(
                     for p in predictions
                 ],
                 "best_prediction_id": best.id if best else None,
+                **_published_selections(match, publications.get(match.id), corner_totals.get(match.id)),
             }
         )
     return out
