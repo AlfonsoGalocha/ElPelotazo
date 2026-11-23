@@ -87,14 +87,10 @@ interface CompetitionGroup {
   code: string;
   name: string;
   matchday: number | null;
+  latestKickoff: number;
   rows: MatchHistory[];
 }
 
-// Pedido real del usuario: "quiero que me salga la ultima jornada de cada
-// liga" -- agrupa por competicion y, dentro de cada una, se queda SOLO
-// con la jornada mas alta que tenga partidos finalizados (si ninguno
-// trae `matchday`, p.ej. historico muy antiguo, se queda con los mas
-// recientes por fecha tal cual).
 function groupByCompetitionLatestMatchday(rows: MatchHistory[]): CompetitionGroup[] {
   const byCode = new Map<string, MatchHistory[]>();
   for (const row of rows) {
@@ -105,12 +101,22 @@ function groupByCompetitionLatestMatchday(rows: MatchHistory[]): CompetitionGrou
   }
   const groups: CompetitionGroup[] = [];
   for (const [code, groupRows] of byCode) {
-    const matchdays = groupRows.map((r) => r.match.matchday).filter((m): m is number => m !== null);
-    const maxMatchday = matchdays.length > 0 ? Math.max(...matchdays) : null;
-    const filtered = maxMatchday !== null ? groupRows.filter((r) => r.match.matchday === maxMatchday) : groupRows;
-    groups.push({ code, name: groupRows[0].match.competition.name, matchday: maxMatchday, rows: filtered });
+    const latestSeason = groupRows.map((row) => seasonLabelFor(row.match.kickoff_utc)).sort().at(-1);
+    const seasonRows = isInternationalCompetition(code)
+      ? groupRows
+      : groupRows.filter((row) => seasonLabelFor(row.match.kickoff_utc) === latestSeason);
+    const matchdays = seasonRows.map((r) => r.match.matchday).filter((m): m is number => m !== null);
+    const matchday = matchdays.length ? Math.max(...matchdays) : null;
+    const listedRows = matchday === null ? seasonRows : seasonRows.filter((row) => row.match.matchday === matchday);
+    groups.push({
+      code,
+      name: groupRows[0].match.competition.name,
+      matchday,
+      latestKickoff: Math.max(...listedRows.map((row) => Date.parse(row.match.kickoff_utc))),
+      rows: listedRows,
+    });
   }
-  return groups.sort((a, b) => a.name.localeCompare(b.name));
+  return groups.sort((a, b) => b.latestKickoff - a.latestKickoff || a.name.localeCompare(b.name));
 }
 
 export default function HistoryBoard({ rows, simple = false }: { rows: MatchHistory[]; simple?: boolean }) {
@@ -149,8 +155,9 @@ export default function HistoryBoard({ rows, simple = false }: { rows: MatchHist
       .finally(() => setDeepLoading(false));
   }, [selected, simple]);
 
-  const clubGroups = groups.filter((g) => !isInternationalCompetition(g.code));
-  const internationalGroups = groups.filter((g) => isInternationalCompetition(g.code));
+  const alphabeticalGroups = [...groups].sort((a, b) => a.name.localeCompare(b.name));
+  const clubGroups = alphabeticalGroups.filter((g) => !isInternationalCompetition(g.code));
+  const internationalGroups = alphabeticalGroups.filter((g) => isInternationalCompetition(g.code));
 
   const seasons = deepRows
     ? [...new Set(deepRows.map((r) => seasonLabelFor(r.match.kickoff_utc)))].sort().reverse()
