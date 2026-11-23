@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
@@ -97,6 +98,7 @@ def round_accuracy(db: Session = Depends(get_db)):
     """Evaluate original model forecasts and official recommendations separately."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     rounds = []
+    stake_cents = 1_000
     leagues = db.query(Competition).filter(
         Competition.code.in_(("laliga", "premier_league", "serie_a", "bundesliga", "ligue_1"))
     ).order_by(Competition.name).all()
@@ -123,6 +125,7 @@ def round_accuracy(db: Session = Depends(get_db)):
 
         counts = dict(wins=0, losses=0, pending=0, without_forecast=0, cancelled=0, awaiting_settlement=0)
         model_counts = dict(wins=0, losses=0, without_forecast=0, awaiting_settlement=0)
+        returned_cents = 0
         for match, publication, corners in fixtures:
             if match.status == "cancelled":
                 counts["cancelled"] += 1
@@ -145,9 +148,15 @@ def round_accuracy(db: Session = Depends(get_db)):
                     continue
                 actual = selection_outcome(market, match.home_goals, match.away_goals, corners)
                 totals["wins" if actual is True else "losses" if actual is False else "awaiting_settlement"] += 1
+                if totals is model_counts and actual is True:
+                    returned_cents += int((Decimal(str(pick.market_odds)) * stake_cents).quantize(
+                        Decimal(1), rounding=ROUND_HALF_UP,
+                    ))
+        staked_cents = stake_cents * (model_counts["wins"] + model_counts["losses"])
         rounds.append({
             "competition": league.code, "name": league.name, "matchday": matchday,
             "fixtures": len(fixtures), "model": model_counts, **counts,
+            "flat_stake": {"staked_cents": staked_cents, "returned_cents": returned_cents},
         })
 
     return rounds

@@ -423,6 +423,7 @@ export function getPublication(matchId: number) {
 }
 
 export interface RoundAccuracy {
+  flat_stake: { staked_cents: number; returned_cents: number };
   competition: string;
   name: string;
   matchday: number;
