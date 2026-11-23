@@ -14,38 +14,21 @@ import {
   X,
   Circle,
   LineChart,
-  Globe,
+  ChevronDown,
 } from "lucide-react";
 import { pingHealth } from "@/lib/api";
 import SearchBar from "@/components/SearchBar";
 
-// Rediseño completo pedido por el usuario: sidebar lateral FIJA en vez
-// del menu horizontal anterior. Mismas 6 secciones/paginas de siempre
-// (nunca se duplica funcionalidad, solo cambia la presentacion).
-//
-// "Selecciones" (seccion 17/18 de architecture_audit.md, 2026-11):
-// pagina dedicada, SEPARADA de "Partidos" -- los partidos de selecciones
-// se concentran en pocos parones al año (a diferencia de una liga de
-// club, con partidos casi cada semana), asi que el usuario pidio
-// explicitamente verlos agrupados por fecha en su propio apartado, no
-// mezclados en el listado general.
-//
-// "Rendimiento del modelo" (pedido real del usuario, sistema de
-// evaluacion y aprendizaje del motor predictivo): sustituye tanto al
-// antiguo "Estadísticas" como al enlace discreto de "Histórico de
-// jornadas" que vivia aparte -- ambos eran la misma idea (como de bien
-// predice el modelo) partida en dos sitios distintos sin necesidad.
-// Ahora es una unica pagina con pestañas (ver app/model/page.tsx).
 const NAV_ITEMS = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/matches", label: "Partidos", icon: CalendarDays },
-  { href: "/selecciones", label: "Selecciones", icon: Globe },
-  { href: "/top-signals", label: "Oportunidades", icon: TrendingUp },
-  { href: "/ai-analyst", label: "Analista IA", icon: Bot },
-  { href: "/model", label: "Laboratorio del modelo", icon: BarChart3 },
-  { href: "/prediction-history", label: "Histórico de predicciones", icon: CalendarDays },
-  { href: "/opportunity-performance", label: "Rendimiento de oportunidades", icon: TrendingUp },
-  { href: "/settings", label: "Configuración", icon: Settings },
+  { href: "/", label: "Hoy", icon: LayoutDashboard, related: ["/top-signals", "/signals"] },
+  { href: "/matches", label: "Partidos", icon: CalendarDays, related: ["/selecciones"] },
+  { href: "/opportunity-performance", label: "Rendimiento", icon: TrendingUp, related: ["/prediction-history", "/history"] },
+];
+
+const MORE_ITEMS = [
+  { href: "/model", label: "Laboratorio", icon: BarChart3, related: [] },
+  { href: "/ai-analyst", label: "Analista IA", icon: Bot, related: [] },
+  { href: "/settings", label: "Configuración", icon: Settings, related: [] },
 ];
 
 function isActive(pathname: string, href: string): boolean {
@@ -98,6 +81,28 @@ function ConnectionStatus() {
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
+  function navLink(item: (typeof NAV_ITEMS)[number]) {
+    const active = [item.href, ...item.related].some((href) => isActive(pathname, href));
+    const Icon = item.icon;
+    return (
+      <Link
+        key={item.href}
+        href={item.href}
+        onClick={onNavigate}
+        aria-current={active ? "page" : undefined}
+        className={
+          "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors " +
+          (active
+            ? "bg-accent/15 text-slate-100 shadow-[inset_2px_0_0_0_theme(colors.accent.DEFAULT)]"
+            : "text-slate-400 hover:bg-surface-alt/60 hover:text-slate-200")
+        }
+      >
+        <Icon className={"h-4 w-4 shrink-0 " + (active ? "text-accent" : "text-slate-500")} />
+        {item.label}
+      </Link>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col gap-6 overflow-y-auto px-4 py-6">
       <Link href="/" onClick={onNavigate} className="flex items-center gap-2.5 px-1">
@@ -115,27 +120,15 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <SearchBar />
       </div>
 
-      <nav className="flex flex-col gap-1">
-        {NAV_ITEMS.map((item) => {
-          const active = isActive(pathname, item.href);
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={onNavigate}
-              className={
-                "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors " +
-                (active
-                  ? "bg-accent/15 text-slate-100 shadow-[inset_2px_0_0_0_theme(colors.accent.DEFAULT)]"
-                  : "text-slate-400 hover:bg-surface-alt/60 hover:text-slate-200")
-              }
-            >
-              <Icon className={"h-4 w-4 shrink-0 " + (active ? "text-accent" : "text-slate-500")} />
-              {item.label}
-            </Link>
-          );
-        })}
+      <nav aria-label="Navegación principal" className="flex flex-col gap-1">
+        {NAV_ITEMS.map(navLink)}
+        <details className="mt-2 border-t border-surface-border pt-2" open={MORE_ITEMS.some((item) => isActive(pathname, item.href)) || undefined}>
+          <summary className="flex cursor-pointer list-none items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 hover:text-slate-200">
+            <ChevronDown className="h-4 w-4" />
+            Más
+          </summary>
+          <div className="mt-1 pl-3">{MORE_ITEMS.map(navLink)}</div>
+        </details>
       </nav>
 
       <div className="mt-auto">
