@@ -42,7 +42,6 @@ export default function RoundAccuracyPanel() {
     pending: sum.pending + row.pending, withoutForecast: sum.withoutForecast + row.model.without_forecast,
   }), { wins: 0, losses: 0, pending: 0, withoutForecast: 0 });
   const awaitingSettlement = rounds.reduce((sum, row) => sum + row.model.awaiting_settlement, 0);
-  const recommendations = rounds.reduce((sum, row) => ({ wins: sum.wins + row.wins, losses: sum.losses + row.losses }), { wins: 0, losses: 0 });
   const cancelled = rounds.reduce((sum, row) => sum + row.cancelled, 0);
 
   return (
@@ -83,9 +82,6 @@ export default function RoundAccuracyPanel() {
               </tbody>
             </table>
           </div>
-          <p className="text-sm text-slate-400">
-            Recomendaciones oficiales de valor · {hitRate(recommendations.wins, recommendations.losses)} · {recommendations.wins} aciertos y {recommendations.losses} fallos.
-          </p>
         </>
       )}
     </section>
