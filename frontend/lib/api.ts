@@ -427,6 +427,7 @@ export interface RoundAccuracy {
   name: string;
   matchday: number;
   fixtures: number;
+  model: { wins: number; losses: number; without_forecast: number; awaiting_settlement: number };
   wins: number;
   losses: number;
   pending: number;

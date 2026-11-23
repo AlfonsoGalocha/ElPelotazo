@@ -11,7 +11,7 @@ from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.matches import CornerObservation, Match, MatchOdds, MatchStatistics
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.db.models.publication import FixturePublication, FixtureRankingRevision
-from backend.app.prediction.eligibility import observed_corner_total
+from backend.app.prediction.eligibility import active_market, observed_corner_total
 from backend.app.services.publication_service import publication_report, selection_outcome
 
 router = APIRouter(prefix="/publications", tags=["publications"])
@@ -94,7 +94,7 @@ def publication_coverage(db: Session = Depends(get_db)):
 
 @router.get("/round-accuracy")
 def round_accuracy(db: Session = Depends(get_db)):
-    """Track the frozen official recommendation, regardless of market."""
+    """Evaluate original model forecasts and official recommendations separately."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     rounds = []
     leagues = db.query(Competition).filter(
@@ -119,26 +119,47 @@ def round_accuracy(db: Session = Depends(get_db)):
             Match.season_id == latest.season_id,
             Match.matchday == matchday,
         ).all()
+        latest_by_market = {}
+        for prediction in db.query(Prediction).join(Match, Match.id == Prediction.match_id).filter(
+            Prediction.match_id.in_([match.id for match, _, _ in fixtures]),
+            Prediction.created_at < Match.kickoff_utc,
+            active_market(),
+            Prediction.model_probability.between(0, 1),
+        ).order_by(Prediction.created_at.desc(), Prediction.id.desc()):
+            latest_by_market.setdefault((prediction.match_id, prediction.market), prediction)
+        model_picks = {}
+        for pick in latest_by_market.values():
+            best = model_picks.get(pick.match_id)
+            if best is None or (pick.model_probability, -pick.id) > (best.model_probability, -best.id):
+                model_picks[pick.match_id] = pick
+
         counts = dict(wins=0, losses=0, pending=0, without_forecast=0, cancelled=0, awaiting_settlement=0)
+        model_counts = dict(wins=0, losses=0, without_forecast=0, awaiting_settlement=0)
         for match, publication, corners in fixtures:
             if match.status == "cancelled":
                 counts["cancelled"] += 1
-            elif match.status != "finished":
+                continue
+            if match.status != "finished":
                 counts["pending"] += 1
-            elif not publication or not publication.recommendation:
-                counts["without_forecast"] += 1
-            else:
-                stats = match.statistics
-                if corners is None and stats and stats.home_corners is not None and stats.away_corners is not None:
-                    if min(stats.home_corners, stats.away_corners) >= 0:
-                        corners = stats.home_corners + stats.away_corners
-                actual = selection_outcome(
-                    publication.recommendation["market"], match.home_goals, match.away_goals, corners,
-                )
-                counts["wins" if actual is True else "losses" if actual is False else "awaiting_settlement"] += 1
+                continue
+            stats = match.statistics
+            if corners is None and stats and stats.home_corners is not None and stats.away_corners is not None:
+                if min(stats.home_corners, stats.away_corners) >= 0:
+                    corners = stats.home_corners + stats.away_corners
+            pick = model_picks.get(match.id)
+            recommendation = publication.recommendation if publication else None
+            for totals, market in (
+                (model_counts, pick.market if pick else None),
+                (counts, recommendation["market"] if recommendation else None),
+            ):
+                if market is None:
+                    totals["without_forecast"] += 1
+                    continue
+                actual = selection_outcome(market, match.home_goals, match.away_goals, corners)
+                totals["wins" if actual is True else "losses" if actual is False else "awaiting_settlement"] += 1
         rounds.append({
             "competition": league.code, "name": league.name, "matchday": matchday,
-            "fixtures": len(fixtures), **counts,
+            "fixtures": len(fixtures), "model": model_counts, **counts,
         })
 
     return rounds
