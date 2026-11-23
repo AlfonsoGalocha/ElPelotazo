@@ -241,6 +241,27 @@ def publication_report(db, competition=None, market=None, model_version=None, mi
     }
 
 
+def latest_model_picks(db, match_ids):
+    """Select the highest original probability from the last pre-match prediction per market."""
+    from backend.app.db.models.modeling import Prediction
+    from backend.app.prediction.eligibility import active_market
+
+    latest_by_market = {}
+    for prediction in db.query(Prediction).join(Match, Match.id == Prediction.match_id).filter(
+        Prediction.match_id.in_(match_ids),
+        Prediction.created_at < Match.kickoff_utc,
+        active_market(),
+        Prediction.model_probability.between(0, 1),
+    ).order_by(Prediction.created_at.desc(), Prediction.id.desc()):
+        latest_by_market.setdefault((prediction.match_id, prediction.market), prediction)
+    model_picks = {}
+    for pick in latest_by_market.values():
+        best = model_picks.get(pick.match_id)
+        if best is None or (pick.model_probability, -pick.id) > (best.model_probability, -best.id):
+            model_picks[pick.match_id] = pick
+    return model_picks
+
+
 def selection_outcome(market, home, away, corners):
     """Settle only the chosen selection from verified scores/counts."""
     import pandas as pd

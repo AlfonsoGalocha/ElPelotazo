@@ -225,6 +225,7 @@ export interface MatchHistory {
   best_prediction_id: number | null;
   principal_1x2?: PublishedHistorySelection | null;
   official_recommendation?: PublishedHistorySelection | null;
+  evaluated_model_pick?: PublishedHistorySelection | null;
 }
 
 // Fase 3 (seccion 16): respuesta de /predictions/best-of-day.

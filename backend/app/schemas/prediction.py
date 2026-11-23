@@ -221,6 +221,7 @@ class MatchHistoryOut(BaseModel):
     best_prediction_id: int | None
     principal_1x2: PublishedHistorySelection | None = None
     official_recommendation: PublishedHistorySelection | None = None
+    evaluated_model_pick: PublishedHistorySelection | None = None
 
 
 class SummaryOut(BaseModel):

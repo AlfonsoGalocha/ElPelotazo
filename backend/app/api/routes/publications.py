@@ -11,8 +11,8 @@ from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.matches import CornerObservation, Match, MatchOdds, MatchStatistics
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.db.models.publication import FixturePublication, FixtureRankingRevision
-from backend.app.prediction.eligibility import active_market, observed_corner_total
-from backend.app.services.publication_service import publication_report, selection_outcome
+from backend.app.prediction.eligibility import observed_corner_total
+from backend.app.services.publication_service import latest_model_picks, publication_report, selection_outcome
 
 router = APIRouter(prefix="/publications", tags=["publications"])
 
@@ -119,19 +119,7 @@ def round_accuracy(db: Session = Depends(get_db)):
             Match.season_id == latest.season_id,
             Match.matchday == matchday,
         ).all()
-        latest_by_market = {}
-        for prediction in db.query(Prediction).join(Match, Match.id == Prediction.match_id).filter(
-            Prediction.match_id.in_([match.id for match, _, _ in fixtures]),
-            Prediction.created_at < Match.kickoff_utc,
-            active_market(),
-            Prediction.model_probability.between(0, 1),
-        ).order_by(Prediction.created_at.desc(), Prediction.id.desc()):
-            latest_by_market.setdefault((prediction.match_id, prediction.market), prediction)
-        model_picks = {}
-        for pick in latest_by_market.values():
-            best = model_picks.get(pick.match_id)
-            if best is None or (pick.model_probability, -pick.id) > (best.model_probability, -best.id):
-                model_picks[pick.match_id] = pick
+        model_picks = latest_model_picks(db, [match.id for match, _, _ in fixtures])
 
         counts = dict(wins=0, losses=0, pending=0, without_forecast=0, cancelled=0, awaiting_settlement=0)
         model_counts = dict(wins=0, losses=0, without_forecast=0, awaiting_settlement=0)

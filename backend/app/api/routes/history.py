@@ -24,7 +24,7 @@ from backend.app.prediction.eligibility import corner_verification, recorded_ori
 from backend.app.prediction.anomaly import best_prediction_per_match
 from backend.app.schemas.prediction import HistoryPredictionOut, MatchHistoryOut
 from backend.app.services.evaluation_service import fit_edge_reliability_curve
-from backend.app.services.publication_service import selection_outcome
+from backend.app.services.publication_service import latest_model_picks, selection_outcome
 
 router = APIRouter(prefix="/history", tags=["history"])
 
@@ -62,14 +62,12 @@ def _latest_corners(db: Session, match_ids: list[int]) -> dict[int, int]:
     return dict(rows)
 
 
-def _published_selections(match, publication, corners):
-    if publication is None:
-        return {"principal_1x2": None, "official_recommendation": None}
+def _published_selections(match, publication, corners, model_pick=None):
     stats = match.statistics
     if corners is None and stats and stats.home_corners is not None and stats.away_corners is not None:
         if min(stats.home_corners, stats.away_corners) >= 0:
             corners = stats.home_corners + stats.away_corners
-    group = publication.groups.get("1X2", {})
+    group = publication.groups.get("1X2", {}) if publication else {}
     principal = next((row for row in group.get("alternatives", []) if row["market"] == group.get("principal")), None)
 
     def evaluate(row, recommendation=False):
@@ -84,7 +82,12 @@ def _published_selections(match, publication, corners):
             "ev": row.get("estimated_ev") if recommendation else None,
         }
 
-    return {"principal_1x2": evaluate(principal), "official_recommendation": evaluate(publication.recommendation, True)}
+    return {
+        "principal_1x2": evaluate(principal),
+        "official_recommendation": evaluate(publication.recommendation, True) if publication else None,
+        "evaluated_model_pick": evaluate({"market": model_pick.market, "probability": model_pick.model_probability})
+        if model_pick else None,
+    }
 
 
 @router.get("", response_model=list[MatchHistoryOut])
@@ -123,6 +126,7 @@ def list_history(
     publications = {p.match_id: p for p in db.query(FixturePublication).join(
         Match, Match.id == FixturePublication.match_id,
     ).filter(FixturePublication.match_id.in_(match_ids), FixturePublication.captured_at < Match.kickoff_utc)}
+    model_picks = latest_model_picks(db, match_ids)
     out: list[dict] = []
     for match in matches:
         predictions = by_match.get(match.id, [])
@@ -140,7 +144,7 @@ def list_history(
                     for p in predictions
                 ],
                 "best_prediction_id": best.id if best else None,
-                **_published_selections(match, publications.get(match.id), corner_totals.get(match.id)),
+                **_published_selections(match, publications.get(match.id), corner_totals.get(match.id), model_picks.get(match.id)),
             }
         )
     return out
