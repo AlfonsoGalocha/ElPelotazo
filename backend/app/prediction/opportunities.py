@@ -34,6 +34,17 @@ def valid_probability(value):
     return value is not None and isfinite(value) and 0 <= value <= 1
 
 
+# Review threshold in probability points. It does not adjust the prediction.
+MARKET_DISAGREEMENT_THRESHOLD = .25
+
+
+def market_probability_gap(probability, market_probability, source):
+    if (source != "derived_double_chance" and valid_probability(probability)
+            and valid_probability(market_probability)):
+        return probability - market_probability
+    return None
+
+
 def quote_age(row, now):
     archived = row.archived_quote
     if not row.bookmaker or archived is None or any(
@@ -109,6 +120,12 @@ def assess_opportunity(prediction, odds, market_key, settings, now, reliability,
             and valid_probability(prediction.model_probability)
             and abs(probability - prediction.model_probability) > .15 and not has_local_evidence):
         reasons.append("ajuste_calibracion_sin_respaldo")
+    gap = market_probability_gap(
+        probability if probability is not None else prediction.model_probability,
+        prediction.market_probability, prediction.market_probability_source,
+    )
+    if gap is not None and gap > MARKET_DISAGREEMENT_THRESHOLD:
+        reasons.append("ventaja_extrema_frente_al_mercado")
     if ev is not None and ev <= 0:
         reasons.append("ev_estimado_no_positivo")
     if CONTRADICTION in flags:

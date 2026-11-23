@@ -13,6 +13,7 @@ MARKET = ("match_result", None, "home")
 
 def prediction(**changes):
     values = dict(
+        market_probability=None, market_probability_source=None,
         id=1, match_id=10, match=SimpleNamespace(status="scheduled", kickoff_utc=NOW + timedelta(hours=2)),
         created_at=NOW - timedelta(minutes=30), model_probability=.76,
         calibrated_probability=.76, uncertainty_low=.73, uncertainty_high=.79, data_quality=.8,
@@ -189,3 +190,14 @@ def test_same_fixture_prefers_higher_probability_after_value_and_price_checks():
     assert not safe.reasons and not larger_ev.reasons
     assert larger_ev.ev > safe.ev and larger_ev.score > safe.score
     assert select_ranked([(lower_probability, larger_ev), (favourite, safe)], 5) == [(favourite, safe)]
+
+def test_large_market_gap_blocks_a_calibrated_pick_even_with_a_price_in_range():
+    p = prediction(model_probability=.83, calibrated_probability=.83, market_probability=.56,
+                   market_probability_source="consensus_no_vig")
+    assert "ventaja_extrema_frente_al_mercado" in assess([quote(price=1.80)], p=p).reasons
+
+
+def test_moderate_market_gap_retains_the_normal_qualification_rules():
+    p = prediction(model_probability=.83, calibrated_probability=.83, market_probability=.65,
+                   market_probability_source="consensus_raw")
+    assert not assess([quote(price=1.55)], p=p).reasons

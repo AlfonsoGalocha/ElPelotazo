@@ -25,6 +25,12 @@ function PublishedSelection({ selection, missing, model = false }: {
           {selection.bookmaker ? ` · ${selection.bookmaker}` : ""}
         </div>
       ) : model && <div className="text-xs text-slate-400">Sin cuota registrada</div>}
+      {model && selection.market_probability_gap != null && (
+        <div className={selection.large_market_gap ? "text-xs text-amber-300" : "text-xs text-slate-400"}>
+          {selection.large_market_gap ? "Revisar · " : ""}
+          {selection.market_probability_gap > 0 ? "+" : ""}{(selection.market_probability_gap * 100).toFixed(1)} pp frente al mercado
+        </div>
+      )}
       {selection.ev != null && <div className="text-xs text-slate-400">EV estimado {(selection.ev * 100).toFixed(1)} %</div>}
       <div className={selection.is_correct === true ? "text-xs text-emerald-400" : selection.is_correct === false ? "text-xs text-red-400" : "text-xs text-slate-400"}>
         {selection.is_correct === true ? "Acierto" : selection.is_correct === false ? "Fallo" : "Resultado sin verificar"}

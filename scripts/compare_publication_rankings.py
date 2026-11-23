@@ -97,11 +97,11 @@ def compare(db, start, end, execution=False):
     slices = {name: defaultdict(list) for name in policies}
     for publication, match, total in query:
         if execution:
-            if publication.ranking_version not in {"execution-v2", "execution-v3"} or publication.captured_at >= publication.scheduled_kickoff:
+            if publication.ranking_version not in {"execution-v2", "execution-v3", "execution-v4"} or publication.captured_at >= publication.scheduled_kickoff:
                 continue
             candidates = [row for row in publication.ranking if eligible_at_capture(row, publication.captured_at)]
         else:
-            candidates = publication.ranking if publication.ranking_version not in {"execution-v2", "execution-v3"} else []
+            candidates = publication.ranking if publication.ranking_version not in {"execution-v2", "execution-v3", "execution-v4"} else []
         if not candidates:
             continue
         stats = match.statistics

@@ -211,6 +211,8 @@ export interface HistoryPrediction extends Prediction {
 }
 
 export interface PublishedHistorySelection {
+  market_probability_gap?: number | null;
+  large_market_gap?: boolean;
   market: string;
   probability: number;
   is_correct: boolean | null;

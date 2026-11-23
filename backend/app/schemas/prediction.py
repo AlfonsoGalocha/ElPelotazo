@@ -207,6 +207,8 @@ class HistoryPredictionOut(PredictionOut):
 
 
 class PublishedHistorySelection(BaseModel):
+    market_probability_gap: float | None = None
+    large_market_gap: bool = False
     market: str
     probability: float
     is_correct: bool | None

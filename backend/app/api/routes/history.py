@@ -22,6 +22,7 @@ from backend.app.db.models.matches import CornerObservation, Match, MatchOddsHis
 from backend.app.db.models.modeling import Prediction, PredictionResult, PredictionSnapshot
 from backend.app.db.models.publication import FixturePublication
 from backend.app.prediction.eligibility import corner_verification, recorded_origin
+from backend.app.prediction.opportunities import MARKET_DISAGREEMENT_THRESHOLD, market_probability_gap
 from backend.app.prediction.anomaly import best_prediction_per_match
 from backend.app.schemas.prediction import HistoryPredictionOut, MatchHistoryOut
 from backend.app.services.evaluation_service import fit_edge_reliability_curve
@@ -81,6 +82,8 @@ def _published_selections(match, publication, corners, model_pick=None):
             "odds": row.get("odds"),
             "bookmaker": row.get("bookmaker") if recommendation else None,
             "ev": row.get("estimated_ev") if recommendation else None,
+            "market_probability_gap": row.get("market_probability_gap"),
+            "large_market_gap": row.get("large_market_gap", False),
         }
 
     model_row = None
@@ -90,7 +93,12 @@ def _published_selections(match, publication, corners, model_pick=None):
             price is not None and isfinite(price) and price > 1
             and model_pick.market_probability_source != "derived_double_chance"
         )
+        gap = market_probability_gap(
+            model_pick.model_probability, model_pick.market_probability, model_pick.market_probability_source,
+        )
         model_row = {
+            "market_probability_gap": gap,
+            "large_market_gap": gap is not None and gap > MARKET_DISAGREEMENT_THRESHOLD,
             "market": model_pick.market, "probability": model_pick.model_probability,
             "odds": price if has_price else None,
         }

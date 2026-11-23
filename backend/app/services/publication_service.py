@@ -101,11 +101,11 @@ def capture_publications(db, predictions, reliability, *, timestamp=None):
         recommended = next((row for row in ranked_rows if not row["reasons"]), None)
         db.execute(insert(FixtureRankingRevision).values(
             match_id=match_id, captured_at=timestamp, scheduled_kickoff=match.kickoff_utc,
-            ranking_version="execution-v3", ranking=ranked_rows,
+            ranking_version="execution-v4", ranking=ranked_rows,
         ).on_conflict_do_nothing(index_elements=["match_id", "captured_at"]))
         db.execute(insert(FixturePublication).values(
             match_id=match_id, captured_at=timestamp, scheduled_kickoff=match.kickoff_utc,
-            ranking_version="execution-v3", groups=groups,
+            ranking_version="execution-v4", groups=groups,
             ranking=ranked_rows,
             recommendation=recommended,
         ).on_conflict_do_nothing(index_elements=["match_id"]))

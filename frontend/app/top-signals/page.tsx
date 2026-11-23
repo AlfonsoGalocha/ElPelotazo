@@ -10,6 +10,7 @@ import AnomalyBadges from "@/components/AnomalyBadge";
 import { EmptyState } from "@/components/EmptyState";
 
 const EXCLUSION_LABELS: Record<string, string> = {
+  ventaja_extrema_frente_al_mercado: "Revisar: el modelo supera al mercado en más de 25 puntos",
   sin_mercado: "Sin cuota para ese mercado",
   cuota_fuera_de_banda: "Fuera del rango 1,35–1,90 de la estrategia",
   cuota_desactualizada: "Cuota desactualizada",
