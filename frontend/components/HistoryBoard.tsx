@@ -56,7 +56,7 @@ function HistoryMatchRow({ row }: { row: MatchHistory }) {
         {row.match.home_goals} - {row.match.away_goals}
       </td>
       <td className="px-3 py-2 text-slate-300">
-        <PublishedSelection model selection={row.evaluated_model_pick} missing="Sin pronóstico prepartido evaluable" />
+        <PublishedSelection model selection={row.evaluated_model_pick} missing="Ningún pronóstico cumple el 65 % y la cuota 1,30–1,80" />
       </td>
     </tr>
   );

@@ -242,8 +242,8 @@ def publication_report(db, competition=None, market=None, model_version=None, mi
 
 
 def latest_model_picks(db, match_ids):
-    """Select one original forecast per fixture using current and archived records."""
-    from sqlalchemy import func, select, union_all
+    """Rank the latest pre-match forecasts with a saved price in the evaluation band."""
+    from sqlalchemy import func, or_, select, union_all
     from backend.app.db.models.modeling import Prediction, PredictionSnapshot
     from backend.app.prediction.eligibility import active_market
 
@@ -269,7 +269,12 @@ def latest_model_picks(db, match_ids):
         ).label("market_rank"),
     ).subquery()
     picks = {}
-    for pick in db.execute(select(latest).where(latest.c.market_rank == 1).order_by(
+    for pick in db.execute(select(latest).where(
+        latest.c.market_rank == 1,
+        latest.c.model_probability >= .65,
+        latest.c.market_odds.between(1.30, 1.80),
+        or_(latest.c.market_probability_source.is_(None), latest.c.market_probability_source != "derived_double_chance"),
+    ).order_by(
         latest.c.model_probability.desc(), latest.c.prediction_id,
     )):
         picks.setdefault(pick.match_id, pick)
