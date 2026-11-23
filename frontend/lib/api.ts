@@ -453,3 +453,50 @@ export function getPublicationCoverage() {
     official_finished: number;
   }>("/publications/coverage");
 }
+
+type BotTeamForm = { matches: number; wins: number; draws: number; losses: number };
+
+export type BotBankroll = {
+  initial_cents: number;
+  balance_cents: number;
+  reserved_cents: number;
+  days: {
+    day: string;
+    captured_at: string;
+    odds_band: [number, number];
+    profit_cents: number;
+    fixtures: {
+      match_id: number;
+      match: string;
+      assessed: number;
+      eligible: number;
+      decision?: "goles" | "ambos_marcan" | "doble_oportunidad" | "pasar";
+      context?: {
+        home_form: BotTeamForm;
+        away_form: BotTeamForm;
+        home_standing: { position: number } | null;
+        away_standing: { position: number } | null;
+        h2h: { matches: number; both_scored: number; over_2_5: number };
+        favorite: "home" | "away" | null;
+      };
+    }[];
+    tickets: {
+      stake_cents: number;
+      returned_cents: number;
+      state: "won" | "lost" | "void" | "pending";
+      legs: {
+        match_id: number;
+        match: string;
+        market: string;
+        probability: number;
+        probability_source?: "original" | "calibrated";
+        price: number;
+        bookmaker: string;
+      }[];
+    }[];
+  }[];
+};
+
+export function getBotBankroll() {
+  return apiFetch<BotBankroll>("/publications/bot-bankroll");
+}

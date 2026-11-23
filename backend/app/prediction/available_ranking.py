@@ -2,6 +2,8 @@
 
 import math
 
+from backend.app.config.settings import get_settings
+
 from backend.app.prediction.ranking import (
     calibrated_probability_or_fallback,
     conservative_probability,
@@ -10,20 +12,22 @@ from backend.app.prediction.ranking import (
 )
 
 
-def has_available_price(prediction, *, all_prices=False):
+def has_available_price(prediction, *, all_prices=False, odds_band=None):
+    settings = get_settings()
+    floor, ceiling = odds_band or (settings.min_opportunity_odds, settings.max_opportunity_odds)
     price = prediction.market_odds
     return (
         price is not None and math.isfinite(price) and price > 1
-        and (all_prices or 1.35 <= price <= 1.90)
+        and (all_prices or floor <= price <= ceiling)
         and prediction.market_probability_source != "derived_double_chance"
         and not prediction.market.startswith("cards_")
     )
 
 
-def rank_available(predictions, reliability, *, per_match=1, limit=None, all_prices=False, value_ids=frozenset(), prefer_calibrated=False):
+def rank_available(predictions, reliability, *, per_match=1, limit=None, all_prices=False, value_ids=frozenset(), prefer_calibrated=False, odds_band=None):
     candidates = [
         p for p in predictions
-        if has_available_price(p, all_prices=all_prices)
+        if has_available_price(p, all_prices=all_prices, odds_band=odds_band)
         and math.isfinite(calibrated_probability_or_fallback(p))
         and 0 <= calibrated_probability_or_fallback(p) <= 1
     ]

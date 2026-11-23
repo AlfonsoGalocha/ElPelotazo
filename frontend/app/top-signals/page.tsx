@@ -12,7 +12,7 @@ import { EmptyState } from "@/components/EmptyState";
 const EXCLUSION_LABELS: Record<string, string> = {
   ventaja_extrema_frente_al_mercado: "Revisar: el modelo supera al mercado en más de 25 puntos",
   sin_mercado: "Sin cuota para ese mercado",
-  cuota_fuera_de_banda: "Fuera del rango 1,35–1,90 de la estrategia",
+  cuota_fuera_de_banda: "Fuera del rango de la estrategia",
   cuota_desactualizada: "Cuota desactualizada",
   origen_cuota_no_verificado: "Hora de la cuota sin verificar",
   calibracion_no_disponible: "Probabilidad sin calibrar",
@@ -227,7 +227,7 @@ export default async function TopSignalsPage({
         <input type="hidden" name="view" value={view} />
         {view === "explore" && <><label htmlFor="prices">Cuotas</label>
         <select id="prices" name="prices" defaultValue={allPrices ? "all" : "preferred"} className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200">
-          <option value="preferred">1,35–1,90</option>
+          <option value="preferred">Rango de la estrategia</option>
           <option value="all">Todos los rangos</option>
         </select></>}
         <button type="submit" className="rounded-lg border border-accent/40 bg-accent/10 px-3 py-1 font-medium text-slate-100 transition-colors hover:bg-accent/20">

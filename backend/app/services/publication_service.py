@@ -242,24 +242,38 @@ def publication_report(db, competition=None, market=None, model_version=None, mi
 
 
 def latest_model_picks(db, match_ids):
-    """Select the highest original probability from the last pre-match prediction per market."""
-    from backend.app.db.models.modeling import Prediction
+    """Select one original forecast per fixture using current and archived records."""
+    from sqlalchemy import func, select, union_all
+    from backend.app.db.models.modeling import Prediction, PredictionSnapshot
     from backend.app.prediction.eligibility import active_market
 
-    latest_by_market = {}
-    for prediction in db.query(Prediction).join(Match, Match.id == Prediction.match_id).filter(
-        Prediction.match_id.in_(match_ids),
-        Prediction.created_at < Match.kickoff_utc,
-        active_market(),
-        Prediction.model_probability.between(0, 1),
-    ).order_by(Prediction.created_at.desc(), Prediction.id.desc()):
-        latest_by_market.setdefault((prediction.match_id, prediction.market), prediction)
-    model_picks = {}
-    for pick in latest_by_market.values():
-        best = model_picks.get(pick.match_id)
-        if best is None or (pick.model_probability, -pick.id) > (best.model_probability, -best.id):
-            model_picks[pick.match_id] = pick
-    return model_picks
+    if not match_ids:
+        return {}
+
+    sources = []
+    for model, original_id in ((Prediction, Prediction.id), (PredictionSnapshot, PredictionSnapshot.original_prediction_id)):
+        sources.append(select(
+            model.match_id, model.market, model.line, model.selection, model.created_at,
+            original_id.label("prediction_id"), model.model_probability, model.market_probability,
+            model.market_odds, model.market_probability_source,
+        ).join(Match, Match.id == model.match_id).where(
+            model.match_id.in_(match_ids), model.created_at < Match.kickoff_utc,
+            active_market(model.market), model.model_probability.between(0, 1),
+        ))
+    forecasts = union_all(*sources).subquery()
+    latest = select(
+        forecasts,
+        func.row_number().over(
+            partition_by=(forecasts.c.match_id, forecasts.c.market, forecasts.c.line, forecasts.c.selection),
+            order_by=(forecasts.c.created_at.desc(), forecasts.c.prediction_id.desc()),
+        ).label("market_rank"),
+    ).subquery()
+    picks = {}
+    for pick in db.execute(select(latest).where(latest.c.market_rank == 1).order_by(
+        latest.c.model_probability.desc(), latest.c.prediction_id,
+    )):
+        picks.setdefault(pick.match_id, pick)
+    return picks
 
 
 def selection_outcome(market, home, away, corners):

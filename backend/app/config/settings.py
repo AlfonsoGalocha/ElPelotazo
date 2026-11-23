@@ -117,8 +117,8 @@ class Settings(BaseSettings):
     # cambiarlos en Configuracion sin reiniciar el backend -- ver
     # db/models/core.py::RankingConfig y services/ranking_config_service.py,
     # que lee la preferencia guardada y cae aqui solo si no hay ninguna.
-    min_opportunity_odds: float = 1.35
-    max_opportunity_odds: float = 1.90
+    min_opportunity_odds: float = 1.30
+    max_opportunity_odds: float = 1.80
 
     # --- Calidad de mercado (prediction/market_quality.py) ---
     # Clasificacion HIGH/MEDIUM/LOW basada en cuantas casas respaldan el

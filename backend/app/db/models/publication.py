@@ -1,6 +1,8 @@
 """Immutable pre-match output of the official fixture capture."""
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String
+from datetime import date
+
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.app.db.database import Base
@@ -26,3 +28,12 @@ class FixtureRankingRevision(Base):
     scheduled_kickoff = mapped_column(DateTime, nullable=False)
     ranking_version: Mapped[str] = mapped_column(String(32))
     ranking: Mapped[list] = mapped_column(JSON)
+
+
+class BotDecision(Base):
+    """One immutable forward decision per Madrid date, including days with no tickets."""
+
+    __tablename__ = "bot_decisions"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)

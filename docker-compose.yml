@@ -168,6 +168,7 @@ services:
     command:
       - >
         (while true; do
+          football-edge bot-decision || echo "[scheduler] no se pudo registrar la decisión del bot";
           football-edge publish-upcoming || echo "[scheduler] no se pudo publicar el corte prepartido";
           sleep 600;
         done) &

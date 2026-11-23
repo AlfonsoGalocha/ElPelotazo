@@ -643,6 +643,7 @@ def available_predictions(
     from backend.app.prediction.ranking import evaluate_quality_gate_v3
 
     settings = _settings_for_opportunities(db, get_settings())
+    odds_band = (settings.min_opportunity_odds, settings.max_opportunity_odds)
     candidates = _base_signal_query(
         db, None, True, days, date, min_fair_odds, max_fair_odds, scope,
         competition_code, min_edge_pp=min_edge, min_bookmakers=min_bookmakers, min_ev=min_ev,
@@ -668,7 +669,7 @@ def available_predictions(
             remaining = [p for p in candidates if p.match_id not in included_matches]
             ranked.extend((p, by_id[p.id]) for p in rank_available(
                 remaining, reliability, per_match=per_match, limit=limit - len(ranked),
-                all_prices=all_prices, prefer_calibrated=True,
+                all_prices=all_prices, prefer_calibrated=True, odds_band=odds_band,
             ))
         return [
             {
@@ -689,7 +690,7 @@ def available_predictions(
         return flags, reason, reason is None and is_strong_signal(flags)
 
     assessments = {
-        p.id: assess(p) for p in candidates if has_available_price(p, all_prices=all_prices)
+        p.id: assess(p) for p in candidates if has_available_price(p, all_prices=all_prices, odds_band=odds_band)
     }
     value_ids = {prediction_id for prediction_id, assessment in assessments.items() if assessment[2]}
     if value_only:
@@ -698,7 +699,7 @@ def available_predictions(
     rows = []
     for prediction in rank_available(
         candidates, reliability, per_match=per_match, limit=limit, all_prices=all_prices,
-        value_ids=value_ids, prefer_calibrated=True,
+        value_ids=value_ids, prefer_calibrated=True, odds_band=odds_band,
     ):
         flags, reason, has_value = assessments[prediction.id]
         rows.append({

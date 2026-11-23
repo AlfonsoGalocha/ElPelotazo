@@ -24,6 +24,14 @@ export default async function CapturedPrediction({ params }: { params: { id: str
     .sort((a, b) => (b.calibrated ?? b.probability) - (a.calibrated ?? a.probability));
   const uncalibrated = quoted.filter(row => row.reasons?.includes("calibracion_no_disponible")).length;
   const recommendation = publication.recommendation;
+  const hasExecutionPrices = ["execution-v2", "execution-v3", "execution-v4"].includes(publication.ranking_version);
+  function referencePrice(row: (typeof quoted)[number]) {
+    if (row.odds != null) return row.odds;
+    if (!hasExecutionPrices || row.estimated_ev == null || !row.calibrated || row.calibrated > 1) return null;
+    // These versions store EV calculated against the exact reference used at the cut.
+    const price = (1 + row.estimated_ev) / row.calibrated;
+    return Number.isFinite(price) && price > 1 ? price : null;
+  }
 
   return (
     <main className="space-y-5">
@@ -61,12 +69,20 @@ export default async function CapturedPrediction({ params }: { params: { id: str
                 {quoted.map(row => (
                   <tr key={row.market} className="border-t border-surface-border">
                     <td className="px-3 py-2">{MARKET_DISPLAY_NAMES[row.market] ?? row.market}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">{((row.calibrated ?? row.probability) * 100).toFixed(1)} %</td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {((row.calibrated ?? row.probability) * 100).toFixed(1)} %
+                      <div className="text-xs text-slate-400">
+                        {row.odds != null && `Necesita ${(100 / row.odds).toFixed(1)} %`}
+                      </div>
+                    </td>
                     <td className="px-3 py-2">{row.odds?.toFixed(2)}</td>
                     <td className="px-3 py-2 text-xs text-slate-400">
                       {row.reasons?.length
                         ? row.reasons.map(reason => REASON_LABELS[reason] ?? reason.replaceAll("_", " ")).join(" · ")
                         : recommendation?.market === row.market ? "Recomendada" : "Elegible"}
+                      {row.estimated_ev != null && (
+                        <div>EV estimado {row.estimated_ev > 0 ? "+" : ""}{(row.estimated_ev * 100).toFixed(1)} %</div>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -79,13 +95,17 @@ export default async function CapturedPrediction({ params }: { params: { id: str
       <details className="rounded-lg border border-surface-border p-3 text-sm text-slate-300">
         <summary className="cursor-pointer">Todos los mercados y motivos del corte</summary>
         <ul className="mt-2 space-y-1">
-          {publication.ranking.map(row => (
-            <li key={row.market}>
-              {MARKET_DISPLAY_NAMES[row.market] ?? row.market} · {(row.probability * 100).toFixed(1)} % original
-              {row.odds != null && ` · Cuota ${row.odds.toFixed(2)}`}
-              {row.reasons?.length ? ` · ${row.reasons.map(reason => REASON_LABELS[reason] ?? reason.replaceAll("_", " ")).join(" · ")}` : ""}
-            </li>
-          ))}
+          {publication.ranking.map(row => {
+            const price = referencePrice(row);
+            return (
+              <li key={row.market}>
+                {MARKET_DISPLAY_NAMES[row.market] ?? row.market} · {((row.calibrated ?? row.probability) * 100).toFixed(1)} %
+                {row.calibrated == null ? " original" : " calibrada"}
+                {price != null && ` · ${row.odds == null ? "Cuota de referencia" : "Cuota"} ${price.toFixed(2)}`}
+                {row.reasons?.length ? ` · ${row.reasons.map(reason => REASON_LABELS[reason] ?? reason.replaceAll("_", " ")).join(" · ")}` : ""}
+              </li>
+            );
+          })}
         </ul>
       </details>
 

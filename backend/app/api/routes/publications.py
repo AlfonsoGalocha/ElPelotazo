@@ -153,6 +153,13 @@ def round_accuracy(db: Session = Depends(get_db)):
     return rounds
 
 
+@router.get("/bot-bankroll")
+def bot_bankroll(db: Session = Depends(get_db)):
+    from backend.app.services.bot_bankroll import bot_report
+
+    return bot_report(db)
+
+
 @router.get("/{match_id}")
 def publication_detail(match_id: int, db: Session = Depends(get_db)):
     publication = db.get(FixturePublication, match_id)

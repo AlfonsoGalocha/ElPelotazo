@@ -535,6 +535,18 @@ def publish_upcoming() -> None:
     typer.echo(f"[publish-upcoming] {checked} partidos comprobados")
 
 
+@app.command("bot-decision")
+def bot_decision(
+    early: bool = typer.Option(False, help="Fija la decisión de hoy antes de la ventana automática."),
+    dry_run: bool = typer.Option(False, help="Consulta las opciones actuales sin registrar la decisión."),
+) -> None:
+    from backend.app.services.bot_bankroll import capture_bot_decision
+
+    with session_scope() as db:
+        decision = capture_bot_decision(db, early=early or dry_run, dry_run=dry_run)
+    typer.echo(json.dumps(decision, ensure_ascii=False))
+
+
 @app.command("reconcile-published-corners", hidden=True)
 @app.command("reconcile-corners")
 def reconcile_corners(

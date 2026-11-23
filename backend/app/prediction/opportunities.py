@@ -24,6 +24,7 @@ class Opportunity:
     reasons: tuple[str, ...]
     confidence_reasons: tuple[str, ...]
     score: float | None
+    probability_source: str = "calibrated"
 
     @property
     def high_confidence(self):
@@ -65,7 +66,7 @@ def ranking_score(probability, ev, reliability, quality, freshness, interval_qua
     return weights[0] * probability + weights[1] * normalized_ev + weights[2] * evidence
 
 
-def assess_opportunity(prediction, odds, market_key, settings, now, reliability, flags):
+def assess_opportunity(prediction, odds, market_key, settings, now, reliability, flags, *, allow_original=False):
     match = prediction.match
     price_floor, price_ceiling = settings.min_opportunity_odds, settings.max_opportunity_odds
     max_age = settings.max_odds_age_minutes or settings.opportunity_max_odds_age_minutes
@@ -86,6 +87,9 @@ def assess_opportunity(prediction, odds, market_key, settings, now, reliability,
     reference_pool = in_band or exact
     reference = quote or max(reference_pool, key=lambda row: (row.price, row.bookmaker), default=None)
     probability = prediction.calibrated_probability
+    original = probability is None and allow_original
+    if original:
+        probability = prediction.model_probability
     low, high = prediction.uncertainty_low, prediction.uncertainty_high
     has_interval = valid_probability(low) and valid_probability(high) and low <= high
     break_even = 1 / reference.price if reference else None
@@ -130,7 +134,7 @@ def assess_opportunity(prediction, odds, market_key, settings, now, reliability,
         reasons.append("ev_estimado_no_positivo")
     if CONTRADICTION in flags:
         reasons.append("mercado_contradictorio")
-    confidence = []
+    confidence = ["probabilidad_original"] if original else []
     if not has_interval or high - low > .30:
         confidence.append("incertidumbre_elevada_o_no_disponible")
     if conservative is None or conservative <= 0:
@@ -151,7 +155,7 @@ def assess_opportunity(prediction, odds, market_key, settings, now, reliability,
         )
     return Opportunity(
         quote, reference, max_age, quote_age(reference, now) if reference else None,
-        probability, break_even, ev, conservative, tuple(dict.fromkeys(reasons)), tuple(confidence), score,
+        probability, break_even, ev, conservative, tuple(dict.fromkeys(reasons)), tuple(confidence), score, "original" if original else "calibrated",
     )
 
 

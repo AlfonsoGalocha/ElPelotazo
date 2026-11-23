@@ -1,17 +1,22 @@
 import Link from "next/link";
-import { getPublications, getTopSignals } from "@/lib/api";
+import { getBotBankroll, getPublications, getTopSignals } from "@/lib/api";
+import BotBankrollBoard from "@/components/BotBankrollBoard";
 import OpportunityEquity from "@/components/OpportunityEquity";
 import { PublicationRows } from "@/components/PublicationBoard";
 
 export default async function OpportunityPerformance() {
-  const [report, current] = await Promise.all([
+  const [report, bot, current] = await Promise.all([
     getPublications().catch(() => null),
+    getBotBankroll().catch(() => null),
     getTopSignals({ limit: 10, scope: "current_round" }, true).catch(() => null),
   ]);
   const p = report?.performance;
   return (
     <main className="space-y-5">
       <h1 className="text-2xl font-bold">Rendimiento de oportunidades</h1>
+      <BotBankrollBoard report={bot} />
+      <details className="space-y-3 rounded-xl border border-surface-border p-4">
+      <summary className="cursor-pointer font-medium">Histórico de recomendaciones oficiales</summary>
       <p className="text-sm text-slate-400">Resultados teóricos con una unidad por recomendación registrada en el corte oficial.</p>
       {p && p.n > 0 && <dl className="grid grid-cols-2 gap-3 rounded-xl border border-surface-border p-4 sm:grid-cols-4">
         {[
@@ -47,6 +52,7 @@ export default async function OpportunityPerformance() {
       )}
       {report && p && p.n > 0 && <PublicationRows rows={report.recommendations} />}
       {!report && <p>No se pudo consultar el rendimiento.</p>}
+      </details>
     </main>
   );
 }

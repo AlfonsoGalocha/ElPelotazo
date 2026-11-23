@@ -43,7 +43,7 @@ function HistoryMatchRow({ row }: { row: MatchHistory }) {
   return (
     <tr className="border-t border-surface-border">
       <td className="px-3 py-2">
-        <Link href={`/history/${row.match.id}`} className="flex items-center gap-1.5 text-slate-200 hover:underline">
+        <Link href={row.official_capture ? `/prediction-history/${row.match.id}` : `/history/${row.match.id}`} className="flex items-center gap-1.5 text-slate-200 hover:underline">
           <TeamLogo name={row.match.home_team.canonical_name} logoUrl={row.match.home_team.logo_url} size="sm" />
           {row.match.home_team.canonical_name} vs {row.match.away_team.canonical_name}
           <TeamLogo name={row.match.away_team.canonical_name} logoUrl={row.match.away_team.logo_url} size="sm" />
@@ -58,15 +58,6 @@ function HistoryMatchRow({ row }: { row: MatchHistory }) {
       <td className="px-3 py-2 text-slate-300">
         <PublishedSelection model selection={row.evaluated_model_pick} missing="Sin pronóstico prepartido evaluable" />
       </td>
-      <td className="px-3 py-2 text-slate-300">
-        {row.official_capture && !row.official_recommendation ? (
-          <Link href={`/prediction-history/${row.match.id}`} className="text-xs text-accent underline">
-            Corte registrado · ver descartes
-          </Link>
-        ) : (
-          <PublishedSelection selection={row.official_recommendation} missing={row.official_capture === false ? "Sin corte oficial" : "Sin recomendación registrada"} />
-        )}
-      </td>
     </tr>
   );
 }
@@ -79,8 +70,7 @@ function HistoryMatchTable({ rows }: { rows: MatchHistory[] }) {
           <tr>
             <th className="px-3 py-2">Partido</th>
             <th className="px-3 py-2">Resultado</th>
-            <th className="px-3 py-2">Pronóstico evaluado del modelo</th>
-            <th className="px-3 py-2">Recomendación oficial</th>
+            <th className="px-3 py-2">Pronóstico que cuenta para el acierto</th>
           </tr>
         </thead>
         <tbody>

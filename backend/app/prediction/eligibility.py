@@ -12,8 +12,8 @@ from backend.app.prediction.market_labels import MARKET_DEFINITIONS
 from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
 
 
-def active_market():
-    return Prediction.market.in_(tuple(MARKET_DEFINITIONS) + tuple(SECONDARY_MARKET_DEFINITIONS))
+def active_market(market=Prediction.market):
+    return market.in_(tuple(MARKET_DEFINITIONS) + tuple(SECONDARY_MARKET_DEFINITIONS))
 
 
 def stored_pre_kickoff():
