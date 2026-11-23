@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { getBotBankroll, getHistory } from "@/lib/api";
 import BotBankrollBoard from "@/components/BotBankrollBoard";
 import HistoryBoard from "@/components/HistoryBoard";
@@ -17,6 +18,7 @@ export default async function OpportunityPerformance() {
         <a href="#acierto">Acierto y simulación</a>
         <a href="#historico">Histórico por jornada</a>
         <a href="#banca">Banca del bot</a>
+        <Link href="/opportunity-performance/strategies">Laboratorio de estrategias</Link>
       </nav>
       <div id="acierto" className="scroll-mt-20"><RoundAccuracy /></div>
       <section id="historico" className="scroll-mt-20 space-y-3">

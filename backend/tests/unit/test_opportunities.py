@@ -34,7 +34,7 @@ def quote(**changes):
 
 def assess(odds=None, p=None, reliability=None, flags=()):
     return assess_opportunity(
-        p or prediction(), [quote()] if odds is None else odds, MARKET, Settings(), NOW, reliability, flags,
+        p or prediction(), [quote()] if odds is None else odds, MARKET, Settings(min_opportunity_odds=1.35, max_opportunity_odds=1.90), NOW, reliability, flags,
     )
 
 

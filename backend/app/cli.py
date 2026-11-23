@@ -535,6 +535,15 @@ def publish_upcoming() -> None:
     typer.echo(f"[publish-upcoming] {checked} partidos comprobados")
 
 
+@app.command("capture-strategies")
+def capture_strategies() -> None:
+    """Archive prospective selections for fixtures entering the final hour."""
+    from backend.app.services.strategy_operations import run_strategy_scan
+
+    count = run_strategy_scan()
+    typer.echo(f"[capture-strategies] {count} cortes registrados")
+
+
 @app.command("bot-decision")
 def bot_decision(
     early: bool = typer.Option(False, help="Fija la decisión de hoy antes de la ventana automática."),

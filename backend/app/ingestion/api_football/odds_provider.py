@@ -47,6 +47,7 @@ import datetime as dt
 import re
 import time
 
+from backend.app.config.settings import get_settings
 from backend.app.ingestion.api_football.client import LEAGUE_IDS, ApiFootballClient
 from backend.app.ingestion.base import FixtureOddsSnapshot, RawOddsRecord
 from backend.app.utils.dates import season_label as season_label_from_date
@@ -128,7 +129,6 @@ class ApiFootballOddsProvider(ApiFootballClient):
     # peticiones (y cupo del limite por minuto) que hacian falta para los
     # partidos que si tienen cuota real que traer. 15 dias (no 14 exacto)
     # como margen de seguridad por husos horarios/redondeo de fecha.
-    DEFAULT_WINDOW_DAYS = 15
 
     def fetch_odds(self, competition_code: str) -> list[FixtureOddsSnapshot]:
         """Interfaz esperada por `data_service.attach_odds_to_scheduled_matches`
@@ -142,7 +142,7 @@ class ApiFootballOddsProvider(ApiFootballClient):
             competition_code,
             season_year,
             today,
-            today + dt.timedelta(days=self.DEFAULT_WINDOW_DAYS),
+            today + dt.timedelta(days=get_settings().api_football_odds_window_days),
         )
 
     def fetch_odds_for_window(
@@ -180,7 +180,7 @@ class ApiFootballOddsProvider(ApiFootballClient):
         # la disparo -- asi se queda una cuota vieja varios ciclos. Mismo
         # remedio ya usado en `cli.py::update_international` para el mismo
         # problema real (ahi entre competiciones, aqui entre partidos).
-        for i, fixture_payload in enumerate(fixtures):
+        for i, fixture_payload in enumerate(sorted(fixtures, key=lambda row: dt.datetime.fromisoformat(row["fixture"]["date"]))):
             if i > 0:
                 time.sleep(1)
             fixture_id = fixture_payload["fixture"]["id"]

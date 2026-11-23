@@ -501,3 +501,56 @@ export type BotBankroll = {
 export function getBotBankroll(trial = false) {
   return apiFetch<BotBankroll>(trial ? "/publications/bot-bankroll?trial=true" : "/publications/bot-bankroll");
 }
+
+export type ShadowEconomics = {
+  selections: number; settled: number; wins: number; losses: number; void: number;
+  accuracy: number | null; mean_odds: number | null; mean_probability: number | null;
+  mean_ev: number | null; profit_cents: number; roi: number | null; drawdown_cents: number;
+  roi_interval: [number, number] | null;
+  curve: { at: string; profit_cents: number }[];
+};
+
+export type ShadowReport = {
+  mode: "prospective_shadow";
+  fixtures: number;
+  band: string;
+  bands: Record<string, [number, number]>;
+  strategies: Record<string, ShadowEconomics & {
+    common_quality: { n: number; brier: number | null; log_loss: number | null; brier_interval: [number, number] | null };
+    by_league: Record<string, ShadowEconomics>;
+    by_market: Record<string, ShadowEconomics>;
+    by_odds: Record<string, ShadowEconomics>;
+  }>;
+  history: {
+    match_id: number; match: string; capture: string;
+    decision_reasons: Record<string, string | null>;
+    decisions: Record<string, {
+      market: string; price: number; bookmaker: string; probability: number;
+      outcome: string; corrected_source: string; corrected_model_version_id?: number; reference: { houses: number } | null;
+    } | null>;
+  }[];
+};
+
+export function getShadowReport(band = "principal") {
+  return apiFetch<ShadowReport>(`/publications/strategies?band=${encodeURIComponent(band)}`);
+}
+
+type ShadowOperationalFixture = {
+  match_id: number; match: string; league: string; kickoff: string; window_opens: string;
+  reason?: string; captured_at?: string; selections?: number;
+};
+
+export type ShadowOperations = {
+  status: string; scheduler_active: boolean; last_scan: string | null; last_success: string | null;
+  last_odds_update: string | null; latest_quote_origin: string | null; latest_quote_query: string | null;
+  next_capture: ShadowOperationalFixture | null; upcoming: ShadowOperationalFixture[];
+  missed: ShadowOperationalFixture[]; captured: ShadowOperationalFixture[]; pending_selections: number;
+  errors: { at: string; type: string }[];
+  provider_errors: { at: string; league: string; provider: string }[];
+  last_prediction_model: number | null;
+  calibrations: { id: number; dataset: string; reason: string }[];
+};
+
+export function getShadowOperations() {
+  return apiFetch<ShadowOperations>("/publications/strategies/operations");
+}

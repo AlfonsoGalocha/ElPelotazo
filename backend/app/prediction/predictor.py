@@ -70,6 +70,34 @@ class MarketPredictionOutput:
     uncertainty_low: float | None = None
     uncertainty_high: float | None = None
     risk_adjusted_expected_value: float | None = None
+    calibration_source: str | None = None
+
+
+def apply_coherent_calibration(outputs, config):
+    """Apply the validated policy only to artifacts that opt into the new format."""
+    from collections import defaultdict
+
+    from backend.app.models.calibration.coherent import corrected_forecasts
+
+    by_match = defaultdict(dict)
+    for row in outputs:
+        by_match[row.match_id][row.market] = row
+    for rows in by_match.values():
+        probabilities = corrected_forecasts(
+            {m: row.model_probability for m, row in rows.items()},
+            {m: row.calibrated_probability for m, row in rows.items()},
+            config.get("temperature"),
+        )
+        for market, (probability, source) in probabilities.items():
+            row = rows[market]
+            if source == "original_derived_1x2":
+                row.model_probability = probability
+                row.fair_odds = float(fair_odds(probability))
+                row.edge = compute_edge(probability, row.market_probability)
+                row.expected_value = compute_expected_value(probability, row.market_odds)
+            row.calibrated_probability = probability if not source.startswith("original") else None
+            row.calibration_source = source
+    return outputs
 
 
 def predict_markets_for_table(

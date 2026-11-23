@@ -19,6 +19,7 @@ from backend.app.features.goals import build_match_feature_table, feature_column
 from backend.app.market.consensus import compute_market_consensus
 from backend.app.prediction.market_labels import DOUBLE_CHANCE_COMPONENTS
 from backend.app.prediction.predictor import (
+    apply_coherent_calibration,
     predict_markets_for_table,
     predict_secondary_markets_for_table,
 )
@@ -199,6 +200,26 @@ def _persist_team_match_features(
     db.flush()
 
 
+def shadow_result_forecasts(db: Session, match: Match, artifact: dict, cutoff: dt.datetime) -> dict[str, float]:
+    """Score one still-upcoming fixture with an inactive candidate, without persistence."""
+    from backend.app.models.calibration.coherent import RESULT
+
+    matches = load_matches_dataframe(db, match.competition_id)
+    if matches.empty:
+        return {}
+    allowed = matches[(matches["match_id"] == match.id)
+                      | ((matches["date"] < cutoff) & (matches["status"] == "finished"))]
+    table = build_match_feature_table(allowed)
+    target = table[table["match_id"] == match.id]
+    if target.empty:
+        return {}
+    outputs = predict_markets_for_table(
+        target, artifact["dixon_coles"], ml_model=artifact.get("ml_classifier"),
+        ensemble_weights=artifact.get("ensemble_weights"),
+    )
+    return {row.market: row.model_probability for row in outputs if row.market in RESULT}
+
+
 def generate_predictions_for_competition(
     db: Session, competition_code: str, target_date: dt.date | None = None
 ) -> list[Prediction]:
@@ -311,6 +332,9 @@ def generate_predictions_for_competition(
             calibrators=artifact.get("calibrators"),
         )
 
+    if "coherent_calibration" in artifact:
+        apply_coherent_calibration(outputs, artifact["coherent_calibration"])
+
     # Sin esto, cada `predict`/`predict-upcoming`/`refresh` que se ejecuta
     # sobre los MISMOS partidos programados (algo normal: es el flujo pensado
     # para refrescar el dashboard varias veces al dia) va ACUMULANDO filas
@@ -404,7 +428,7 @@ def generate_predictions_for_competition(
             expected_value=output.expected_value,
             confidence=output.confidence,
             data_quality=output.data_quality,
-            explanation={"factors": output.explanation},
+            explanation={"factors": output.explanation, **({"calibration_source": output.calibration_source} if output.calibration_source else {})},
             features_used={
                 "feature_names": [f["feature"] for f in output.explanation],
                 "model_artifact_sha256": model_artifact_sha256,

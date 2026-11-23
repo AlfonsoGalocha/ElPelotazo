@@ -17,7 +17,7 @@ from backend.app.db.models.modeling import ModelVersion
 from backend.app.features.goals import build_match_feature_table
 from backend.app.models.calibration.metrics import brier_score, expected_calibration_error, log_loss_score
 from backend.app.prediction.market_labels import label_for_market
-from backend.app.prediction.predictor import predict_markets_for_table
+from backend.app.prediction.predictor import apply_coherent_calibration, predict_markets_for_table
 from backend.app.services.match_service import load_matches_dataframe
 from backend.app.services.model_service import load_model_artifact
 from backend.app.utils.logging import get_logger
@@ -39,6 +39,8 @@ def _probabilities(artifact: dict, table: pd.DataFrame) -> dict[tuple[int, str],
         ensemble_weights=artifact.get("ensemble_weights"),
         calibrators=artifact.get("calibrators"),
     )
+    if "coherent_calibration" in artifact:
+        apply_coherent_calibration(outputs, artifact["coherent_calibration"])
     return {
         (output.match_id, output.market): (
             output.calibrated_probability
@@ -91,6 +93,9 @@ def _paired_metrics(table: pd.DataFrame, previous: dict, candidate: dict) -> dic
 
 def evaluate_and_promote(db: Session, competition_code: str, candidate: ModelVersion) -> dict:
     """Keep the candidate inactive and report the evidence available for review."""
+    if not candidate.created_at or candidate.training_end is None or candidate.training_end > candidate.created_at.date():
+        return {"competition": competition_code, "promoted": False, "reason": "uncertified_training_cutoff"}
+
     if candidate.is_active is True:
         return {"competition": competition_code, "promoted": False, "reason": "already_active"}
 

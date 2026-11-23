@@ -169,6 +169,22 @@ def bot_bankroll(trial: bool = False, db: Session = Depends(get_db)):
     return bot_report(db, trial=trial)
 
 
+@router.get("/strategies")
+def strategies(band: str = "principal", db: Session = Depends(get_db)):
+    from backend.app.services.strategy_shadow import BANDS, strategy_report
+
+    if band not in BANDS:
+        raise HTTPException(status_code=422, detail="Rango experimental desconocido")
+    return strategy_report(db, band)
+
+
+@router.get("/strategies/operations")
+def strategies_operations(db: Session = Depends(get_db)):
+    from backend.app.services.strategy_operations import operations_report
+
+    return operations_report(db)
+
+
 @router.get("/{match_id}")
 def publication_detail(match_id: int, db: Session = Depends(get_db)):
     publication = db.get(FixturePublication, match_id)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -117,6 +118,8 @@ class Settings(BaseSettings):
     # cambiarlos en Configuracion sin reiniciar el backend -- ver
     # db/models/core.py::RankingConfig y services/ranking_config_service.py,
     # que lee la preferencia guardada y cae aqui solo si no hay ninguna.
+    api_football_odds_window_days: int = Field(default=15, ge=1, le=15)
+    shadow_min_probability: float = Field(default=.65, ge=0, le=1)
     min_opportunity_odds: float = 1.30
     max_opportunity_odds: float = 1.80
 

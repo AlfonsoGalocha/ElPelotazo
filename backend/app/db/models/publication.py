@@ -46,3 +46,26 @@ class BotTrialDecision(Base):
 
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class StrategyCapture(Base):
+    """Append-only comparison, independent of official decisions and betting policies."""
+
+    __tablename__ = "strategy_captures"
+
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"), primary_key=True)
+    captured_at = mapped_column(DateTime, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class StrategyScan(Base):
+    """Durable observations of automatic laboratory scans."""
+
+    __tablename__ = "strategy_scans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    started_at = mapped_column(DateTime, nullable=False, index=True)
+    finished_at = mapped_column(DateTime, nullable=False)
+    ok: Mapped[bool]
+    captures: Mapped[int | None]
+    error_type: Mapped[str | None] = mapped_column(String(100), nullable=True)

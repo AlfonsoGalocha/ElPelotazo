@@ -1,5 +1,6 @@
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: football
@@ -27,6 +28,7 @@ services:
       retries: 10
 
   backend:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -60,6 +62,7 @@ services:
       - ./data:/srv/data
 
   frontend:
+    restart: unless-stopped
     build:
       context: ./frontend
       dockerfile: Dockerfile
@@ -105,6 +108,7 @@ services:
   # una API externa caida un rato) no debe tumbar el contenedor: `|| true`
   # deja que el bucle siga y lo reintente en la siguiente vuelta.
   scheduler:
+    restart: unless-stopped
     # Desactiva el HEALTHCHECK heredado del Dockerfile de `backend` (hace
     # 'curl http://localhost:8000/health', pensado para el servidor web).
     # Este contenedor no sirve nada en el 8000 -- solo corre el bucle de
@@ -124,8 +128,12 @@ services:
       DATABASE_URL: postgresql+psycopg://football:football@postgres:5432/football_edge
       APP_ENV: production
       LOG_LEVEL: INFO
+      API_FOOTBALL_ODDS_WINDOW_DAYS: ${API_FOOTBALL_ODDS_WINDOW_DAYS:-7}
+      FOOTBALL_REFRESH_INTERVAL_SECONDS: ${FOOTBALL_REFRESH_INTERVAL_SECONDS:-3600}
     depends_on:
       postgres:
+        condition: service_healthy
+      backend:
         condition: service_healthy
     volumes:
       - ./models:/srv/models
@@ -169,6 +177,7 @@ services:
       - >
         (while true; do
           football-edge bot-decision || echo "[scheduler] no se pudo registrar la decisión del bot";
+          football-edge capture-strategies || echo "[scheduler] fallo corte de estrategias";
           football-edge publish-upcoming || echo "[scheduler] no se pudo publicar el corte prepartido";
           sleep 600;
         done) &
@@ -210,7 +219,7 @@ services:
           football-edge reconcile-corners --limit 5 || echo "[scheduler] fallo verificación de córners";
           football-edge evaluate || echo "[scheduler] fallo evaluate/settle, se reintenta en 1h";
           football-edge predict-upcoming || echo "[scheduler] fallo predict-upcoming, se reintenta en 1h";
-          deadline=$$(($$(date +%s) + 3600));
+          deadline=$$(($$(date +%s) + $$FOOTBALL_REFRESH_INTERVAL_SECONDS));
           while [ "$$(date +%s)" -lt "$$deadline" ]; do
             remaining=$$(($$deadline - $$(date +%s)));
             if [ "$$remaining" -le 0 ]; then break; fi;

@@ -344,6 +344,17 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     # que no corresponde a la probabilidad realmente usada para el edge.
     # Ajustado SOLO en el holdout (nunca visto por dixon_coles/ml_classifier
     # durante el fit), igual que `learn_ensemble_weight` -- no hay leakage.
+    from backend.app.models.calibration.coherent import RESULT, fit_temperature
+
+    result_temperature = None
+    result_validation = {"reason": "insufficient_sample"}
+    if all(market in p_ensemble_by_market and market in y_true_by_market for market in RESULT):
+        original = renormalize_mutually_exclusive_groups(p_ensemble_by_market)
+        x = np.column_stack([original[m] for m in RESULT])[calibration_mask]
+        y = np.column_stack([y_true_by_market[m] for m in RESULT])[calibration_mask]
+        result_temperature, result_validation = fit_temperature(
+            x, y.argmax(axis=1), eval_finished.loc[calibration_mask, "date"].to_numpy(),
+        )
     calibrators: dict[str, IsotonicCalibrator] = {}
     if int(calibration_mask.sum()) >= MIN_CALIBRATION_MATCHES:
         p_ensemble_by_market = renormalize_mutually_exclusive_groups(p_ensemble_by_market)
@@ -382,6 +393,8 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
             "n_holdout_matches": len(eval_finished),
             "reason": f"menos de {MIN_CALIBRATION_MATCHES} partidos en el holdout",
         }
+
+    metrics["joint_1x2"] = result_validation
 
     # Corners (seccion 18/19 del roadmap): un unico Poisson sobre el TOTAL
     # del partido. Se entrena y evalua igual que los mercados de goles, y
@@ -454,6 +467,13 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
         "ml_classifier": selected_ml,
         "ensemble_weights": ensemble_weights,
         "calibrators": calibrators,
+        "coherent_calibration": {"temperature": result_temperature},
+        "training_manifest": {
+            "base_fit_match_ids": train_table["match_id"].astype(int).tolist(),
+            "holdout_match_ids": eval_finished["match_id"].astype(int).tolist(),
+            "ensemble_selection_match_ids": eval_finished.loc[selection_mask, "match_id"].astype(int).tolist(),
+            "calibration_pool_match_ids": eval_finished.loc[calibration_mask, "match_id"].astype(int).tolist(),
+        },
     }
     if "corners" in secondary_models:
         artifact_payload["corners_model"] = secondary_models["corners"]
