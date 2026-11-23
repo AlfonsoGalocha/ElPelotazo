@@ -37,3 +37,12 @@ class BotDecision(Base):
 
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class BotTrialDecision(Base):
+    """Standalone forward test with its own virtual opening balance."""
+
+    __tablename__ = "bot_trial_decisions"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)

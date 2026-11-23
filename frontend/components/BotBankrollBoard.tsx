@@ -11,14 +11,14 @@ const decisions = {
   doble_oportunidad: "Doble oportunidad del favorito", pasar: "Pasar",
 };
 
-export default function BotBankrollBoard({ report }: { report: BotBankroll | null }) {
+export default function BotBankrollBoard({ report, trial = false }: { report: BotBankroll | null; trial?: boolean }) {
   if (!report) return <p>No se pudo consultar la banca del bot.</p>;
   const { initial_cents, balance_cents, reserved_cents, days } = report;
   return (
     <section className="space-y-4 rounded-xl border border-surface-border bg-card p-5">
-      <h2 className="text-lg font-semibold">Banca del bot</h2>
+      <h2 className="text-lg font-semibold">{trial ? "Prueba prepartido con 300 €" : "Banca del bot"}</h2>
       <p className="text-sm text-slate-400">
-        El bot decide antes del primer partido del día en La Liga, Premier y Serie A. Los cortes nuevos reparten todo el saldo virtual disponible si hay selecciones aptas.
+        {trial ? "Banca virtual independiente. Los tickets se fijan antes del inicio y se liquidan con los resultados reales." : "El bot decide antes del primer partido del día en La Liga, Premier y Serie A. Los cortes nuevos reparten todo el saldo virtual disponible si hay selecciones aptas."}
       </p>
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[

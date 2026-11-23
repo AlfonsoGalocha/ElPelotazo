@@ -497,6 +497,6 @@ export type BotBankroll = {
   }[];
 };
 
-export function getBotBankroll() {
-  return apiFetch<BotBankroll>("/publications/bot-bankroll");
+export function getBotBankroll(trial = false) {
+  return apiFetch<BotBankroll>(trial ? "/publications/bot-bankroll?trial=true" : "/publications/bot-bankroll");
 }

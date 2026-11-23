@@ -539,11 +539,12 @@ def publish_upcoming() -> None:
 def bot_decision(
     early: bool = typer.Option(False, help="Fija la decisión de hoy antes de la ventana automática."),
     dry_run: bool = typer.Option(False, help="Consulta las opciones actuales sin registrar la decisión."),
+    trial: bool = typer.Option(False, help="Usa una banca de prueba independiente de 300 euros."),
 ) -> None:
     from backend.app.services.bot_bankroll import capture_bot_decision
 
     with session_scope() as db:
-        decision = capture_bot_decision(db, early=early or dry_run, dry_run=dry_run)
+        decision = capture_bot_decision(db, early=early or dry_run, dry_run=dry_run, trial=trial)
     typer.echo(json.dumps(decision, ensure_ascii=False))
 
 
@@ -562,6 +563,7 @@ def reconcile_corners(
     from backend.app.db.models.publication import FixturePublication
     from backend.app.ingestion.api_football.client import ApiFootballClient
     from backend.app.services.corner_reconciliation import reconcile
+    from backend.app.services.publication_service import latest_model_picks
 
     now = dt.datetime.utcnow()
     with session_scope() as db:
@@ -581,6 +583,17 @@ def reconcile_corners(
             or_(MatchStatistics.home_corners.is_(None), MatchStatistics.home_corners < 0,
                 MatchStatistics.away_corners.is_(None), MatchStatistics.away_corners < 0),
         ).order_by(published.desc(), Match.kickoff_utc.desc(), Match.id).all()
+
+        recent_ids = [
+            match_id for match_id, in db.query(Match.id).filter(
+                Match.status == "finished", Match.kickoff_utc >= now - dt.timedelta(days=14),
+            )
+        ]
+        corner_picks = {
+            match_id for match_id, pick in latest_model_picks(db, recent_ids).items()
+            if pick.market.startswith("corners_")
+        }
+        rows.sort(key=lambda row: row.id not in corner_picks)
 
         unattempted = []
         retries = []

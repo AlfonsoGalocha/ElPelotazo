@@ -4,14 +4,16 @@ import HistoryBoard from "@/components/HistoryBoard";
 import RoundAccuracy from "@/components/RoundAccuracy";
 
 export default async function OpportunityPerformance() {
-  const [bot, history] = await Promise.all([
+  const [bot, trial, history] = await Promise.all([
     getBotBankroll().catch(() => null),
+    getBotBankroll(true).catch(() => null),
     getHistory(undefined, 200, true).catch(() => null),
   ]);
 
   return (
     <main className="space-y-5">
       <h1 className="text-2xl font-bold">Rendimiento de oportunidades</h1>
+      {!!trial?.days.length && <BotBankrollBoard report={trial} trial />}
       <BotBankrollBoard report={bot} />
       <RoundAccuracy />
       <section className="space-y-3">

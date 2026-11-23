@@ -87,3 +87,21 @@ def test_double_can_use_available_balance_without_repeating_legs(monkeypatch):
     assert len(tickets) == 1
     assert tickets[0]["stake_cents"] == 30_000
     assert tickets[0]["legs"] == [{"match_id": 1}, {"match_id": 2}]
+
+
+def test_trial_report_keeps_its_own_opening_balance(db_session):
+    from datetime import date
+
+    from backend.app.db.models.publication import BotDecision, BotTrialDecision
+    from backend.app.services.bot_bankroll import bot_report
+
+    day = date(2026, 11, 23)
+    db_session.add(BotDecision(day=day, payload={"day": day.isoformat(), "tickets": []}))
+    db_session.flush()
+    assert bot_report(db_session, trial=True)["days"] == []
+    db_session.add(BotTrialDecision(day=day, payload={"day": day.isoformat(), "tickets": [], "trial": True}))
+    db_session.flush()
+    report = bot_report(db_session, trial=True)
+    assert report["balance_cents"] == 30_000
+    assert report["days"][0]["trial"] is True
+    assert "trial" not in bot_report(db_session)["days"][0]

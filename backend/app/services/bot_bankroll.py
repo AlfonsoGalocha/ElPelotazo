@@ -13,7 +13,7 @@ from backend.app.config.settings import get_settings
 from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
-from backend.app.db.models.publication import BotDecision
+from backend.app.db.models.publication import BotDecision, BotTrialDecision
 from backend.app.prediction.anomaly import compute_anomaly_flags
 from backend.app.prediction.eligibility import observed_corner_total
 from backend.app.prediction.opportunities import assess_opportunity, forecast_priority
@@ -90,14 +90,15 @@ def make_tickets(best, available_cents):
     return funded
 
 
-def capture_bot_decision(db, *, now=None, early=False, dry_run=False):
+def capture_bot_decision(db, *, now=None, early=False, dry_run=False, trial=False):
     from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP
 
     now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     day = now.replace(tzinfo=dt.timezone.utc).astimezone(MADRID).date()
     if day < START_DATE:
         return None
-    existing = db.get(BotDecision, day)
+    decision_model = BotTrialDecision if trial else BotDecision
+    existing = db.get(decision_model, day)
     if existing is not None and not dry_run:
         return existing.payload
     fixtures = competition_fixtures(db, day)
@@ -143,15 +144,15 @@ def capture_bot_decision(db, *, now=None, early=False, dry_run=False):
             chosen_market=pick[0].market if pick else None,
         ))
     best.sort(key=lambda pair: (pair[1].score, *forecast_priority(pair)), reverse=True)
-    balance = bot_report(db)["balance_cents"]
+    balance = INITIAL_CENTS if trial else bot_report(db)["balance_cents"]
     payload = dict(day=day.isoformat(), captured_at=now.isoformat() + "Z",
                    policy_version=POLICY_VERSION, odds_band=[floor, ceiling], available_at_cut_cents=balance,
                    fixtures=decisions, tickets=make_tickets(best, balance))
     if dry_run:
         return payload
     insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
-    db.execute(insert(BotDecision).values(day=day, payload=payload).on_conflict_do_nothing(index_elements=["day"]))
-    return db.get(BotDecision, day).payload
+    db.execute(insert(decision_model).values(day=day, payload=payload).on_conflict_do_nothing(index_elements=["day"]))
+    return db.get(decision_model, day).payload
 
 
 def settle_ticket(ticket, fixtures):
@@ -174,8 +175,9 @@ def settle_ticket(ticket, fixtures):
     return ("void" if odds == 1 else "won"), returned
 
 
-def bot_report(db):
-    days = db.query(BotDecision).order_by(BotDecision.day).all()
+def bot_report(db, *, trial=False):
+    decision_model = BotTrialDecision if trial else BotDecision
+    days = db.query(decision_model).order_by(decision_model.day).all()
     ids = {leg["match_id"] for day in days for ticket in day.payload["tickets"] for leg in ticket["legs"]}
     fixtures = {}
     for match, corners in db.query(Match, observed_corner_total()).filter(Match.id.in_(ids)):
@@ -189,6 +191,8 @@ def bot_report(db):
     reserved = 0
     rows = []
     for day in days:
+        if trial:
+            balance, reserved = INITIAL_CENTS, 0
         tickets = []
         day_profit = 0
         for ticket in day.payload["tickets"]:
