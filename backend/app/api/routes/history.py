@@ -103,6 +103,7 @@ def _published_selections(match, publication, corners, model_pick=None):
             "odds": price if has_price else None,
         }
     return {
+        "official_capture": publication is not None,
         "principal_1x2": evaluate(principal),
         "official_recommendation": evaluate(publication.recommendation, True) if publication else None,
         "evaluated_model_pick": evaluate(model_row),

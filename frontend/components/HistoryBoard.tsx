@@ -59,7 +59,13 @@ function HistoryMatchRow({ row }: { row: MatchHistory }) {
         <PublishedSelection model selection={row.evaluated_model_pick} missing="Sin pronóstico prepartido evaluable" />
       </td>
       <td className="px-3 py-2 text-slate-300">
-        <PublishedSelection selection={row.official_recommendation} missing="Sin recomendación registrada" />
+        {row.official_capture && !row.official_recommendation ? (
+          <Link href={`/prediction-history/${row.match.id}`} className="text-xs text-accent underline">
+            Corte registrado · ver descartes
+          </Link>
+        ) : (
+          <PublishedSelection selection={row.official_recommendation} missing={row.official_capture === false ? "Sin corte oficial" : "Sin recomendación registrada"} />
+        )}
       </td>
     </tr>
   );

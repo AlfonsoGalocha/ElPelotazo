@@ -222,6 +222,7 @@ class MatchHistoryOut(BaseModel):
     predictions: list[HistoryPredictionOut]
     best_prediction_id: int | None
     principal_1x2: PublishedHistorySelection | None = None
+    official_capture: bool | None = None
     official_recommendation: PublishedHistorySelection | None = None
     evaluated_model_pick: PublishedHistorySelection | None = None
 

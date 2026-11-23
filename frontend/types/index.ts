@@ -226,6 +226,7 @@ export interface MatchHistory {
   predictions: HistoryPrediction[];
   best_prediction_id: number | null;
   principal_1x2?: PublishedHistorySelection | null;
+  official_capture?: boolean | null;
   official_recommendation?: PublishedHistorySelection | null;
   evaluated_model_pick?: PublishedHistorySelection | null;
 }
