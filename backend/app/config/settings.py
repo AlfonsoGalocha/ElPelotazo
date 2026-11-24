@@ -121,6 +121,10 @@ class Settings(BaseSettings):
     api_football_odds_window_days: int = Field(default=15, ge=1, le=15)
     shadow_min_probability: float = Field(default=.65, ge=0, le=1)
     min_opportunity_odds: float = 1.30
+    # Virtual bot capital policy (services/bot_capital.py). The experimental
+    # aggressive profile needs BOT_AGGRESSIVE_AUTHORIZED=true as well.
+    bot_risk_profile: str = "moderado"
+    bot_aggressive_authorized: bool = False
     max_opportunity_odds: float = 1.80
 
     # --- Calidad de mercado (prediction/market_quality.py) ---

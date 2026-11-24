@@ -208,6 +208,13 @@ def bot_bankroll(trial: bool = False, live: bool = False, db: Session = Depends(
     return bot_report(db, trial=trial, include_live=live)
 
 
+@router.get("/bot-bankroll/simulations")
+def bot_bankroll_simulations():
+    from backend.app.services.bot_bankroll import risk_simulations
+
+    return risk_simulations()
+
+
 @router.get("/strategies")
 def strategies(band: str = "principal", competition: str | None = None, db: Session = Depends(get_db)):
     from backend.app.services.strategy_shadow import BANDS, strategy_report

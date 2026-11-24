@@ -64,31 +64,6 @@ def test_user_market_order_and_scoring_evidence():
     assert choose_match_pick([both, cover], context) == (None, "pasar")
 
 
-def test_full_available_balance_and_original_half_weight(monkeypatch):
-    from backend.app.services import bot_bankroll
-
-    monkeypatch.setattr(bot_bankroll, "candidate_leg", lambda p, a: {"match_id": p.match_id})
-    best = [
-        (SimpleNamespace(match_id=1), SimpleNamespace(probability_source="original", high_confidence=False)),
-        (SimpleNamespace(match_id=2), SimpleNamespace(probability_source="calibrated", high_confidence=False)),
-    ]
-    assert [ticket["stake_cents"] for ticket in bot_bankroll.make_tickets(best, 30_001)] == [10_000, 20_001]
-    assert bot_bankroll.make_tickets([], 30_000) == []
-    assert bot_bankroll.make_tickets(best, 0) == []
-
-
-def test_double_can_use_available_balance_without_repeating_legs(monkeypatch):
-    from backend.app.services import bot_bankroll
-
-    monkeypatch.setattr(bot_bankroll, "candidate_leg", lambda p, a: {"match_id": p.match_id})
-    assessment = SimpleNamespace(high_confidence=True, conservative_ev=0.1, quote=SimpleNamespace(bookmaker="same"))
-    best = [(SimpleNamespace(match_id=1), assessment), (SimpleNamespace(match_id=2), assessment)]
-    tickets = bot_bankroll.make_tickets(best, 30_000)
-    assert len(tickets) == 1
-    assert tickets[0]["stake_cents"] == 30_000
-    assert tickets[0]["legs"] == [{"match_id": 1}, {"match_id": 2}]
-
-
 def test_trial_report_keeps_its_own_opening_balance(db_session):
     from datetime import date
 

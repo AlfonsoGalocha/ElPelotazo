@@ -460,10 +460,81 @@ export function getPublicationCoverage() {
 
 type BotTeamForm = { matches: number; wins: number; draws: number; losses: number };
 
+export type BotTicketKind = "auto_single" | "auto_double" | "manual_prematch" | "manual_live";
+
+export type BotPerformance = {
+  tickets: number; settled: number; pending: number; won: number; lost: number; void: number;
+  staked_cents: number; profit_cents: number; roi: number | null; hit_rate: number | null;
+};
+
+export type BotLeg = {
+  match_id: number;
+  match: string;
+  market: string;
+  competition?: string;
+  kickoff?: string;
+  probability?: number;
+  probability_source?: "original" | "calibrated";
+  effective_probability?: number | null;
+  confidence?: number;
+  confidence_components?: Record<string, number>;
+  ev?: number | null;
+  price: number;
+  bookmaker: string;
+  live?: { home: number; away: number; minute: number | null; extra: number | null; status: string; goal_met: boolean };
+};
+
+export type BotTicket = {
+  stake_cents: number;
+  returned_cents: number;
+  state: "won" | "lost" | "void" | "pending";
+  kind: BotTicketKind;
+  leg_states: ("won" | "lost" | "void" | "pending")[];
+  legs: BotLeg[];
+  price?: number;
+  probability?: number;
+  effective_probability?: number;
+  confidence?: number;
+  ev?: number;
+  effective_ev?: number;
+  bankroll_share?: number;
+  max_loss_cents?: number;
+  reason?: string;
+  double?: { sensitivity: { scenario: string; rho: number; probability: number; ev: number }[]; robust_ev: number; synthetic_price: boolean };
+};
+
+export type BotAlternative = {
+  description: string; feasible: boolean; chosen: boolean; verdict: string;
+  stakes_cents?: number[]; committed_cents?: number; committed_share?: number;
+  expected_profit_cents?: number; expected_log_growth?: number; robust_log_growth?: number;
+  loss_probability?: number; volatility_cents?: number; max_loss_cents?: number; max_loss_share?: number;
+  scenarios?: { outcome: Record<string, boolean>; probability: number; profit_cents: number }[];
+  binding_limits?: string[];
+};
+
+export type BotRiskProfile = {
+  name: string; label: string; kelly_fraction: number; max_single_fraction: number; max_single_cents: number;
+  max_double_fraction: number; max_exposure_fraction: number; min_reserve_fraction: number;
+  max_scenario_loss_fraction: number; experimental: boolean; max_single_at_equity_cents: number;
+};
+
 export type BotBankroll = {
   initial_cents: number;
   balance_cents: number;
   reserved_cents: number;
+  kind_labels: Record<BotTicketKind, string>;
+  summary: {
+    available_cents: number; committed_cents: number; equity_cents: number; net_profit_cents: number;
+    peak_equity_cents: number; max_drawdown: number; current_drawdown: number;
+    all: BotPerformance; automatic: BotPerformance; manual: BotPerformance;
+    by_kind: Record<BotTicketKind, BotPerformance>;
+  };
+  learning: { note: string; min_settled_for_adjustment: number } & Record<
+    "by_kind" | "by_staking" | "by_odds" | "by_probability" | "by_market" | "by_competition" | "by_confidence",
+    Record<string, BotPerformance>
+  >;
+  shadow: { cuts: number; note: string; banks: Record<string, { balance_cents: number; tickets: number; pending: number; profit_cents: number }> };
+  risk: { active: string; note: string | null; authorized_experimental: boolean; profiles: Record<string, BotRiskProfile> };
   days: {
     day: string;
     captured_at: string;
@@ -484,27 +555,40 @@ export type BotBankroll = {
         h2h: { matches: number; both_scored: number; over_2_5: number };
         favorite: "home" | "away" | null;
       };
+      combo_rejected?: { market: string; price: number; probability: number; ev: number | null; reasons: string[] }[];
     }[];
-    tickets: {
-      stake_cents: number;
-      returned_cents: number;
-      state: "won" | "lost" | "void" | "pending";
-      legs: {
-        match_id: number;
-        match: string;
-        market: string;
-        probability?: number;
-        probability_source?: "original" | "calibrated";
-        price: number;
-        bookmaker: string;
-        live?: { home: number; away: number; minute: number | null; extra: number | null; status: string; goal_met: boolean };
-      }[];
-    }[];
+    capital?: {
+      policy_version: string;
+      profile: BotRiskProfile;
+      profile_note: string | null;
+      equity_cents: number;
+      chosen: string;
+      reason: string;
+      multiplier: number;
+      evaluated_alternatives: number;
+      alternatives: BotAlternative[];
+      rejected_doubles: { matches: string[]; markets: string[]; price: number; reasons: string[]; model_probability: number }[];
+      accepted_doubles: { matches: string[]; markets: string[]; price: number; effective_probability: number; robust_ev: number }[];
+    };
+    tickets: BotTicket[];
   }[];
+};
+
+export type BotSimulations = {
+  paths: number; bets: number; initial_cents: number; assumptions: string;
+  worlds: Record<string, Record<string, {
+    median_final_cents: number; p5_final_cents: number; p95_final_cents: number; loss_probability: number;
+    halved_probability: number; median_max_drawdown: number; p95_max_drawdown: number;
+    median_stake_cents: number; p99_stake_cents: number; share_stakes_100_plus: number; bets_placed_share: number;
+  }>>;
 };
 
 export function getBotBankroll(trial = false, live = false) {
   return apiFetch<BotBankroll>(`/publications/bot-bankroll?trial=${trial}&live=${live}`);
+}
+
+export function getBotSimulations() {
+  return apiFetch<BotSimulations>("/publications/bot-bankroll/simulations");
 }
 
 export type ShadowEconomics = {
