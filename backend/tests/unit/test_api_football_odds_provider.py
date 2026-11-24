@@ -640,3 +640,24 @@ def test_corners_two_way_keeps_its_price_when_three_way_has_the_same_line():
     assert [(r.market, r.line, r.selection, r.price) for r in records] == [
         ("corners_total", 9.5, "over", 1.8),
     ]
+
+
+def test_team_to_score_maps_to_the_correct_team_and_full_match_line():
+    def bet(id, values):
+        return {"id": id, "values": [{"value": value, "odd": odds} for value, odds in values]}
+
+    records, _ = ApiFootballOddsProvider._parse_odds_response([{
+        "update": "2026-11-24T06:00:00+00:00",
+        "bookmakers": [{"name": "William Hill", "bets": [
+            bet(43, [("Yes", "1.40"), ("No", "2.75")]),
+            bet(44, [("Yes", "1.03"), ("No", "13.00")]),
+            bet(105, [("Over 0.5", "1.60")]),
+        ]}],
+    }])
+    assert [(r.market, r.line, r.selection, r.price) for r in records] == [
+        ("home_team_total_goals", .5, "over", 1.40),
+        ("home_team_total_goals", .5, "under", 2.75),
+        ("away_team_total_goals", .5, "over", 1.03),
+        ("away_team_total_goals", .5, "under", 13.00),
+    ]
+    assert all(r.provider_updated_at.isoformat() == "2026-11-24T06:00:00" for r in records)

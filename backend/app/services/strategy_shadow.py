@@ -6,12 +6,14 @@ import random
 import statistics
 from collections import defaultdict
 from functools import lru_cache
+from types import SimpleNamespace
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import joinedload
 
 from backend.app.config.settings import get_settings
+from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match, MatchOdds
 from backend.app.db.models.modeling import ModelVersion, Prediction
 from backend.app.db.models.publication import StrategyCapture
@@ -22,11 +24,13 @@ from backend.app.prediction.market_labels import DOUBLE_CHANCE_COMPONENTS
 from backend.app.prediction.opportunities import quote_age, ranking_score, valid_probability
 from backend.app.services.publication_service import selection_outcome
 
+from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS, CONTINENTAL_CHAMPIONS
+
 WEIGHTS = {"original": 1., "corregida": None, "mixta_80_20": .8, "mixta_65_35": .65,
            "mixta_50_50": .5, "mixta_35_65": .35, "mixta_20_80": .2, "mercado": 0.}
 BANDS = {"principal": (1.35, 1.90), "1.20-1.34": (1.20, 1.35), "1.35-1.50": (1.35, 1.51),
          "1.51-1.70": (1.51, 1.71), "1.71-1.90": (1.71, 1.90), "1.20-1.90": (1.20, 1.90)}
-LEAGUES = ("laliga", "premier_league", "bundesliga", "ligue_1", "serie_a")
+LEAGUES = ("laliga", "premier_league", "bundesliga", "ligue_1", "serie_a", *API_CANDIDATE_COMPETITIONS)
 SCHEMA_VERSION = "shadow-v2-1"
 
 
@@ -103,9 +107,10 @@ def choose(candidates, strategy, band, minimum):
 
 
 def capture_strategy_due(db, now=None):
-    from backend.app.db.models.core import Competition
     from backend.app.services.model_service import load_model_artifact
-    from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP as lookup, shadow_result_forecasts
+    from backend.app.services.prediction_service import (
+        ALL_MARKET_TO_ODDS_LOOKUP as lookup, _market_line_and_selection, score_api_candidate, score_champions_candidate, shadow_result_forecasts,
+    )
 
     cutoff = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     settings = get_settings()
@@ -139,6 +144,26 @@ def capture_strategy_due(db, now=None):
     ).all()
     insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
     captured = 0
+    candidate_rows = defaultdict(dict)
+    for code in API_CANDIDATE_COMPETITIONS:
+        fixtures = [m for m in due if m.competition.code == code]
+        if not fixtures:
+            continue
+        if code == "champions_league":
+            candidate_version, outputs, _ = score_champions_candidate(db, fixtures, cutoff)
+        else:
+            candidate_version, outputs, _ = score_api_candidate(db, fixtures, cutoff, code)
+        for row in outputs:
+            if row.market not in lookup or not valid_probability(row.model_probability):
+                continue
+            line, selection = _market_line_and_selection(row.market)
+            candidate_rows[row.match_id][row.market] = SimpleNamespace(
+                id=None, created_at=cutoff, line=line, selection=selection,
+                model_version=candidate_version, model_version_id=candidate_version.id,
+                model_probability=row.model_probability, calibrated_probability=row.calibrated_probability,
+                data_quality=row.data_quality, confidence=row.confidence, uncertainty_low=row.uncertainty_low,
+                uncertainty_high=row.uncertainty_high, calibration_source=row.calibration_source,
+            )
     for match in due:
         predictions = {}
         for p in db.query(Prediction).filter(
@@ -146,6 +171,9 @@ def capture_strategy_due(db, now=None):
         ).options(joinedload(Prediction.model_version)).order_by(Prediction.created_at, Prediction.id):
             if p.market in lookup and valid_probability(p.model_probability):
                 predictions[p.market] = p
+        candidate_only = not predictions and bool(candidate_rows[match.id])
+        if candidate_only:
+            predictions = candidate_rows[match.id]
         raw = {m: p.model_probability for m, p in predictions.items()}
         marginals = {m: p.calibrated_probability for m, p in predictions.items()
                      if p.model_version.created_at <= cutoff and p.model_version.training_end
@@ -163,7 +191,11 @@ def capture_strategy_due(db, now=None):
                     correction_input = {**raw, **forecast}
                     artifact, version = candidate_artifact, candidate
         t = artifact["coherent_calibration"]["temperature"] if artifact else None
-        corrected = corrected_forecasts(correction_input, marginals, t)
+        corrected = ({
+            market: (p.calibrated_probability if p.calibrated_probability is not None else p.model_probability,
+                     p.calibration_source or "original_fallback")
+            for market, p in predictions.items()
+        } if candidate_only else corrected_forecasts(correction_input, marginals, t))
         quotes = [q for q in match.odds if q.snapshot_type == "pre_match" and not is_excluded_bookmaker(q.bookmaker)
                   and math.isfinite(q.price) and q.price > 1
                   and (age := quote_age(q, cutoff)) is not None and age <= max_age]
@@ -186,7 +218,8 @@ def capture_strategy_due(db, now=None):
                     "recorded_at": quote.recorded_at.isoformat(), "reference": reference,
                     "probabilities": probabilities, "scores": scores, "corrected_source": source,
                     "corrected_model_version_id": version.id if t and source in ("joint_temperature", "coherent_1x2") else p.model_version_id,
-                    "prediction_id": p.id, "prediction_at": p.created_at.isoformat(), "model_version_id": p.model_version_id,
+                    "prediction_id": p.id, "prediction_source": f"{match.competition.code.removesuffix('_league')}_candidate" if candidate_only else "stored_prediction",
+                    "prediction_at": p.created_at.isoformat(), "model_version_id": p.model_version_id,
                 })
         common = {}
         for row in sorted(candidates, key=lambda r: (-r["price"], r["quote_id"])):
@@ -276,10 +309,14 @@ def economics(rows):
     }
 
 
-def strategy_report(db, band="principal"):
-    captures = db.query(StrategyCapture, Match, observed_corner_total()).join(
+def strategy_report(db, band="principal", competition=None):
+    query = db.query(StrategyCapture, Match, observed_corner_total()).join(
         Match, Match.id == StrategyCapture.match_id,
-    ).filter(StrategyCapture.captured_at < Match.kickoff_utc).order_by(Match.kickoff_utc, Match.id).all()
+    ).filter(StrategyCapture.captured_at < Match.kickoff_utc)
+    if competition:
+        codes = CONTINENTAL_CHAMPIONS if competition == "continental_champions" else (competition,)
+        query = query.join(Competition).filter(Competition.code.in_(codes))
+    captures = query.order_by(Match.kickoff_utc, Match.id).all()
     decisions = defaultdict(list)
     comparisons = defaultdict(list)
     history = []

@@ -423,10 +423,13 @@ export function getPublication(matchId: number) {
 }
 
 export interface RoundAccuracy {
+  season: string;
+  kickoff: string;
   flat_stake: { staked_cents: number; returned_cents: number };
   competition: string;
   name: string;
-  matchday: number;
+  matchday: number | null;
+  round_name?: string | null;
   fixtures: number;
   model: { wins: number; losses: number; without_forecast: number; awaiting_settlement: number };
   wins: number;
@@ -437,8 +440,8 @@ export interface RoundAccuracy {
   cancelled: number;
 }
 
-export function getRoundAccuracy() {
-  return apiFetch<RoundAccuracy[]>("/publications/round-accuracy");
+export function getRoundAccuracy(allRounds = false) {
+  return apiFetch<RoundAccuracy[]>(`/publications/round-accuracy${allRounds ? "?all_rounds=true" : ""}`);
 }
 
 export function getPublicationCoverage() {
@@ -464,6 +467,7 @@ export type BotBankroll = {
   days: {
     day: string;
     captured_at: string;
+    policy_version?: string;
     odds_band: [number, number];
     profit_cents: number;
     fixtures: {
@@ -471,7 +475,7 @@ export type BotBankroll = {
       match: string;
       assessed: number;
       eligible: number;
-      decision?: "goles" | "ambos_marcan" | "doble_oportunidad" | "pasar";
+      decision?: "goles" | "ambos_marcan" | "doble_oportunidad" | "equipo_no_favorito_marca" | "pasar";
       context?: {
         home_form: BotTeamForm;
         away_form: BotTeamForm;
@@ -489,17 +493,18 @@ export type BotBankroll = {
         match_id: number;
         match: string;
         market: string;
-        probability: number;
+        probability?: number;
         probability_source?: "original" | "calibrated";
         price: number;
         bookmaker: string;
+        live?: { home: number; away: number; minute: number | null; extra: number | null; status: string; goal_met: boolean };
       }[];
     }[];
   }[];
 };
 
-export function getBotBankroll(trial = false) {
-  return apiFetch<BotBankroll>(trial ? "/publications/bot-bankroll?trial=true" : "/publications/bot-bankroll");
+export function getBotBankroll(trial = false, live = false) {
+  return apiFetch<BotBankroll>(`/publications/bot-bankroll?trial=${trial}&live=${live}`);
 }
 
 export type ShadowEconomics = {
@@ -531,8 +536,10 @@ export type ShadowReport = {
   }[];
 };
 
-export function getShadowReport(band = "principal") {
-  return apiFetch<ShadowReport>(`/publications/strategies?band=${encodeURIComponent(band)}`);
+export function getShadowReport(band = "principal", competition?: string) {
+  const params = new URLSearchParams({ band });
+  if (competition) params.set("competition", competition);
+  return apiFetch<ShadowReport>(`/publications/strategies?${params}`);
 }
 
 type ShadowOperationalFixture = {
@@ -553,4 +560,73 @@ export type ShadowOperations = {
 
 export function getShadowOperations() {
   return apiFetch<ShadowOperations>("/publications/strategies/operations");
+}
+
+export type MatchPreview = {
+  model_version_id: number;
+  evaluated_at: string;
+  markets: {
+    market: string;
+    original_probability: number;
+    calibrated_probability: number | null;
+    market_probability: number | null;
+    odds: number | null;
+    odds_origin_at: string | null;
+  }[];
+};
+
+export function getMatchPreview(id: number) {
+  return apiFetch<MatchPreview | null>(`/matches/${id}/preview`);
+}
+
+export type ChampionsPreviewPick = { market: string; probability: number; odds: number; model_version_id: number; bookmaker?: string; probability_source?: "original" | "calibrated" };
+
+export function getChampionsPreviewPicks(policy: "verified" | "legacy" = "verified") {
+  return apiFetch<Record<string, ChampionsPreviewPick>>(`/matches/champions/previews?policy=${policy}`);
+}
+
+export type TodayForecast = {
+  odds: number;
+  bookmaker: string;
+  quote_status: "current" | "stale" | "unverified";
+  ev: number | null;
+  strict_reasons: string[];
+  market: string;
+  probability: number;
+  probability_source: "original" | "calibrated";
+  model_version_id: number;
+  generated_at: string;
+  observations: number | null;
+  interval: [number, number] | null;
+  limited_evidence: boolean;
+};
+
+export type TodayPreview = {
+  forecast: TodayForecast | null;
+  forecast_unavailable_reason: string | null;
+  opportunity: (ChampionsPreviewPick & { ev: number; quote_age_minutes: number }) | null;
+  counts: Record<string, number>;
+  markets: Record<string, {
+    reasons: string[]; confidence_reasons: string[]; quote_origin_at: string | null; quote_fetched_at: string | null;
+  }>;
+  sensitivity: Record<string, { market: string } | null>;
+};
+
+export function getTodayPreviews(ids: number[]) {
+  const params = new URLSearchParams();
+  ids.forEach(id => params.append("match_ids", String(id)));
+  return apiFetch<Record<string, TodayPreview>>(`/matches/today/previews?${params}`);
+}
+
+export function getModelLearning() {
+  type Scores = { brier: number; log_loss: number };
+  return apiFetch<{
+    competition: string;
+    name: string;
+    titular: { id: number; certification: string } | null;
+    candidate: { id: number; trained_at: string; last_round: string | null; new_fit_matches: number | null } | null;
+    comparison_status: "no_titular" | "insufficient_sample" | "paired_evidence_available";
+    metrics: Record<string, { matches: number; titular: Scores; candidate: Scores }>;
+    history: { id: number; created_at: string; state: "in_service" | "inactive" | "legacy" }[];
+  }[]>("/publications/learning");
 }

@@ -30,6 +30,7 @@ import re
 
 from backend.app.ingestion.api_football.client import LEAGUE_IDS, ApiFootballClient
 from backend.app.ingestion.base import DataProvider, RawMatchRecord
+from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS, CONTINENTAL_CHAMPIONS, LIGA_F, competition_team_name
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -113,7 +114,18 @@ class ApiFootballMatchProvider(ApiFootballClient, DataProvider):
             halftime = (payload.get("score", {}) or {}).get("halftime") or {}
             round_name = (payload.get("league", {}) or {}).get("round", "")
             matchday = parse_matchday(round_name)
-            if matchday is None:
+            champions = competition_code in CONTINENTAL_CHAMPIONS
+            if champions:
+                if not re.match(r"^(League Stage|League Phase|Group Stage|Group [A-Z]) - \d+$", round_name or "", re.I):
+                    matchday = None
+                if status_short in ("AET", "PEN"):
+                    goals = (payload.get("score") or {}).get("fulltime") or {}
+                if status_short in {"1H", "HT", "2H", "ET", "BT", "P", "LIVE"}:
+                    match_status = "live"
+            api_candidate = competition_code in API_CANDIDATE_COMPETITIONS
+            if competition_code == LIGA_F and status_short in {"1H", "HT", "2H", "ET", "BT", "P", "LIVE"}:
+                match_status = "live"
+            if matchday is None and not champions:
                 unrecognized_rounds += 1
 
             records.append(
@@ -123,14 +135,16 @@ class ApiFootballMatchProvider(ApiFootballClient, DataProvider):
                     competition_code=competition_code,
                     season_label=season_label,
                     date=fixture["date"],
-                    home_team_raw=payload["teams"]["home"]["name"],
-                    away_team_raw=payload["teams"]["away"]["name"],
+                    home_team_raw=competition_team_name(payload["teams"]["home"]["name"], competition_code),
+                    away_team_raw=competition_team_name(payload["teams"]["away"]["name"], competition_code),
                     home_goals=goals.get("home") if finished else None,
                     away_goals=goals.get("away") if finished else None,
                     home_goals_ht=halftime.get("home"),
                     away_goals_ht=halftime.get("away"),
                     matchday=matchday,
                     status=match_status,
+                    round_name=round_name if api_candidate else None,
+                    provider_status=status_short if api_candidate else None,
                     # API-Football trae el escudo real en el mismo payload
                     # del fixture, sin request ni coste adicional (pedido
                     # real del usuario: escudos reales via API-Football,

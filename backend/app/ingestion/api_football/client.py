@@ -57,6 +57,9 @@ LEAGUE_IDS: dict[str, int] = {
     "bundesliga": 78,
     "serie_a": 135,
     "ligue_1": 61,
+    "champions_league": 2,
+    "liga_f": 142,
+    "afc_champions_league": 17,
     # Seccion "Selecciones" -- confirmado contra la respuesta REAL de
     # /leagues?country=World (scripts/debug_api_football_national_teams.py,
     # ejecutado por el usuario, 2026-11-17), nunca un ID de memoria: id=5,

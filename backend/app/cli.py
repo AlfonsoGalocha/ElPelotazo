@@ -72,7 +72,9 @@ from backend.app.utils.logging import get_logger
 app = typer.Typer(help="Football Edge Detector CLI")
 logger = get_logger(__name__)
 
-ALL_COMPETITIONS = list(COMPETITION_DIV_CODES.keys())
+from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS, CHAMPIONS_LEAGUE
+
+ALL_COMPETITIONS = [*COMPETITION_DIV_CODES, *API_CANDIDATE_COMPETITIONS]
 
 
 def _seasons_since(start_year: int = 2018) -> list[str]:
@@ -114,7 +116,26 @@ def update(
 ) -> None:
     """Descarga e ingesta datos historicos reales (resultados + cuotas)."""
     init_db()
-    competitions = [competition] if competition else ALL_COMPETITIONS
+    if competition in API_CANDIDATE_COMPETITIONS:
+        from backend.app.ingestion.api_football.client import LEAGUE_IDS
+        provider = ApiFootballMatchProvider()
+        if not provider.is_available():
+            raise typer.Exit(1)
+        if season:
+            seasons = [season]
+        else:
+            metadata = provider._get("/leagues", {"id": LEAGUE_IDS[competition]})
+            years = [r["year"] for r in metadata[0]["seasons"]] if metadata else []
+            seasons = [f"{year}/{(year+1)%100:02d}" for year in years]
+            provider.last_raw_responses.clear()
+        with session_scope() as db:
+            for label in seasons:
+                if not force_closed_seasons and label != season_label_from_date(dt.date.today()) and competition_season_has_matches(db, competition, label):
+                    continue
+                count = ingest_matches(db, provider, competition, label, operation=f"update_{competition.removesuffix('_league')}_history")
+                typer.echo(f"[update] {competition} {label}: {count} partidos")
+        return
+    competitions = [competition] if competition else list(COMPETITION_DIV_CODES)
     seasons = [season] if season else _seasons_since()
     provider = ClubFootballMatchDataProvider() if source == "history_dataset" else FootballDataCoUkProvider()
     current_season_label = season_label_from_date(dt.date.today())
@@ -183,6 +204,8 @@ def update_fixtures(competition: str = typer.Option(None)) -> None:
 
     with session_scope() as db:
         for comp in competitions:
+            if comp in API_CANDIDATE_COMPETITIONS and not use_api_football:
+                continue
             try:
                 n = ingest_matches(db, provider, comp, season_label, operation="update_fixtures")
                 typer.echo(
@@ -192,6 +215,21 @@ def update_fixtures(competition: str = typer.Option(None)) -> None:
             except Exception as exc:  # noqa: BLE001
                 typer.echo(f"[update-fixtures] {comp} {season_label}: ERROR {exc}")
                 db.rollback()  # ver comentario equivalente en `update()`
+
+
+@app.command("update-champions-statistics")
+def update_champions_statistics(
+    batches: int = typer.Option(1, min=1, max=50),
+    competition: str = typer.Option(CHAMPIONS_LEAGUE),
+) -> None:
+    """Fill verified regulation-time statistics using batched API-Football fixtures."""
+    from backend.app.services.champions_statistics import refresh_champions_statistics
+
+    with session_scope() as db:
+        if competition not in API_CANDIDATE_COMPETITIONS:
+            raise typer.BadParameter("Competición no soportada")
+        count = refresh_champions_statistics(db, ApiFootballMatchProvider(), batches, competition)
+    typer.echo(f"[update-champions-statistics] {count} partidos enriquecidos")
 
 
 @app.command("update-international")
@@ -317,7 +355,19 @@ def update_odds(competition: str = typer.Option(None)) -> None:
     provider_key = "api_football" if use_api_football else "the_odds_api"
     competitions = [competition] if competition else ALL_COMPETITIONS
     with session_scope() as db:
+        if use_api_football and not competition:
+            # Matches in the next capture window already sort first by kickoff.
+            from sqlalchemy import func
+
+            next_kickoffs = dict(
+                db.query(Competition.code, func.min(Match.kickoff_utc)).join(Match)
+                .filter(Competition.code.in_(competitions), Match.status == "scheduled",
+                        Match.kickoff_utc > dt.datetime.utcnow()).group_by(Competition.code)
+            )
+            competitions = sorted(competitions, key=lambda code: (next_kickoffs.get(code, dt.datetime.max), code))
         for comp in competitions:
+            if comp in API_CANDIDATE_COMPETITIONS and not use_api_football:
+                continue
             started_at = dt.datetime.utcnow()
             try:
                 result = attach_odds_to_scheduled_matches(db, provider, comp)
@@ -333,6 +383,7 @@ def update_odds(competition: str = typer.Option(None)) -> None:
                     )
                 continue
 
+            failures = getattr(provider, "odds_fetch_failures", [])
             record_ingestion_run(
                 db,
                 provider_key,
@@ -342,6 +393,7 @@ def update_odds(competition: str = typer.Option(None)) -> None:
                 dt.datetime.utcnow(),
                 fixtures_fetched=result.fixtures_fetched,
                 matched=result.matched,
+                error="; ".join(failures) if failures else None,
             )
 
             typer.echo(
@@ -514,7 +566,12 @@ def train(competition: str = typer.Option(None)) -> None:
     """
     init_db()
     competitions = [competition] if competition else ALL_COMPETITIONS
-    with session_scope() as db:
+    from backend.app.services.continuous_learning import training_slot
+
+    with session_scope() as db, training_slot(db) as acquired:
+        if not acquired:
+            typer.echo("[train] Ya hay otro entrenamiento en curso")
+            return
         for comp in competitions:
             result = train_competition_models(db, comp)
             typer.echo(f"[train] {json.dumps(result, default=str)}")
@@ -523,6 +580,29 @@ def train(competition: str = typer.Option(None)) -> None:
             model_version = db.get(ModelVersion, result["model_version_id"])
             decision = evaluate_and_promote(db, comp, model_version)
             typer.echo(f"[train] promocion: {json.dumps(decision, default=str)}")
+
+
+@app.command("learning-train")
+def learning_train() -> None:
+    from backend.app.services.continuous_learning import train_due
+
+    with session_scope() as db:
+        for report in train_due(db):
+            typer.echo(json.dumps({key: value for key, value in report.items() if key != "metrics"}, default=str))
+
+
+@app.command("learning-capture")
+def learning_capture() -> None:
+    from backend.app.services.continuous_learning import capture_comparisons
+
+    from sqlalchemy import text
+
+    with session_scope() as db:
+        cutoff = None
+        if db.get_bind().dialect.name == "postgresql":
+            db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"))
+            cutoff = db.execute(text("SELECT timezone('UTC', statement_timestamp())")).scalar_one()
+        typer.echo(f"[learning-capture] {capture_comparisons(db, cutoff=cutoff)} comparaciones registradas")
 
 
 @app.command("publish-upcoming")
@@ -549,11 +629,12 @@ def bot_decision(
     early: bool = typer.Option(False, help="Fija la decisión de hoy antes de la ventana automática."),
     dry_run: bool = typer.Option(False, help="Consulta las opciones actuales sin registrar la decisión."),
     trial: bool = typer.Option(False, help="Usa una banca de prueba independiente de 300 euros."),
+    continuous: bool = typer.Option(False, help="Continúa la banca virtual de prueba con cada corte."),
 ) -> None:
     from backend.app.services.bot_bankroll import capture_bot_decision
 
     with session_scope() as db:
-        decision = capture_bot_decision(db, early=early or dry_run, dry_run=dry_run, trial=trial)
+        decision = capture_bot_decision(db, early=early or dry_run, dry_run=dry_run, trial=trial, continuous=continuous)
     typer.echo(json.dumps(decision, ensure_ascii=False))
 
 
@@ -588,6 +669,7 @@ def reconcile_corners(
             MatchStatistics, MatchStatistics.match_id == Match.id
         ).filter(
             Match.status == "finished", Match.provider == "api_football", Match.kickoff_utc < now,
+            or_(Match.round_name.is_(None), Match.provider_status == "FT"),
             ~observed,
             or_(MatchStatistics.home_corners.is_(None), MatchStatistics.home_corners < 0,
                 MatchStatistics.away_corners.is_(None), MatchStatistics.away_corners < 0),

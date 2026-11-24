@@ -28,6 +28,8 @@ class Match(Base):
     competition_id: Mapped[int] = mapped_column(ForeignKey("competitions.id"))
     season_id: Mapped[int] = mapped_column(ForeignKey("seasons.id"))
     matchday: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    round_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    provider_status: Mapped[str | None] = mapped_column(String(12), nullable=True)
 
     kickoff_utc: Mapped[dt.datetime] = mapped_column(DateTime)
 

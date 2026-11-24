@@ -201,7 +201,15 @@ def _pick_holdout_season(table) -> str | None:
     return seasons_in_order[-1]
 
 
-def train_competition_models(db: Session, competition_code: str) -> dict:
+def rolling_training_split(table):
+    """Keep the newest evaluation reserve intact, including tied kickoffs."""
+    dates = table["date"].sort_values()
+    reserve = min(MIN_HOLDOUT_MATCHES, max(1, int(len(dates) * .30)))
+    boundary = dates.iloc[-reserve]
+    return table[table["date"] < boundary], table[table["date"] >= boundary]
+
+
+def train_competition_models(db: Session, competition_code: str, *, rolling=False, skip_unchanged=False, closed_result_ids=None, open_round_result_ids=None) -> dict:
     """Entrena baseline + Dixon-Coles + clasificador ML para una competicion,
     evalua en la ultima temporada disponible como holdout, y persiste
     artefactos + ModelVersion. Devuelve un resumen (dict) del entrenamiento.
@@ -211,19 +219,43 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     if competition is None:
         raise ValueError(f"Competicion no encontrada: {competition_code}")
 
+    from hashlib import sha256
+
+    observed_at = dt.datetime.utcnow()
     matches = load_matches_dataframe(db, competition.id)
     if matches.empty:
         return {"competition": competition_code, "status": "insufficient_data", "n_matches": 0}
     finished = matches[
-        (matches["status"] == "finished") & (matches["date"] < dt.datetime.utcnow())
+        (matches["status"] == "finished") & (matches["date"] < observed_at)
     ].dropna(subset=["home_goals", "away_goals"])
+    if rolling:
+        finished = finished[(finished["home_goals"] >= 0) & (finished["away_goals"] >= 0)]
+    if open_round_result_ids:
+        finished = finished[~finished["match_id"].isin(open_round_result_ids)]
     if len(finished) < 50:
         return {"competition": competition_code, "status": "insufficient_data", "n_matches": len(finished)}
 
-    table = build_match_feature_table(finished.sort_values("date"))
+    frozen = finished.sort_values(["date", "match_id"]).reset_index(drop=True)
+    records = frozen.to_json(orient="records", date_format="iso", double_precision=15)
+    partition = "rolling-v1" if rolling else "season-v1"
+    dataset_hash = sha256((partition + "\n" + records).encode()).hexdigest()
+    previous = db.query(ModelVersion).filter(
+        ModelVersion.dataset_version.like(f"learning:{competition_code}:%") if rolling
+        else ModelVersion.dataset_version.like(f"{competition_code}:%"),
+    ).order_by(ModelVersion.created_at.desc(), ModelVersion.id.desc()).first()
+    if rolling and previous is None:
+        previous = db.query(ModelVersion).filter(
+            ModelVersion.dataset_version.like(f"{competition_code}:%"),
+        ).order_by(ModelVersion.created_at.desc(), ModelVersion.id.desc()).first()
+    previous_manifest = (previous.hyperparameters or {}).get("learning_manifest", {}) if previous else {}
+    if skip_unchanged and previous_manifest.get("dataset_sha256") == dataset_hash:
+        return {"competition": competition_code, "status": "unchanged", "model_version_id": previous.id}
 
-    holdout_season = _pick_holdout_season(table)
-    if holdout_season:
+    table = build_match_feature_table(frozen)
+    holdout_season = None if rolling else _pick_holdout_season(table)
+    if rolling:
+        train_table, eval_table = rolling_training_split(table)
+    elif holdout_season:
         eval_table = table[table["season_label"] == holdout_season]
         train_table = table[table["date"] < eval_table["date"].min()]
     else:
@@ -407,6 +439,7 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     # compararse -- ver docstring de secondary_markets.py.
     secondary_models: dict[str, TotalCountPoissonModel] = {}
     corner_calibration = {}
+    corner_survival = None
     for stat_family in ("corners",):
         try:
             model = TotalCountPoissonModel(stat_family).fit(train_table)
@@ -455,13 +488,44 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
                 corner_calibration[market_key] = report
                 if calibrator is not None:
                     calibrators[market_key] = calibrator
+            from backend.app.models.calibration.corners import validate_corner_calibration
+            from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
+
+            over_markets = [market for market in probs if SECONDARY_MARKET_DEFINITIONS[market].kind == "over"]
+            if over_markets:
+                corner_survival, metrics["corner_survival_validation"] = validate_corner_calibration(
+                    np.column_stack([probs[market] for market in over_markets]),
+                    np.column_stack([label_for_secondary_market(eval_rows, market) for market in over_markets]),
+                    eval_rows["date"].to_numpy(),
+                )
     metrics["corners_calibration"] = corner_calibration
 
+    base_ids = train_table["match_id"].astype(int).tolist()
+    previous_ids = previous_manifest.get("base_fit_match_ids")
+    if previous_ids is None and previous and previous.artifact_path:
+        try:
+            previous_ids = load_model_artifact(previous).get("training_manifest", {}).get("base_fit_match_ids")
+        except OSError:
+            pass
+    previous_set = set(previous_ids or ())
+    learning_manifest = {
+        "partition": partition, "dataset_sha256": dataset_hash,
+        "closed_round_result_ids": sorted(closed_result_ids or ()),
+        "observed_at": observed_at.isoformat() + "Z",
+        "latest_observed_kickoff": frozen["date"].max().isoformat() + "Z",
+        "base_fit_match_ids": base_ids,
+        "new_base_fit_match_ids": [i for i in base_ids if i not in previous_set]
+        if previous_ids is not None else None,
+        "historical_availability_certified": False,
+        "promotion_status": "awaiting_certified_prospective_evidence",
+    }
     version = dt.datetime.utcnow().isoformat()
     artifact_dir = settings.model_artifacts_path / competition_code
     artifact_dir.mkdir(parents=True, exist_ok=True)
     artifact_path = artifact_dir / f"{version.replace(':', '-')}.joblib"
     artifact_payload = {
+        "learning_manifest": learning_manifest,
+        "training_input_records_json": records,
         "baseline": baseline,
         "dixon_coles": dixon_coles,
         "ml_classifier": selected_ml,
@@ -477,6 +541,7 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
     }
     if "corners" in secondary_models:
         artifact_payload["corners_model"] = secondary_models["corners"]
+        artifact_payload["corner_survival"] = corner_survival
     joblib.dump(artifact_payload, artifact_path)
 
     model_version = ModelVersion(
@@ -487,12 +552,13 @@ def train_competition_models(db: Session, competition_code: str) -> dict:
         training_end=max(train_table["date"].max(), eval_table["date"].max()).date(),
         features=feature_columns(table),
         hyperparameters={
+            "learning_manifest": learning_manifest,
             "holdout_season": holdout_season,
             "base_fit_end": train_table["date"].max().isoformat(),
             "selection_end": eval_table["date"].max().isoformat(),
         },
         metrics=metrics,
-        dataset_version=f"{competition_code}:{len(finished)}_matches",
+        dataset_version=f"{'learning:' if rolling else ''}{competition_code}:{len(finished)}_matches",
         calibration_method="isotonic" if calibrators else None,
         artifact_path=str(artifact_path),
         is_active=False,

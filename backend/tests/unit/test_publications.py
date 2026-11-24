@@ -97,3 +97,40 @@ def test_corners_require_a_verified_count_and_respect_the_line():
     assert selection_outcome("corners_over_8_5", 1, 1, 9)
     assert not selection_outcome("corners_over_9_5", 1, 1, 9)
     assert selection_outcome("corners_under_9_5", 1, 1, 9)
+
+
+def test_historical_round_accuracy_uses_only_saved_pre_match_forecasts(db_session):
+    from backend.app.api.routes.publications import round_accuracy
+
+    db = db_session
+    league = db.query(Competition).filter_by(code="laliga").one_or_none()
+    if league is None:
+        league = Competition(code="laliga", name="La Liga", country="Spain")
+        db.add(league)
+    home, away = Team(canonical_name="Rounds test home"), Team(canonical_name="Rounds test away")
+    version = ModelVersion(name="rounds-test", version="rounds-test", market_family="goals",
+                           features=[], hyperparameters={}, metrics={}, dataset_version="rounds-test")
+    db.add_all([home, away, version])
+    db.flush()
+    season = Season(competition_id=league.id, label="rounds-test")
+    db.add(season)
+    db.flush()
+    kickoff = dt.datetime.utcnow() - dt.timedelta(days=3)
+    for round_number, delta in ((1, -30), (2, -30), (3, 30)):
+        match = Match(provider="test", provider_id=f"rounds-{round_number}", competition_id=league.id,
+                      season_id=season.id, kickoff_utc=kickoff + dt.timedelta(days=round_number - 1),
+                      matchday=round_number, home_team_id=home.id, away_team_id=away.id,
+                      home_goals=2 if round_number == 1 else 0, away_goals=1, status="finished")
+        db.add(match)
+        db.flush()
+        db.add(Prediction(match_id=match.id, market="home_win", selection="home",
+                          model_version_id=version.id, created_at=match.kickoff_utc + dt.timedelta(minutes=delta),
+                          model_probability=.7, market_odds=1.5, fair_odds=1/.7,
+                          confidence=.7, data_quality=.8, explanation={}, features_used={}))
+    db.flush()
+    rounds = {row["matchday"]: row for row in round_accuracy(db, all_rounds=True) if row["season"] == "rounds-test"}
+    assert set(rounds) == {1, 2}
+    assert rounds[1]["model"]["wins"] == 1
+    assert rounds[2]["model"]["losses"] == 1
+    assert sum(row["flat_stake"]["staked_cents"] for row in rounds.values()) == 2000
+    assert sum(row["flat_stake"]["returned_cents"] for row in rounds.values()) == 1500

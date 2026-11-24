@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { getShadowOperations, getShadowReport } from "@/lib/api";
+import { getCompetitions, getShadowOperations, getShadowReport } from "@/lib/api";
 import { formatMatchDateTime } from "@/lib/dates";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import Operations from "./Operations";
@@ -20,10 +20,11 @@ const rate = (n: number | null) => n === null ? "—" : pct.format(n);
 const num = (n: number | null) => n === null ? "—" : n.toFixed(3);
 const money = (n: number) => euros.format(n / 100);
 
-export default async function StrategiesPage({ searchParams }: { searchParams: { band?: string } }) {
-  const [report, operations] = await Promise.all([
-    getShadowReport(searchParams.band).catch(() => null),
+export default async function StrategiesPage({ searchParams }: { searchParams: { band?: string; competition?: string } }) {
+  const [report, operations, competitions] = await Promise.all([
+    getShadowReport(searchParams.band, searchParams.competition).catch(() => null),
     getShadowOperations().catch(() => null),
+    getCompetitions().catch(() => []),
   ]);
   return (
     <main className="space-y-5">
@@ -37,9 +38,20 @@ export default async function StrategiesPage({ searchParams }: { searchParams: {
       {operations ? <Operations report={operations} /> : <p className="text-sm text-slate-400">Estado operativo temporalmente no disponible.</p>}
       {!report ? <p>No se pudo consultar la comparación.</p> : (
         <>
+          <form action="/opportunity-performance/strategies" className="flex items-center gap-2 text-sm">
+            <input type="hidden" name="band" value={report.band} />
+            <label htmlFor="competition">Competición</label>
+            <select id="competition" name="competition" defaultValue={searchParams.competition ?? ""} className="rounded border border-surface-border bg-card p-1">
+              <option value="">Todas</option>
+              <option value="continental_champions">Champions UEFA y AFC Elite</option>
+              {competitions.filter(c => ["laliga", "premier_league", "bundesliga", "serie_a", "ligue_1", "champions_league", "liga_f", "afc_champions_league"].includes(c.code))
+                .map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
+            </select>
+            <button type="submit" className="rounded border border-surface-border px-2 py-1">Aplicar</button>
+          </form>
           <nav aria-label="Rango de cuotas experimental" className="flex flex-wrap gap-2">
             {Object.keys(report.bands).map(band => (
-              <Link key={band} href={`?band=${encodeURIComponent(band)}`}
+              <Link key={band} href={`?band=${encodeURIComponent(band)}${searchParams.competition ? `&competition=${encodeURIComponent(searchParams.competition)}` : ""}`}
                 aria-current={report.band === band ? "page" : undefined}
                 className={`rounded border px-3 py-1 text-sm ${report.band === band ? "border-accent text-accent" : "border-surface-border text-slate-300"}`}>
                 {band === "principal" ? "Principal · 1,35–1,90" : band.replaceAll(".", ",").replace("-", "–")}

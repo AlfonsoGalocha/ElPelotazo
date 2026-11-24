@@ -88,6 +88,7 @@ interface CompetitionGroup {
   name: string;
   matchday: number | null;
   latestKickoff: number;
+  roundName?: string | null;
   rows: MatchHistory[];
 }
 
@@ -107,11 +108,16 @@ function groupByCompetitionLatestMatchday(rows: MatchHistory[]): CompetitionGrou
       : groupRows.filter((row) => seasonLabelFor(row.match.kickoff_utc) === latestSeason);
     const matchdays = seasonRows.map((r) => r.match.matchday).filter((m): m is number => m !== null);
     const matchday = matchdays.length ? Math.max(...matchdays) : null;
-    const listedRows = matchday === null ? seasonRows : seasonRows.filter((row) => row.match.matchday === matchday);
+    const roundName = code === "champions_league"
+      ? [...seasonRows].sort((a, b) => Date.parse(b.match.kickoff_utc) - Date.parse(a.match.kickoff_utc))[0].match.round_name
+      : null;
+    const listedRows = roundName ? seasonRows.filter((row) => row.match.round_name === roundName)
+      : matchday === null ? seasonRows : seasonRows.filter((row) => row.match.matchday === matchday);
     groups.push({
       code,
       name: groupRows[0].match.competition.name,
       matchday,
+      roundName,
       latestKickoff: Math.max(...listedRows.map((row) => Date.parse(row.match.kickoff_utc))),
       rows: listedRows,
     });
@@ -137,9 +143,11 @@ export default function HistoryBoard({ rows, simple = false }: { rows: MatchHist
   const [deepRows, setDeepRows] = useState<MatchHistory[] | null>(null);
   const [deepLoading, setDeepLoading] = useState(false);
   const [season, setSeason] = useState<string | null>(null);
+  const [roundName, setRoundName] = useState<string | null>(null);
   const [matchday, setMatchday] = useState<number | null>(null);
 
   useEffect(() => {
+    setRoundName(null);
     if (!selected) {
       setDeepRows(null);
       setSeason(null);
@@ -170,8 +178,13 @@ export default function HistoryBoard({ rows, simple = false }: { rows: MatchHist
     ...new Set(rowsInSeason.map((r) => r.match.matchday).filter((m): m is number => m !== null)),
   ].sort((a, b) => b - a);
   const effectiveMatchday = matchday ?? matchdaysInSeason[0] ?? null;
-  const deepVisibleRows =
-    matchdaysInSeason.length > 0 ? rowsInSeason.filter((r) => r.match.matchday === effectiveMatchday) : rowsInSeason;
+  const providerRounds = selected === "champions_league"
+    ? [...new Set(rowsInSeason.map(row => row.match.round_name).filter((name): name is string => !!name))]
+    : [];
+  const effectiveRoundName = roundName ?? providerRounds[0];
+  const deepVisibleRows = effectiveRoundName
+    ? rowsInSeason.filter(row => row.match.round_name === effectiveRoundName)
+    : matchdaysInSeason.length > 0 ? rowsInSeason.filter((r) => r.match.matchday === effectiveMatchday) : rowsInSeason;
 
   const visibleGroups = selected ? [] : groups;
 
@@ -204,13 +217,14 @@ export default function HistoryBoard({ rows, simple = false }: { rows: MatchHist
             )}
           </select>
 
-          {!simple && selected && seasons.length > 0 && (
+          {(!simple || selected === "champions_league") && selected && seasons.length > 0 && (
             <>
               <span className="ml-2 text-slate-500">Temporada:</span>
               <select
                 value={effectiveSeason ?? ""}
                 onChange={(e) => {
                   setSeason(e.target.value);
+                  setRoundName(null);
                   setMatchday(null); // la jornada elegida puede no existir en la nueva temporada
                 }}
                 className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200"
@@ -224,7 +238,16 @@ export default function HistoryBoard({ rows, simple = false }: { rows: MatchHist
             </>
           )}
 
-          {selected && matchdaysInSeason.length > 0 && (
+          {providerRounds.length > 0 && (
+            <label className="flex items-center gap-2 text-slate-400">
+              Ronda
+              <select value={effectiveRoundName} onChange={(e) => setRoundName(e.target.value)}
+                className="rounded border border-surface-border bg-surface-raised px-2 py-1 text-slate-200">
+                {providerRounds.map(name => <option key={name}>{name}</option>)}
+              </select>
+            </label>
+          )}
+          {selected && !providerRounds.length && matchdaysInSeason.length > 0 && (
             <>
               <span className="ml-2 text-slate-500">Jornada:</span>
               <select
@@ -251,7 +274,7 @@ export default function HistoryBoard({ rows, simple = false }: { rows: MatchHist
         visibleGroups.map((group) => (
           <div key={group.code}>
             <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
-              {group.matchday !== null ? `Jornada ${group.matchday}` : "Últimos jugados"} · {group.name}
+              {group.roundName ?? (group.matchday !== null ? `Jornada ${group.matchday}` : "Últimos jugados")} · {group.name}
             </h2>
             <HistoryMatchTable rows={group.rows} />
           </div>
@@ -268,7 +291,7 @@ export default function HistoryBoard({ rows, simple = false }: { rows: MatchHist
       {selected && !deepLoading && deepVisibleRows.length > 0 && (
         <div>
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
-            {matchdaysInSeason.length > 0 ? `Jornada ${effectiveMatchday}` : "Todos los partidos"} ·{" "}
+            {effectiveRoundName ?? (matchdaysInSeason.length > 0 ? `Jornada ${effectiveMatchday}` : "Todos los partidos")} ·{" "}
             {effectiveSeason}
           </h2>
           <HistoryMatchTable rows={deepVisibleRows} />

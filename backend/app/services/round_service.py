@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from backend.app.normalization.competitions import CONTINENTAL_CHAMPIONS
 from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
 
@@ -68,6 +69,7 @@ class RoundInfo:
     match_ids: list[int] = field(default_factory=list)
     is_fallback: bool = False
     next_round: int | None = None
+    round_name: str | None = None
 
 
 def get_current_round(db: Session, competition_code: str) -> RoundInfo | None:
@@ -76,6 +78,8 @@ def get_current_round(db: Session, competition_code: str) -> RoundInfo | None:
         return None
 
     now = dt.datetime.utcnow()
+    if competition_code in CONTINENTAL_CHAMPIONS:
+        return _champions_round(db, competition.id, now)
     scheduled_rows = (
         db.query(Match.season_id, Match.matchday)
         .filter(
@@ -155,6 +159,24 @@ def get_current_round(db: Session, competition_code: str) -> RoundInfo | None:
     )
 
 
+def _champions_round(db, competition_id, now, after=None):
+    query = db.query(Match).filter(
+        Match.competition_id == competition_id, Match.status == "scheduled", Match.kickoff_utc >= now,
+    )
+    if after is not None:
+        query = query.filter(Match.kickoff_utc > after)
+    scheduled = query.order_by(Match.kickoff_utc, Match.id).all()
+    if not scheduled:
+        return None
+    first = scheduled[0]
+    rows = [m for m in scheduled if m.season_id == first.season_id and m.round_name == first.round_name
+            and m.kickoff_utc - first.kickoff_utc <= dt.timedelta(days=7)]
+    next_fixture = next((m for m in scheduled if m.kickoff_utc > rows[-1].kickoff_utc), None)
+    return RoundInfo(competition_id, first.season_id, first.matchday, first.kickoff_utc,
+                     rows[-1].kickoff_utc, [m.id for m in rows], round_name=first.round_name,
+                     next_round=next_fixture.matchday if next_fixture else None)
+
+
 def get_next_round(db: Session, competition_code: str) -> RoundInfo | None:
     """La jornada INMEDIATAMENTE posterior a la actual (mismo criterio de
     `matchday`), para el filtro "Próxima jornada" -- nunca "cualquier
@@ -163,6 +185,8 @@ def get_next_round(db: Session, competition_code: str) -> RoundInfo | None:
     actual detectable (mismo fallback que `get_current_round`) o si la
     jornada actual es la ultima programada."""
     current = get_current_round(db, competition_code)
+    if competition_code in CONTINENTAL_CHAMPIONS and current is not None:
+        return _champions_round(db, current.competition_id, dt.datetime.utcnow(), current.round_end)
     if current is None or current.is_fallback or current.next_round is None:
         return None
 

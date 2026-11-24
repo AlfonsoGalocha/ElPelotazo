@@ -177,7 +177,10 @@ export default function MatchesPage() {
               className="flex items-center justify-between gap-3 rounded-lg border border-surface-border bg-card px-3 py-2.5 text-sm transition-colors hover:border-accent/30 hover:bg-surface-alt/40"
             >
               <div className="flex min-w-0 items-center gap-3">
-                <span className="w-28 shrink-0 text-xs text-slate-500">{formatKickoff(match.kickoff_utc)}</span>
+                <span className="w-28 shrink-0 text-xs text-slate-500">
+                  {formatKickoff(match.kickoff_utc)}
+                  {match.round_name && <span className="block">{match.round_name}{match.status === "live" ? " · En juego" : ""}</span>}
+                </span>
                 <div className="flex min-w-0 items-center gap-2 text-slate-200">
                   <TeamLogo name={match.home_team.canonical_name} logoUrl={match.home_team.logo_url} size="sm" />
                   <span className="truncate">{match.home_team.canonical_name}</span>

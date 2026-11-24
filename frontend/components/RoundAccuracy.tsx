@@ -16,8 +16,14 @@ function hitRate(wins: number, losses: number) {
   }).format(wins / evaluated) : "—";
 }
 
-export default function RoundAccuracyPanel() {
-  const [rounds, setRounds] = useState<RoundAccuracy[]>([]);
+function roundId(row: RoundAccuracy) {
+  return JSON.stringify([row.competition, row.season, row.round_name ?? row.matchday]);
+}
+
+export default function RoundAccuracyPanel({ filters = false }: { filters?: boolean }) {
+  const [selection, setSelection] = useState("latest");
+  const [archive, setArchive] = useState<RoundAccuracy[]>([]);
+  const [latest, setRounds] = useState<RoundAccuracy[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
 
   useEffect(() => {
@@ -25,9 +31,10 @@ export default function RoundAccuracyPanel() {
     let timer: ReturnType<typeof setTimeout>;
     async function refresh() {
       try {
-        const rows = await getRoundAccuracy();
+        const rows = await getRoundAccuracy(selection !== "latest");
         if (active) {
-          setRounds(rows);
+          if (selection === "latest") setRounds(rows);
+          else setArchive(rows);
           setStatus("ready");
         }
       } catch {
@@ -41,7 +48,26 @@ export default function RoundAccuracyPanel() {
       active = false;
       clearTimeout(timer);
     };
-  }, []);
+  }, [selection]);
+
+  useEffect(() => {
+    if (!filters) return;
+    let active = true;
+    getRoundAccuracy(true).then(rows => {
+      if (active) setArchive(rows);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [filters]);
+
+  const rounds = selection === "latest" ? latest
+    : selection === "global" ? archive
+    : archive.filter(row => roundId(row) === selection);
+  const orderedRounds = [...archive].sort((a, b) => b.kickoff.localeCompare(a.kickoff));
+  const selectRound = (value: string) => {
+    if (value === selection) return;
+    if (selection === "latest" || value === "latest") setStatus("loading");
+    setSelection(value);
+  };
 
   const total = rounds.reduce((sum, row) => ({
     wins: sum.wins + row.model.wins, losses: sum.losses + row.model.losses,
@@ -55,15 +81,30 @@ export default function RoundAccuracyPanel() {
 
   return (
     <section className="space-y-3 rounded-xl border border-surface-border bg-card p-4">
-      <h2 className="font-semibold text-slate-100">Acierto del modelo por jornada</h2>
+      <h2 className="font-semibold text-slate-100">{selection === "global" ? "Estadísticas globales del modelo" : "Acierto del modelo por jornada"}</h2>
+      {filters && (
+        <label className="flex flex-wrap items-center gap-2 text-sm text-slate-300">
+          Jornada
+          <select value={selection} onChange={event => selectRound(event.target.value)} className="max-w-full rounded border border-surface-border bg-surface-raised px-2 py-1">
+            <option value="latest">Última jornada de cada liga</option>
+            <option value="global">Todas las jornadas registradas</option>
+            {orderedRounds.map(row => (
+              <option key={roundId(row)} value={roundId(row)}>
+                {row.name} · {row.season} · {row.round_name ?? `Jornada ${row.matchday}`}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <p className="text-sm text-slate-400">
-        Para cada partido de la última jornada iniciada se elige el pronóstico prepartido con mayor probabilidad original que alcance el 65 % y tenga cuota guardada entre 1,30 y 1,80.
+        Para cada partido se elige el pronóstico prepartido con mayor probabilidad original que alcance el 65 % y tenga cuota guardada entre 1,30 y 1,80.
         El porcentaje usa solo los aciertos y fallos confirmados. Se actualiza cada minuto.
+        {selection === "global" && " Incluye las jornadas con al menos un pronóstico guardado antes del partido."}
       </p>
       {status === "loading" && <p className="text-sm text-slate-400">Cargando resultados…</p>}
       {status === "error" && <p className="text-sm text-amber-300">No se pudo actualizar el acierto. Se reintentará automáticamente.</p>}
       {status === "ready" && !rounds.length && <p className="text-sm text-slate-400">Todavía no hay jornadas iniciadas.</p>}
-      {!!rounds.length && (
+      {!!rounds.length && status !== "loading" && (
         <>
           <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <strong className="text-2xl text-slate-100">{hitRate(total.wins, total.losses)}</strong>
@@ -90,9 +131,9 @@ export default function RoundAccuracyPanel() {
                 )}</tr>
               </thead>
               <tbody>
-                {rounds.map(row => (
-                  <tr key={row.competition} className="border-t border-surface-border text-slate-300">
-                    {[row.name, row.matchday, hitRate(row.model.wins, row.model.losses), row.model.wins, row.model.losses, row.pending, row.model.without_forecast,
+                {(selection === "global" ? orderedRounds : rounds).map(row => (
+                  <tr key={roundId(row)} className="border-t border-surface-border text-slate-300">
+                    {[row.name, `${row.round_name ?? row.matchday}${selection === "latest" ? "" : ` · ${row.season}`}`, hitRate(row.model.wins, row.model.losses), row.model.wins, row.model.losses, row.pending, row.model.without_forecast,
                       ...(awaitingSettlement ? [row.model.awaiting_settlement] : []), ...(cancelled ? [row.cancelled] : []), row.flat_stake.staked_cents ? netLabel(row.flat_stake.returned_cents - row.flat_stake.staked_cents) : "—"].map((value, index) =>
                       <td key={index} className={index === 2 ? "px-2 py-2 font-semibold text-slate-100" : "px-2 py-2"}>{value}</td>
                     )}

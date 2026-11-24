@@ -1,11 +1,18 @@
 """Pre-match evidence and market order for the bot's selection policy."""
 
+from math import isfinite
+from statistics import median
+
 from sqlalchemy import or_
 
 from backend.app.db.models.matches import Match
 from backend.app.db.models.standings import StandingsSnapshot
-from backend.app.prediction.opportunities import forecast_priority, valid_probability
+from backend.app.normalization.bookmakers import is_excluded_bookmaker
+from backend.app.prediction.opportunities import forecast_priority, quote_age, valid_probability
 
+
+OUTSIDER_GOAL_BAND = (1.40, 1.50)
+TEAM_SCORE_SIDE = {"home_team_over_0_5": "home", "away_team_over_0_5": "away"}
 
 def _team_form(results, team_id):
     recent = [row for row in results if team_id in (row.home_team_id, row.away_team_id)][:5]
@@ -71,6 +78,20 @@ def match_context(db, match, now, predictions):
     )
 
 
+
+def team_win_prices(match, now, max_age_minutes):
+    """Use the median archived and current 1X2 win price for each side."""
+    prices = {"home": {}, "away": {}}
+    for quote in match.odds:
+        if (quote.match_id != match.id or quote.market != "match_result" or quote.line is not None
+                or quote.snapshot_type != "pre_match" or quote.selection not in prices
+                or is_excluded_bookmaker(quote.bookmaker) or not isfinite(quote.price) or quote.price <= 1):
+            continue
+        age = quote_age(quote, now)
+        if age is not None and age <= max_age_minutes:
+            prices[quote.selection][quote.bookmaker] = quote.price
+    return {side: median(quotes.values()) for side, quotes in prices.items() if quotes}
+
 def choose_match_pick(qualified, context):
     goals = [pair for pair in qualified if pair[0].market in ("over_1_5", "over_2_5")]
     if goals:
@@ -89,4 +110,13 @@ def choose_match_pick(qualified, context):
         pair = next((pair for pair in qualified if pair[0].market == cover), None)
         if pair:
             return pair, "doble_oportunidad"
+    win_prices = context.get("team_win_prices", {})
+    outsiders_to_score = [
+        pair for pair in qualified
+        if pair[0].market in TEAM_SCORE_SIDE
+        and win_prices.get(TEAM_SCORE_SIDE[pair[0].market], 0) >= 4
+        and OUTSIDER_GOAL_BAND[0] <= pair[1].quote.price <= OUTSIDER_GOAL_BAND[1]
+    ]
+    if outsiders_to_score:
+        return max(outsiders_to_score, key=forecast_priority), "equipo_no_favorito_marca"
     return None, "pasar"

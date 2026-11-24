@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, or_
@@ -11,6 +12,7 @@ from backend.app.db.database import get_db
 from backend.app.db.models.core import Competition, Team
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction
+from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS
 from backend.app.prediction.anomaly import best_prediction_per_match, compute_anomaly_flags
 from backend.app.schemas.match import MatchFormOut, MatchOut, TeamHeadToHeadOut
 from backend.app.schemas.prediction import PredictionOut
@@ -182,11 +184,45 @@ def get_head_to_head(
     }
 
 
+@router.get("/champions/previews")
+def list_champions_previews(
+    policy: Literal["verified", "legacy"] = "verified", db: Session = Depends(get_db),
+):
+    from backend.app.services.prediction_service import champions_preview_selections
+
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    fixtures = db.query(Match).join(Competition).filter(
+        Competition.code == "champions_league", Match.status == "scheduled",
+        Match.kickoff_utc > now, Match.kickoff_utc <= now + dt.timedelta(days=10),
+    ).all()
+    return champions_preview_selections(db, fixtures, policy=policy)
+
+
+@router.get("/today/previews")
+def list_today_previews(
+    match_ids: list[int] = Query(..., min_length=1, max_length=200), db: Session = Depends(get_db),
+):
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.db.models.matches import MatchOdds
+    from backend.app.services.today_preview import build_today_previews
+
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    fixtures = (db.query(Match).options(
+        selectinload(Match.competition), selectinload(Match.odds).selectinload(MatchOdds.archived_quote),
+    ).filter(Match.id.in_(match_ids), Match.status == "scheduled",
+             Match.kickoff_utc > now, Match.kickoff_utc <= now + dt.timedelta(days=10)).all())
+    return build_today_previews(db, fixtures, now)
+
+
 @router.get("/{match_id}", response_model=MatchOut)
-def get_match(match_id: int, db: Session = Depends(get_db)) -> Match:
+def get_match(match_id: int, db: Session = Depends(get_db)) -> Match | MatchOut:
     match = db.get(Match, match_id)
     if match is None:
         raise HTTPException(status_code=404, detail="Partido no encontrado")
+    if match.competition.code in API_CANDIDATE_COMPETITIONS:
+        has_odds = any(odd.snapshot_type == "pre_match" and odd.price > 1 for odd in match.odds)
+        return MatchOut.model_validate(match).model_copy(update={"has_pre_match_odds": has_odds})
     return match
 
 
@@ -211,6 +247,16 @@ def get_match_predictions(match_id: int, db: Session = Depends(get_db)) -> list[
         )
         for p in predictions
     ]
+
+
+@router.get("/{match_id}/preview")
+def get_match_preview(match_id: int, db: Session = Depends(get_db)):
+    from backend.app.services.prediction_service import preview_champions_predictions
+
+    match = db.get(Match, match_id)
+    if match is None:
+        raise HTTPException(status_code=404, detail="Partido no encontrado")
+    return preview_champions_predictions(db, match)
 
 
 def _recent_finished_matches(

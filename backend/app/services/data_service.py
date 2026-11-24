@@ -20,6 +20,7 @@ from backend.app.ingestion.odds.provider import OddsApiProvider
 from backend.app.normalization.bookmakers import canonical_bookmaker, is_excluded_bookmaker
 from backend.app.normalization.competitions import resolve_competition_id, resolve_season_id
 from backend.app.normalization.players import resolve_referee_id
+from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS
 from backend.app.normalization.teams import is_excluded_team, resolve_team_id
 from backend.app.services.provider_response_service import archive_raw_responses
 from backend.app.services.standings_service import snapshot_standings
@@ -216,7 +217,7 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
     )
     is_finished = record.home_goals is not None and record.away_goals is not None
 
-    if match is None:
+    if match is None and record.competition_code not in API_CANDIDATE_COMPETITIONS:
         match = _find_absorbable_duplicate(
             db, competition_id, season_id, home_team_id, away_team_id, kickoff
         )
@@ -249,8 +250,14 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
         )
         db.add(match)
 
-    if record.matchday is not None:
+    if record.round_name is not None:
+        match.round_name = record.round_name
+    if record.provider_status is not None:
+        match.provider_status = record.provider_status
+    if record.matchday is not None or record.round_name is not None:
         match.matchday = record.matchday
+    if record.competition_code in API_CANDIDATE_COMPETITIONS and match.kickoff_utc != kickoff:
+        match.kickoff_utc = kickoff
 
     match.home_goals = record.home_goals
     match.away_goals = record.away_goals

@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { Bot, Trophy, CircleDot, Flag, ChevronDown } from "lucide-react";
-import { getMatch, getMatchForm, getMatchPredictions } from "@/lib/api";
+import { getMatch, getMatchForm, getMatchPredictions, getMatchPreview } from "@/lib/api";
 import { formatMatchDateTime } from "@/lib/dates";
 import type { Prediction } from "@/types";
 import { CORNERS_MARKETS, GOALS_MARKETS, MARKET_DISPLAY_NAMES, MATCH_RESULT_MARKETS } from "@/types";
@@ -110,6 +110,10 @@ export default async function MatchDetailPage({ params }: { params: { id: string
 
   if (!match) notFound();
 
+  const preview = ["champions_league", "liga_f", "afc_champions_league"].includes(match.competition.code) && match.status === "scheduled" && predictions.length === 0
+    ? await getMatchPreview(matchId).catch(() => null)
+    : null;
+
   const mainPrediction = predictions.find((p) => p.is_best_prediction) ?? predictions[0];
 
   return (
@@ -117,7 +121,7 @@ export default async function MatchDetailPage({ params }: { params: { id: string
       <div className="rounded-xl border border-surface-border bg-card p-5">
         <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-wide text-slate-500">
           <CompetitionBadge name={match.competition.name} country={match.competition.country} />
-          {match.matchday != null && <span>· Jornada {match.matchday}</span>}
+          {match.round_name ? <span>· {match.round_name}</span> : match.matchday != null && <span>· Jornada {match.matchday}</span>}
         </div>
         <div className="flex flex-wrap items-center justify-center gap-4 sm:justify-between">
           <div className="flex items-center gap-3">
@@ -133,7 +137,7 @@ export default async function MatchDetailPage({ params }: { params: { id: string
               <span className="text-sm font-semibold text-slate-500">VS</span>
             )}
             <span className="text-xs text-slate-500">
-              {formatMatchDateTime(match.kickoff_utc)} · {match.status === "finished" ? "Finalizado" : "Programado"}
+              {formatMatchDateTime(match.kickoff_utc)} · {({ finished: "Finalizado", live: "En juego", postponed: "Aplazado", cancelled: "Cancelado" } as Record<string, string>)[match.status] ?? "Programado"}
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -143,6 +147,40 @@ export default async function MatchDetailPage({ params }: { params: { id: string
         </div>
       </div>
 
+      {!preview && ["champions_league", "liga_f", "afc_champions_league"].includes(match.competition.code) && predictions.length === 0 && (
+        <p className="rounded-lg border border-surface-border p-3 text-sm text-slate-400">Pronóstico no disponible para este partido.
+          {match.status === "scheduled" && match.has_pre_match_odds != null && (
+            <span className="block">{match.has_pre_match_odds ? "Hay cuotas prepartido guardadas." : "Sin cuotas prepartido guardadas."}</span>
+          )}
+        </p>
+      )}
+      {preview && (
+        <section className="space-y-3 rounded-lg border border-surface-border bg-card p-4">
+          <h2 className="font-semibold">Previsión de {match.competition.name}</h2>
+          <p className="text-sm text-slate-400">
+            Candidato #{preview.model_version_id} · Actualizado {formatMatchDateTime(preview.evaluated_at)}.
+            Las cuotas son de consenso y pueden variar antes del inicio.
+            Esta previsión queda fuera del ranking y de las decisiones del bot.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full whitespace-nowrap text-left text-sm">
+              <thead><tr>{["Mercado", "Modelo", "Prob. de mercado", "Cuota guardada", "Origen de cuotas"].map(label =>
+                <th scope="col" key={label} className="p-2 text-slate-400">{label}</th>)}</tr></thead>
+              <tbody>{preview.markets.map(row => (
+                <tr key={row.market} className="border-t border-surface-border">
+                  <td className="p-2">{MARKET_DISPLAY_NAMES[row.market] ?? row.market}</td>
+                  <td className="p-2">{((row.calibrated_probability ?? row.original_probability) * 100).toFixed(1)} %
+                    {row.calibrated_probability === null && <span className="text-xs text-slate-400"> · Original</span>}
+                  </td>
+                  <td className="p-2">{row.market_probability === null ? "—" : `${(row.market_probability * 100).toFixed(1)} %`}</td>
+                  <td className="p-2">{row.odds === null ? "Sin cuota" : row.odds.toFixed(2)}</td>
+                  <td className="p-2">{row.odds_origin_at && row.odds !== null ? formatMatchDateTime(row.odds_origin_at) : "—"}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </section>
+      )}
       <MatchTopPicks predictions={predictions} />
 
       {mainPrediction && (

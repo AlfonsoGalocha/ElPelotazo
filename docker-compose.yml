@@ -130,6 +130,7 @@ services:
       LOG_LEVEL: INFO
       API_FOOTBALL_ODDS_WINDOW_DAYS: ${API_FOOTBALL_ODDS_WINDOW_DAYS:-7}
       FOOTBALL_REFRESH_INTERVAL_SECONDS: ${FOOTBALL_REFRESH_INTERVAL_SECONDS:-3600}
+      FOOTBALL_SKIP_INITIAL_TRAIN: ${FOOTBALL_SKIP_INITIAL_TRAIN:-0}
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,11 +177,20 @@ services:
     command:
       - >
         (while true; do
-          football-edge bot-decision || echo "[scheduler] no se pudo registrar la decisión del bot";
+          football-edge bot-decision --trial --continuous || echo "[scheduler] fallo banca virtual";
           football-edge capture-strategies || echo "[scheduler] fallo corte de estrategias";
           football-edge publish-upcoming || echo "[scheduler] no se pudo publicar el corte prepartido";
           sleep 600;
         done) &
+        (while true; do
+          football-edge learning-capture || echo "[scheduler] fallo comparación de modelos";
+          sleep 600;
+        done) &
+        (while true; do
+          OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 football-edge learning-train || echo "[scheduler] fallo aprendizaje";
+          sleep 1800;
+        done) &
+        first_cycle=1;
         while true; do
           hour=$$(date -u +%H);
           hour=$${hour#0};
@@ -188,34 +198,17 @@ services:
           echo "[scheduler] $$(date -u +%FT%TZ) -- fixtures + cuotas de mercado + liquidacion de partidos terminados + predicciones";
           football-edge update-fixtures || echo "[scheduler] fallo update-fixtures, se reintenta en 1h";
           football-edge update-odds || echo "[scheduler] fallo update-odds, se reintenta en 1h";
+          football-edge update-champions-statistics --competition liga_f || echo "[scheduler] fallo estadísticas Liga F";
+          football-edge update-champions-statistics --competition afc_champions_league || echo "[scheduler] fallo estadísticas AFC Elite";
+          football-edge update-champions-statistics || echo "[scheduler] fallo estadísticas Champions";
           football-edge update-secondary-odds || echo "[scheduler] fallo update-secondary-odds, se reintenta en 1h";
-          if [ $$((hour % 6)) -eq 0 ]; then
-            # 'update-fixtures' (arriba) NUNCA trae resultados: descarta a
-            # proposito los partidos ya jugados de su propia fuente (ver
-            # docs/data_sources.md). 'update' es el UNICO comando que
-            # descarga resultados reales y marca un partido como
-            # 'finished' -- sin esto en el scheduler, Historico se queda
-            # parado indefinidamente por mucho que 'evaluate' corra cada
-            # hora (bug real: se quedo sin avanzar semanas porque este
-            # paso faltaba). Cada 6h (no cada hora) porque redescarga un
-            # CSV de ~45MB del mirror de GitHub -- sin limite de cuota
-            # como las APIs de cuotas, pero sin necesidad de hacerlo mas a
-            # menudo (los resultados de una jornada no cambian cada hora).
-            echo "[scheduler] $$(date -u +%FT%TZ) -- resultados reales + reentrenamiento (cada 6h)";
+          if [ $$((hour % 6)) -eq 0 ] && { [ "$$first_cycle" -eq 0 ] || [ "$$FOOTBALL_SKIP_INITIAL_TRAIN" -eq 0 ]; }; then
+            # Refresh the historical source separately from the training worker.
+            echo "[scheduler] $$(date -u +%FT%TZ) -- actualización de resultados históricos";
             football-edge update || echo "[scheduler] fallo update (resultados reales), se reintenta en 6h";
-            # Cierra el ciclo "el modelo aprende de sus propios fallos"
-            # (pedido real de usuario): 'train' reentrena desde cero
-            # leyendo TODOS los resultados reales ya en la BD, incluidos
-            # los que 'update' acaba de traer -- sin esto en el scheduler,
-            # el ciclo se quedaba a medias: Historico/evaluate SI reflejaban
-            # los aciertos/fallos, pero ningun modelo nuevo volvia a
-            # entrenarse con ellos salvo que alguien ejecutase 'train' a
-            # mano (docs/modeling.md, seccion "Cerrar el ciclo"). Cada 6h
-            # (no cada hora) porque reentrenar las 5 ligas no es gratis en
-            # CPU y los resultados no cambian tan rapido como para
-            # necesitarlo mas a menudo.
-            football-edge train || echo "[scheduler] fallo train (reentrenamiento), se reintenta en 6h";
+
           fi
+          first_cycle=0;
           football-edge reconcile-corners --limit 5 || echo "[scheduler] fallo verificación de córners";
           football-edge evaluate || echo "[scheduler] fallo evaluate/settle, se reintenta en 1h";
           football-edge predict-upcoming || echo "[scheduler] fallo predict-upcoming, se reintenta en 1h";

@@ -23,10 +23,12 @@ export interface Match {
   // "postponed"/"cancelled" anhadidos (Rendimiento del modelo, pedido
   // real del usuario): antes un aplazamiento quedaba indistinguible de
   // "scheduled" para siempre -- ver backend/app/db/models/matches.py.
-  status: "scheduled" | "finished" | "postponed" | "cancelled";
+  status: "scheduled" | "finished" | "postponed" | "cancelled" | "live";
   home_goals: number | null;
   away_goals: number | null;
   matchday: number | null;
+  round_name?: string | null;
+  has_pre_match_odds?: boolean | null;
 }
 
 export interface FormMatch {

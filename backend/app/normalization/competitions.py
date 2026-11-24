@@ -7,6 +7,17 @@ from sqlalchemy.orm import Session
 from backend.app.db.models.core import Competition, Season
 from backend.app.utils.dates import season_label as season_label_from_date
 
+CHAMPIONS_LEAGUE = "champions_league"
+LIGA_F = "liga_f"
+AFC_CHAMPIONS_LEAGUE = "afc_champions_league"
+CONTINENTAL_CHAMPIONS = (CHAMPIONS_LEAGUE, AFC_CHAMPIONS_LEAGUE)
+API_CANDIDATE_COMPETITIONS = (*CONTINENTAL_CHAMPIONS, LIGA_F)
+
+
+def competition_team_name(name: str, competition_code: str) -> str:
+    return f"{name} · Liga F" if competition_code == LIGA_F else name
+
+
 COMPETITIONS: dict[str, tuple[str, str]] = {
     # code -> (nombre, pais)
     "laliga": ("La Liga", "Spain"),
@@ -14,6 +25,9 @@ COMPETITIONS: dict[str, tuple[str, str]] = {
     "bundesliga": ("Bundesliga", "Germany"),
     "serie_a": ("Serie A", "Italy"),
     "ligue_1": ("Ligue 1", "France"),
+    CHAMPIONS_LEAGUE: ("UEFA Champions League", "Europe"),
+    LIGA_F: ("Liga F", "Spain"),
+    AFC_CHAMPIONS_LEAGUE: ("AFC Champions League Elite", "Asia"),
     # Seccion "Selecciones" (pedido real del usuario, 2026-11): a
     # diferencia de las 5 de club, no hay mirror historico tipo
     # football-data.co.uk -- TODO su historico viene de API-Football

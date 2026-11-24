@@ -52,11 +52,7 @@ MARKET_DEFINITIONS: dict[str, MarketSpec] = {
     "double_chance_1x": MarketSpec("Doble Oportunidad 1X (Local o Empate)", "double_chance", None),
     "double_chance_x2": MarketSpec("Doble Oportunidad X2 (Empate o Visitante)", "double_chance", None),
     "double_chance_12": MarketSpec("Doble Oportunidad 12 (Local o Visitante)", "double_chance", None),
-    # Goles de un equipo: NINGUNA fuente actual trae esta cuota (The Odds
-    # API no la ofrece en el plan usado, ver docs/data_sources.md), asi que
-    # queda siempre como "prediccion del modelo -- sin mercado"
-    # (`/predictions/model-only`) hasta que se integre una fuente que si la
-    # traiga -- nunca se inventa `market_probability`/`market_odds`.
+    # API-Football aporta cuotas de marca Sí/No para la línea 0.5.
     "home_team_over_0_5": MarketSpec("Local marca (Over 0.5)", "team_over", 0.5, "home"),
     "home_team_over_1_5": MarketSpec("Local Over 1.5 goles", "team_over", 1.5, "home"),
     "away_team_over_0_5": MarketSpec("Visitante marca (Over 0.5)", "team_over", 0.5, "away"),

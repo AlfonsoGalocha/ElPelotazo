@@ -47,9 +47,12 @@ import datetime as dt
 import re
 import time
 
+import httpx
+
 from backend.app.config.settings import get_settings
-from backend.app.ingestion.api_football.client import LEAGUE_IDS, ApiFootballClient
+from backend.app.ingestion.api_football.client import LEAGUE_IDS, ApiFootballClient, ApiFootballRateLimitError
 from backend.app.ingestion.base import FixtureOddsSnapshot, RawOddsRecord
+from backend.app.normalization.competitions import competition_team_name
 from backend.app.utils.dates import season_label as season_label_from_date
 from backend.app.utils.logging import get_logger
 
@@ -67,6 +70,8 @@ MARKET_SPECS = {
     "5": ("over_under_goals", "over_under", ("goals over/under", "goals over under")),
     "8": ("btts", "yes_no", ("both teams score", "both teams to score", "btts")),
     "12": ("double_chance", "double_chance", ("double chance",)),
+    "43": ("home_team_total_goals", "team_scores", ("home team score a goal",)),
+    "44": ("away_team_total_goals", "team_scores", ("away team score a goal",)),
     "45": ("corners_total", "over_under", ("corners over under", "corners over/under", "total corners")),
 }
 MARKET_SPECS_BY_NAME = {
@@ -167,28 +172,43 @@ class ApiFootballOddsProvider(ApiFootballClient):
             },
         )
 
+        self.odds_fetch_failures: list[str] = []
         snapshots: list[FixtureOddsSnapshot] = []
         market_names_seen: set[str] = set()
-        # Bug real reportado por el usuario (cuota real movida a 1.35,
-        # la app seguia mostrando 1.70): este bucle hace UNA peticion HTTP
-        # por partido de la ventana (hasta 45 dias, puede ser 10-15
-        # partidos por liga) sin ninguna pausa -- si el limite de
-        # peticiones por minuto de API-Football se agota a mitad de la
-        # lista, `_get` agota sus 3 reintentos (ver ApiFootballRateLimitError
-        # en client.py) y la excepcion se propaga, cancelando TODOS los
-        # partidos restantes de esa liga para este ciclo, no solo el que
-        # la disparo -- asi se queda una cuota vieja varios ciclos. Mismo
-        # remedio ya usado en `cli.py::update_international` para el mismo
-        # problema real (ahi entre competiciones, aqui entre partidos).
-        for i, fixture_payload in enumerate(sorted(fixtures, key=lambda row: dt.datetime.fromisoformat(row["fixture"]["date"]))):
+        # Provider pages can repeat fixtures. Keep the kickoff ordering and
+        # only spend one odds request per fixture in this refresh.
+        unique_fixtures = {row["fixture"]["id"]: row for row in fixtures}
+        ordered = sorted(unique_fixtures.values(), key=lambda row: dt.datetime.fromisoformat(row["fixture"]["date"]))
+        scheduled = [
+            row for row in ordered
+            if row["fixture"].get("status", {}).get("short") in {None, "NS"}
+        ]
+        for i, fixture_payload in enumerate(scheduled):
             if i > 0:
                 time.sleep(1)
             fixture_id = fixture_payload["fixture"]["id"]
-            home_name = fixture_payload["teams"]["home"]["name"]
-            away_name = fixture_payload["teams"]["away"]["name"]
+            home_name = competition_team_name(fixture_payload["teams"]["home"]["name"], competition_code)
+            away_name = competition_team_name(fixture_payload["teams"]["away"]["name"], competition_code)
             commence_time = dt.datetime.fromisoformat(fixture_payload["fixture"]["date"])
 
-            odds_response = self._get("/odds", {"fixture": fixture_id})
+            try:
+                odds_response = self._get("/odds", {"fixture": fixture_id})
+            except (httpx.HTTPError, ApiFootballRateLimitError) as exc:
+                self.odds_fetch_failures.append(f"{fixture_id}: {type(exc).__name__}")
+                logger.warning("ingestion.api_football.odds_fixture_failed: fixture=%s error=%s", fixture_id, type(exc).__name__)
+                limited = isinstance(exc, ApiFootballRateLimitError) or (
+                    isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+                )
+                if limited:
+                    # Backoff has already been exhausted by the HTTP client.
+                    # Preserve successes and defer the rest until the next run.
+                    self.odds_fetch_failures.append(f"deferred={len(scheduled) - i - 1}")
+                    break
+                continue
+            odds_response = [
+                entry for entry in odds_response
+                if entry.get("fixture", {}).get("id", fixture_id) == fixture_id
+            ]
             suspended_markets: set[str] = set()
             odds_records, seen = self._parse_odds_response(odds_response, suspended_markets=suspended_markets)
             market_names_seen |= seen
@@ -298,10 +318,12 @@ class ApiFootballOddsProvider(ApiFootballClient):
                 return None
             return RawOddsRecord(bookmaker, market_key, None, selection, price)
 
-        if value_kind == "yes_no":
+        if value_kind in ("yes_no", "team_scores"):
             normalized = raw_value.strip().lower()
             if normalized not in ("yes", "no"):
                 return None
+            if value_kind == "team_scores":
+                return RawOddsRecord(bookmaker, market_key, 0.5, "over" if normalized == "yes" else "under", price)
             return RawOddsRecord(bookmaker, market_key, None, normalized, price)
 
         if value_kind == "double_chance":
