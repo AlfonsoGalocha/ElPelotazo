@@ -38,6 +38,7 @@ def current_round(competition_code: str, db: Session = Depends(get_db)) -> dict:
     return {
         "competition_code": competition_code,
         "round": round_info.round,
+        "round_name": round_info.round_name,
         "round_start": round_info.round_start,
         "round_end": round_info.round_end,
         "next_round": round_info.next_round,

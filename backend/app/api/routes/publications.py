@@ -3,14 +3,15 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
-from sqlalchemy import and_, func
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_, func, select, union
+from sqlalchemy.orm import Session, joinedload
 
+from backend.app.normalization.competitions import CONTINENTAL_CHAMPIONS
 from backend.app.db.database import get_db
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.matches import CornerObservation, Match, MatchOdds, MatchStatistics
-from backend.app.db.models.modeling import Prediction, PredictionResult
+from backend.app.db.models.modeling import Prediction, PredictionResult, PredictionSnapshot
 from backend.app.db.models.publication import FixturePublication, FixtureRankingRevision
 from backend.app.prediction.eligibility import observed_corner_total
 from backend.app.services.publication_service import latest_model_picks, publication_report, selection_outcome
@@ -94,35 +95,72 @@ def publication_coverage(db: Session = Depends(get_db)):
 
 
 @router.get("/round-accuracy")
-def round_accuracy(db: Session = Depends(get_db)):
-    """Evaluate original model forecasts and official recommendations separately."""
+def round_accuracy(db: Session = Depends(get_db), all_rounds: bool = False):
+    """Report one aggregate per round without regenerating historic predictions."""
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     rounds = []
     stake_cents = 1_000
     leagues = db.query(Competition).filter(
-        Competition.code.in_(("laliga", "premier_league", "serie_a", "bundesliga", "ligue_1"))
+        Competition.code.in_(("laliga", "premier_league", "serie_a", "bundesliga", "ligue_1", *CONTINENTAL_CHAMPIONS, "liga_f"))
     ).order_by(Competition.name).all()
+    recorded_by_league = {}
+    if all_rounds:
+        league_ids = [league.id for league in leagues]
+        sources = [
+            select(Match.competition_id, source.match_id).join(Match, Match.id == source.match_id).where(
+                Match.competition_id.in_(league_ids), Match.kickoff_utc <= now,
+                source.created_at < Match.kickoff_utc,
+            )
+            for source in (Prediction, PredictionSnapshot)
+        ]
+        for competition_id, match_id in db.execute(union(*sources)):
+            recorded_by_league.setdefault(competition_id, []).append(match_id)
+    groups = []
     for league in leagues:
-        eligible = db.query(Match.season_id, Match.matchday).filter(
-            Match.competition_id == league.id, Match.matchday.is_not(None),
+        champions = league.code in CONTINENTAL_CHAMPIONS
+        round_key = Match.round_name if champions else Match.matchday
+        eligible = db.query(Match.season_id, Match.matchday, Match.round_name, Match.kickoff_utc).filter(
+            Match.competition_id == league.id, round_key.is_not(None),
             Match.kickoff_utc <= now, Match.status.in_(("scheduled", "finished")),
         )
-        latest = eligible.order_by(Match.kickoff_utc.desc(), Match.id.desc()).first()
-        if latest is None:
+        if all_rounds:
+            recorded_ids = recorded_by_league.get(league.id)
+            if not recorded_ids:
+                continue
+            keys = eligible.filter(Match.id.in_(recorded_ids)).with_entities(
+                Match.season_id, round_key.label("round_key"), func.max(Match.kickoff_utc)
+            ).group_by(Match.season_id, round_key).all()
+            keys = [(season_id, key, kickoff) for season_id, key, kickoff in keys]
+        else:
+            latest = eligible.order_by(Match.kickoff_utc.desc(), Match.id.desc()).first()
+            if latest is None:
+                continue
+            key = latest.round_name if champions else eligible.filter(
+                Match.season_id == latest.season_id).order_by(Match.matchday.desc()).first().matchday
+            keys = [(latest.season_id, key, latest.kickoff_utc)]
+        if not keys:
             continue
-        matchday = eligible.filter(Match.season_id == latest.season_id).order_by(Match.matchday.desc()).first().matchday
-        fixtures = db.query(Match, FixturePublication, observed_corner_total()).outerjoin(
+        fixtures = db.query(Match, FixturePublication, observed_corner_total()).options(
+            joinedload(Match.statistics),
+        ).outerjoin(
             FixturePublication, and_(
                 FixturePublication.match_id == Match.id,
                 FixturePublication.captured_at < Match.kickoff_utc,
             ),
-        ).filter(
-            Match.competition_id == league.id,
-            Match.season_id == latest.season_id,
-            Match.matchday == matchday,
-        ).all()
-        model_picks = latest_model_picks(db, [match.id for match, _, _ in fixtures])
+        ).filter(Match.competition_id == league.id, or_(*(
+            and_(Match.season_id == season_id, round_key == key) for season_id, key, _ in keys
+        ))).all()
+        by_round = {}
+        for match, publication, corners in fixtures:
+            key = match.round_name if champions else match.matchday
+            by_round.setdefault((match.season_id, key), []).append((match, publication, corners))
+        for season_id, key, kickoff in keys:
+            groups.append((league, season_id, None if champions else key, key if champions else None,
+                           kickoff, by_round.get((season_id, key), [])))
 
+    seasons = dict(db.query(Season.id, Season.label).filter(Season.id.in_({g[1] for g in groups})))
+    model_picks = latest_model_picks(db, list({match.id for *_, fixtures in groups for match, _, _ in fixtures}))
+    for league, season_id, matchday, round_name, kickoff, fixtures in groups:
         counts = dict(wins=0, losses=0, pending=0, without_forecast=0, cancelled=0, awaiting_settlement=0)
         model_counts = dict(wins=0, losses=0, without_forecast=0, awaiting_settlement=0)
         returned_cents = 0
@@ -154,7 +192,8 @@ def round_accuracy(db: Session = Depends(get_db)):
                     ))
         staked_cents = stake_cents * (model_counts["wins"] + model_counts["losses"])
         rounds.append({
-            "competition": league.code, "name": league.name, "matchday": matchday,
+            "competition": league.code, "name": league.name, "matchday": matchday, "round_name": round_name,
+            "season": seasons[season_id], "kickoff": kickoff.isoformat() + "Z",
             "fixtures": len(fixtures), "model": model_counts, **counts,
             "flat_stake": {"staked_cents": staked_cents, "returned_cents": returned_cents},
         })
@@ -163,19 +202,19 @@ def round_accuracy(db: Session = Depends(get_db)):
 
 
 @router.get("/bot-bankroll")
-def bot_bankroll(trial: bool = False, db: Session = Depends(get_db)):
+def bot_bankroll(trial: bool = False, live: bool = False, db: Session = Depends(get_db)):
     from backend.app.services.bot_bankroll import bot_report
 
-    return bot_report(db, trial=trial)
+    return bot_report(db, trial=trial, include_live=live)
 
 
 @router.get("/strategies")
-def strategies(band: str = "principal", db: Session = Depends(get_db)):
+def strategies(band: str = "principal", competition: str | None = None, db: Session = Depends(get_db)):
     from backend.app.services.strategy_shadow import BANDS, strategy_report
 
     if band not in BANDS:
         raise HTTPException(status_code=422, detail="Rango experimental desconocido")
-    return strategy_report(db, band)
+    return strategy_report(db, band, competition)
 
 
 @router.get("/strategies/operations")
@@ -183,6 +222,13 @@ def strategies_operations(db: Session = Depends(get_db)):
     from backend.app.services.strategy_operations import operations_report
 
     return operations_report(db)
+
+
+@router.get("/learning")
+def model_learning(db: Session = Depends(get_db)):
+    from backend.app.services.continuous_learning import comparison_report
+
+    return comparison_report(db)
 
 
 @router.get("/{match_id}")

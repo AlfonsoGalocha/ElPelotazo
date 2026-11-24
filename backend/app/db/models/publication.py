@@ -48,6 +48,26 @@ class BotTrialDecision(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class BotTrialCut(Base):
+    """Append-only batches for the continuing virtual trial bank."""
+
+    __tablename__ = "bot_trial_cuts"
+
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"), primary_key=True)
+    captured_at = mapped_column(DateTime, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class BotManualTicket(Base):
+    """Manual virtual ticket kept separate from the automatic pre-match cut."""
+
+    __tablename__ = "bot_manual_tickets"
+
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"), primary_key=True)
+    captured_at = mapped_column(DateTime, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class StrategyCapture(Base):
     """Append-only comparison, independent of official decisions and betting policies."""
 
@@ -69,3 +89,13 @@ class StrategyScan(Base):
     ok: Mapped[bool]
     captures: Mapped[int | None]
     error_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+
+class ModelComparisonCut(Base):
+    """Immutable paired forecasts, separate from official and strategy decisions."""
+
+    __tablename__ = "model_comparison_cuts"
+
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"), primary_key=True)
+    captured_at = mapped_column(DateTime, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)

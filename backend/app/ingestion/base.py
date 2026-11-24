@@ -28,6 +28,8 @@ class RawMatchRecord:
     away_goals_ht: int | None = None
     referee_raw: str | None = None
     matchday: int | None = None  # jornada, cuando la fuente la provee (ver fixtures_provider.py)
+    round_name: str | None = None
+    provider_status: str | None = None
 
     # Estado REAL del partido segun la fuente (seccion "Rendimiento del
     # modelo", pedido real del usuario): "scheduled"|"finished"|

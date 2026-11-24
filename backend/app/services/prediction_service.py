@@ -6,11 +6,15 @@ import datetime as dt
 import hashlib
 import io
 from pathlib import Path
+from types import SimpleNamespace
 
 import joblib
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from backend.app.config.settings import get_settings
+from backend.app.models.calibration.corners import correct_probability
+from backend.app.prediction.opportunities import assess_opportunity, market_probability_gap, quote_age
 from backend.app.db.models.core import Competition
 from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.matches import Match
@@ -28,6 +32,7 @@ from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITION
 from backend.app.services.evaluation_service import (
     fit_edge_reliability_curve,
     market_track_records,
+    market_track_records_with_provenance,
 )
 from backend.app.services.match_service import load_matches_dataframe
 from backend.app.utils.logging import get_logger
@@ -61,12 +66,7 @@ MARKET_TO_ODDS_LOOKUP = {
     "double_chance_1x": ("double_chance_1x", None, "yes"),
     "double_chance_x2": ("double_chance_x2", None, "yes"),
     "double_chance_12": ("double_chance_12", None, "yes"),
-    # Goles de un equipo: NINGUNA fuente actual trae esta cuota (ver
-    # market_labels.py) -- este lookup nunca encontrara filas en
-    # MatchOdds para "home_team_total_goals"/"away_team_total_goals" hoy,
-    # asi que market_probability queda siempre None (nunca se inventa),
-    # pero deja el mercado listo para cuando se integre una fuente que si
-    # la traiga, sin tocar mas codigo que este diccionario.
+    # API-Football publica marca Sí/No como total del equipo en la línea 0.5.
     "home_team_over_0_5": ("home_team_total_goals", 0.5, "over"),
     "home_team_over_1_5": ("home_team_total_goals", 1.5, "over"),
     "away_team_over_0_5": ("away_team_total_goals", 0.5, "over"),
@@ -220,6 +220,252 @@ def shadow_result_forecasts(db: Session, match: Match, artifact: dict, cutoff: d
     return {row.market: row.model_probability for row in outputs if row.market in RESULT}
 
 
+def _market_quotes_for_matches(match_odds_rows):
+    market_quotes = {}
+    for match_id, odds_rows in match_odds_rows.items():
+        for market_key, (market, line, selection) in ALL_MARKET_TO_ODDS_LOOKUP.items():
+            market_rows = [
+                odds for odds in odds_rows
+                if odds.market == market and odds.line == line and odds.snapshot_type == "pre_match"
+            ]
+            consensus = compute_market_consensus(market_rows, market, line, selection)
+            if consensus.market_probability is None:
+                continue
+            market_quotes[(match_id, market_key)] = {
+                "odds_origin_at": min(o.provider_updated_at for o in market_rows)
+                if market_rows and all(
+                    o.provider_updated_at is not None and o.fetched_at is not None
+                    and o.recorded_at is not None
+                    and o.provider_updated_at <= o.fetched_at <= o.recorded_at
+                    for o in market_rows
+                ) else None,
+                "consensus_outliers": consensus.outliers_removed,
+                "history_quote_ids": sorted(o.history_quote_id for o in market_rows)
+                if all(o.history_quote_id is not None for o in market_rows) else None,
+                "market_probability": consensus.market_probability,
+                "market_odds": consensus.market_odds,
+                "vig_removed": consensus.market_probability_source == "consensus_no_vig"
+                or consensus.market_probability_source == "single_book_no_vig",
+                "market_probability_source": consensus.market_probability_source,
+                "bookmakers_count": consensus.bookmakers_count,
+                "bookmakers_used": consensus.bookmakers_used,
+                "market_odds_min": consensus.min_odds,
+                "market_odds_max": consensus.max_odds,
+                "market_odds_median": consensus.median_odds,
+                "market_odds_average": consensus.average_odds,
+            }
+            if consensus.outliers_removed:
+                logger.info(
+                    "market_consensus.outliers_removed: match_id=%d market=%s bookmakers=%s",
+                    match_id,
+                    market_key,
+                    consensus.outliers_removed,
+                )
+
+    _add_derived_double_chance_quotes(market_quotes, match_odds_rows.keys())
+    return market_quotes
+
+
+def _predict_fixture_markets(target_matches, artifact, market_quotes):
+    outputs = predict_markets_for_table(
+        target_matches,
+        statistical_model=artifact["dixon_coles"],
+        ml_model=artifact["ml_classifier"],
+        ensemble_weights=artifact.get("ensemble_weights"),
+        market_quotes=market_quotes,
+        calibrators=artifact.get("calibrators"),
+    )
+    if "corners_model" in artifact:
+        outputs += predict_secondary_markets_for_table(
+            target_matches, artifact["corners_model"], market_quotes=market_quotes,
+            calibrators=artifact.get("calibrators"),
+        )
+
+    if "coherent_calibration" in artifact:
+        apply_coherent_calibration(outputs, artifact["coherent_calibration"])
+    return outputs
+
+
+def score_champions_candidate(db: Session, fixtures: list[Match], now: dt.datetime, *, preview=False):
+    return score_api_candidate(db, fixtures, now, "champions_league", preview=preview)
+
+
+def score_api_candidate(db: Session, fixtures: list[Match], now: dt.datetime, competition_code: str, *, preview=False):
+    fixtures = [m for m in fixtures if m.competition.code == competition_code and m.status == "scheduled"
+                and now < m.kickoff_utc <= now + dt.timedelta(days=10)]
+    if not fixtures:
+        return None, [], {}
+
+    versions = db.query(ModelVersion).filter(
+        ModelVersion.dataset_version.like(f"{competition_code}:%"),
+        ModelVersion.created_at <= now, ModelVersion.is_active.is_(False),
+    ).order_by(ModelVersion.created_at.desc(), ModelVersion.id.desc())
+    for version in versions:
+        if (version.training_end is None or version.training_end > version.created_at.date()
+                or (version.metrics or {}).get("joint_1x2", {}).get("reason") != "accepted"
+                or not version.artifact_path):
+            continue
+        try:
+            artifact = joblib.load(version.artifact_path)
+        except FileNotFoundError:
+            continue
+        if artifact.get("coherent_calibration", {}).get("temperature") is not None:
+            break
+    else:
+        return None, [], {}
+
+    matches = load_matches_dataframe(db, fixtures[0].competition_id)
+    if matches.empty:
+        return None, [], {}
+    table = build_match_feature_table(matches)
+    target = table[table["match_id"].isin(m.id for m in fixtures)]
+    if target.empty:
+        return None, [], {}
+    quotes = _market_quotes_for_matches({match.id: match.odds for match in fixtures})
+    outputs = _predict_fixture_markets(target, artifact, quotes)
+    if preview:
+        params = artifact.get("corner_survival")
+        for row in outputs:
+            spec = SECONDARY_MARKET_DEFINITIONS.get(row.market)
+            if spec is None or spec.stat_family != "corners":
+                continue
+            row.calibrated_probability = (
+                float(correct_probability(row.model_probability, params, under=spec.kind == "under"))
+                if params else None
+            )
+            row.calibration_source = params["version"] if params else "original_corner_unvalidated"
+            row.uncertainty_low = row.uncertainty_high = None
+    return version, outputs, quotes
+
+
+def _champions_preview_market(row, quotes):
+    origin = quotes.get((row.match_id, row.market), {}).get("odds_origin_at")
+    return {
+        "market": row.market,
+        "original_probability": row.model_probability,
+        "calibrated_probability": row.calibrated_probability,
+        "market_probability": row.market_probability,
+        "odds": row.market_odds if row.market_probability_source != "derived_double_chance" else None,
+        "odds_origin_at": origin.isoformat() + "Z" if origin else None,
+    }
+
+
+def preview_champions_predictions(db: Session, match: Match) -> dict | None:
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS
+
+    code = match.competition.code
+    if code not in API_CANDIDATE_COMPETITIONS:
+        return None
+    version, outputs, quotes = score_api_candidate(db, [match], now, code, preview=True)
+    if version is None:
+        return None
+    return {
+        "model_version_id": version.id, "evaluated_at": now.isoformat() + "Z",
+        "markets": [_champions_preview_market(row, quotes) for row in outputs],
+    }
+
+
+def champions_preview_selections(db: Session, fixtures: list[Match], *, policy="verified"):
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    version, outputs, _ = score_champions_candidate(db, fixtures, now, preview=policy == "verified")
+    if version is None:
+        return {}
+    if policy == "verified":
+        reliability = market_track_records_with_provenance(db, "champions_league", as_of=now)
+        return rank_champions_preview(fixtures, outputs, version.id, now, reliability)[0]
+    return legacy_champions_preview(outputs, version.id)
+
+
+def legacy_champions_preview(outputs, model_version_id):
+    best = {}
+    for row in outputs:
+        odds = row.market_odds
+        if (row.market_probability_source == "derived_double_chance" or odds is None
+                or not (1.30 <= odds <= 1.80 and .65 <= row.model_probability <= 1)):
+            continue
+        previous = best.get(row.match_id)
+        if previous is None or row.model_probability > previous["probability"]:
+            best[row.match_id] = {"market": row.market, "probability": row.model_probability,
+                                  "odds": odds, "model_version_id": model_version_id}
+    return best
+
+
+
+def rank_champions_preview(
+    fixtures, outputs, model_version_id, now, reliability, *, minimum=.65, band=(1.30, 1.80),
+    fresh_only=False,
+):
+    settings = get_settings()
+    maximum_age = settings.max_odds_age_minutes or settings.opportunity_max_odds_age_minutes
+    policy = SimpleNamespace(
+        min_opportunity_odds=band[0], max_opportunity_odds=band[1],
+        max_odds_age_minutes=min(maximum_age, 60) if fresh_only else settings.max_odds_age_minutes,
+        opportunity_max_odds_age_minutes=settings.opportunity_max_odds_age_minutes,
+        market_quality_medium_min_bookmakers=settings.market_quality_medium_min_bookmakers,
+    )
+    matches = {match.id: match for match in fixtures}
+    max_age = policy.max_odds_age_minutes or policy.opportunity_max_odds_age_minutes
+    current_references = _market_quotes_for_matches({
+        match.id: [quote for quote in match.odds
+                   if (age := quote_age(quote, now)) is not None and age <= max_age]
+        for match in fixtures
+    })
+    best, priorities, diagnostics = {}, {}, {}
+    for row in outputs:
+        match = matches[row.match_id]
+        key = ALL_MARKET_TO_ODDS_LOOKUP.get(row.market)
+        reference = current_references.get((row.match_id, row.market), {})
+        market_p = reference["market_probability"] if reference.get("vig_removed") else None
+        market_source = reference.get("market_probability_source")
+        forecast = SimpleNamespace(
+            match=match, match_id=row.match_id, created_at=getattr(row, "created_at", now),
+            model_probability=row.model_probability, calibrated_probability=row.calibrated_probability,
+            uncertainty_low=row.uncertainty_low, uncertainty_high=row.uncertainty_high,
+            data_quality=row.data_quality,
+        )
+        forecast.market_probability = market_p
+        forecast.market_probability_source = market_source
+        assessment = assess_opportunity(
+            forecast, match.odds, key,
+            policy, now, reliability.get((getattr(getattr(match, "competition", None), "code", "champions_league"), row.market)), (), allow_original=True,
+        )
+        reasons = assessment.reasons
+        probability = assessment.probability
+        if probability is not None and probability < minimum:
+            reasons += ("probabilidad_inferior_al_65" if minimum == .65 else "probabilidad_inferior_al_minimo",)
+        gap = market_probability_gap(probability, market_p, market_source)
+        reference_quote = assessment.reference_quote
+        origin = getattr(reference_quote, "provider_updated_at", None)
+        consulted = getattr(reference_quote, "fetched_at", None)
+        diagnostics[(row.match_id, row.market)] = {
+            "reasons": reasons, "score": assessment.score, "market_gap": gap,
+            "confidence_reasons": assessment.confidence_reasons,
+            "ev": assessment.ev, "quote_age_minutes": assessment.age_minutes,
+            "quote_origin_at": origin.isoformat() + "Z" if origin else None,
+            "quote_fetched_at": consulted.isoformat() + "Z" if consulted else None,
+            "quote_in_band": assessment.reference_quote is not None
+            and band[0] <= assessment.reference_quote.price <= band[1],
+            "quote_current": assessment.quote is not None,
+            "evidence_sufficient": "fiabilidad_historica_insuficiente" not in assessment.confidence_reasons,
+            "original_probability": row.model_probability, "probability": probability,
+        }
+        if reasons:
+            continue
+        priority = (assessment.high_confidence, assessment.score, probability, row.market)
+        if row.match_id in priorities and priority <= priorities[row.match_id]:
+            continue
+        priorities[row.match_id] = priority
+        best[row.match_id] = {
+            "market": row.market, "probability": probability, "odds": assessment.quote.price,
+            "bookmaker": assessment.quote.bookmaker, "model_version_id": getattr(row, "model_version_id", model_version_id),
+            "ev": assessment.ev, "quote_age_minutes": assessment.age_minutes,
+            "calibration_source": getattr(row, "calibration_source", None) or assessment.probability_source,
+            "probability_source": assessment.probability_source, "ranking_policy": "champions-verified-v1",
+        }
+    return best, diagnostics
+
+
 def generate_predictions_for_competition(
     db: Session, competition_code: str, target_date: dt.date | None = None
 ) -> list[Prediction]:
@@ -275,65 +521,8 @@ def generate_predictions_for_competition(
     match_odds_rows = {
         m.id: m.odds for m in db.query(Match).filter(Match.id.in_(target_matches["match_id"].tolist()))
     }
-    market_quotes = {}
-    for match_id, odds_rows in match_odds_rows.items():
-        for market_key, (market, line, selection) in ALL_MARKET_TO_ODDS_LOOKUP.items():
-            market_rows = [
-                odds for odds in odds_rows
-                if odds.market == market and odds.line == line and odds.snapshot_type == "pre_match"
-            ]
-            consensus = compute_market_consensus(market_rows, market, line, selection)
-            if consensus.market_probability is None:
-                continue
-            market_quotes[(match_id, market_key)] = {
-                "odds_origin_at": min(o.provider_updated_at for o in market_rows)
-                if market_rows and all(
-                    o.provider_updated_at is not None and o.fetched_at is not None
-                    and o.recorded_at is not None
-                    and o.provider_updated_at <= o.fetched_at <= o.recorded_at
-                    for o in market_rows
-                ) else None,
-                "consensus_outliers": consensus.outliers_removed,
-                "history_quote_ids": sorted(o.history_quote_id for o in market_rows)
-                if all(o.history_quote_id is not None for o in market_rows) else None,
-                "market_probability": consensus.market_probability,
-                "market_odds": consensus.market_odds,
-                "vig_removed": consensus.market_probability_source == "consensus_no_vig"
-                or consensus.market_probability_source == "single_book_no_vig",
-                "market_probability_source": consensus.market_probability_source,
-                "bookmakers_count": consensus.bookmakers_count,
-                "bookmakers_used": consensus.bookmakers_used,
-                "market_odds_min": consensus.min_odds,
-                "market_odds_max": consensus.max_odds,
-                "market_odds_median": consensus.median_odds,
-                "market_odds_average": consensus.average_odds,
-            }
-            if consensus.outliers_removed:
-                logger.info(
-                    "market_consensus.outliers_removed: match_id=%d market=%s bookmakers=%s",
-                    match_id,
-                    market_key,
-                    consensus.outliers_removed,
-                )
-
-    _add_derived_double_chance_quotes(market_quotes, match_odds_rows.keys())
-
-    outputs = predict_markets_for_table(
-        target_matches,
-        statistical_model=artifact["dixon_coles"],
-        ml_model=artifact["ml_classifier"],
-        ensemble_weights=artifact.get("ensemble_weights"),
-        market_quotes=market_quotes,
-        calibrators=artifact.get("calibrators"),
-    )
-    if "corners_model" in artifact:
-        outputs += predict_secondary_markets_for_table(
-            target_matches, artifact["corners_model"], market_quotes=market_quotes,
-            calibrators=artifact.get("calibrators"),
-        )
-
-    if "coherent_calibration" in artifact:
-        apply_coherent_calibration(outputs, artifact["coherent_calibration"])
+    market_quotes = _market_quotes_for_matches(match_odds_rows)
+    outputs = _predict_fixture_markets(target_matches, artifact, market_quotes)
 
     # Sin esto, cada `predict`/`predict-upcoming`/`refresh` que se ejecuta
     # sobre los MISMOS partidos programados (algo normal: es el flujo pensado

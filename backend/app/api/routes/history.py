@@ -12,6 +12,7 @@ from datetime import datetime
 from math import isfinite
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.app.api.routes.predictions import serialize_prediction
@@ -127,7 +128,10 @@ def list_history(
             return []
         query = query.filter(Match.competition_id == competition.id)
     if with_predictions:
-        query = query.filter(db.query(Prediction.id).filter(Prediction.match_id == Match.id).exists())
+        query = query.filter(or_(
+            db.query(Prediction.id).filter(Prediction.match_id == Match.id).exists(),
+            Match.competition.has(code="champions_league"),
+        ))
     matches = query.order_by(Match.kickoff_utc.desc()).limit(limit).all()
 
     match_ids = [m.id for m in matches]

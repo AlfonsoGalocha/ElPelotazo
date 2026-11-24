@@ -7,6 +7,8 @@ import {
   LayoutDashboard,
   CalendarDays,
   TrendingUp,
+  History,
+  Wallet,
   Bot,
   BarChart3,
   Settings,
@@ -22,7 +24,9 @@ import SearchBar from "@/components/SearchBar";
 const NAV_ITEMS = [
   { href: "/", label: "Hoy", icon: LayoutDashboard, related: ["/top-signals", "/signals"] },
   { href: "/matches", label: "Partidos", icon: CalendarDays, related: ["/selecciones"] },
-  { href: "/opportunity-performance", label: "Rendimiento", icon: TrendingUp, related: ["/prediction-history", "/history"] },
+  { href: "/opportunity-performance", label: "Rendimiento", icon: TrendingUp, related: [] },
+  { href: "/history", label: "Histórico", icon: History, related: ["/prediction-history"] },
+  { href: "/bot-bankroll", label: "Banca del bot", icon: Wallet, related: [] },
 ];
 
 const MORE_ITEMS = [

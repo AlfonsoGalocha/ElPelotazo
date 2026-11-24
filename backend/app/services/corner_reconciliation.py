@@ -38,6 +38,8 @@ def reconcile(db, client: ApiFootballClient, match_id: int, persist: bool = Fals
         or not match.provider_id[len(prefix):].isdigit()
     ):
         raise ValueError("Se requiere un partido finalizado con identificador de API-Football")
+    if match.round_name is not None and match.provider_status != "FT":
+        return None  # The endpoint may contain extra-time counts.
     if not client.is_available():
         raise RuntimeError("API-Football no está configurada")
 

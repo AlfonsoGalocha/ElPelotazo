@@ -64,6 +64,9 @@ class MatchOut(BaseModel):
     home_goals: int | None
     away_goals: int | None
     matchday: int | None = None
+    round_name: str | None = None
+
+    has_pre_match_odds: bool | None = None
 
     model_config = {"from_attributes": True}
 
@@ -139,6 +142,7 @@ class RoundOut(BaseModel):
     """Jornada actual de una competicion (ver services/round_service.py)."""
 
     competition_code: str
+    round_name: str | None = None
     round: int | None
     round_start: UtcDatetime | None
     round_end: UtcDatetime | None

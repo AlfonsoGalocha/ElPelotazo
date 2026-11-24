@@ -74,10 +74,11 @@ def test_chooses_one_with_positive_ev_and_fixed_band():
     assert choose([base], "original", "1.20-1.34", .65) is None
 
 
-def test_capture_and_settle_without_rewriting_snapshot(db_session):
+@pytest.mark.parametrize("competition", ["laliga", "champions_league"])
+def test_capture_and_settle_without_rewriting_snapshot(db_session, monkeypatch, competition):
     db = db_session
     now = datetime(2026, 11, 23, 18)
-    league = Competition(code="laliga", name="La Liga", country="Spain")
+    league = Competition(code=competition, name=competition, country="Spain")
     home, away = Team(canonical_name="Home"), Team(canonical_name="Away")
     db.add_all([league, home, away])
     db.flush()
@@ -114,11 +115,27 @@ def test_capture_and_settle_without_rewriting_snapshot(db_session):
     from backend.app.services.promotion_service import evaluate_and_promote
 
     assert evaluate_and_promote(db, league.code, version)["reason"] == "uncertified_training_cutoff"
+    if competition == "champions_league":
+        from backend.app.services import prediction_service
+
+        db.query(Prediction).filter(Prediction.match_id == match.id).delete()
+        rows = [SimpleNamespace(
+            match_id=match.id, market=market, model_probability=p, calibrated_probability=p,
+            data_quality=.8, confidence=.8, uncertainty_low=.6, uncertainty_high=.9, calibration_source="joint_temperature",
+        ) for market, p in zip(RESULT, (.80, .13, .07))]
+        monkeypatch.setattr(prediction_service, "score_champions_candidate", lambda *_: (version, rows, {}))
     assert capture_strategy_due(db, now) == 1
     capture = db.get(StrategyCapture, match.id)
     data = capture.payload
     assert data["decisions"]["original:principal"]["probability"] == pytest.approx(.8)
-    assert data["decisions"]["corregida:principal"]["corrected_source"] == "original_simplex_fallback"
+    corrected = data["decisions"]["corregida:principal"]
+    if competition == "champions_league":
+        assert corrected["prediction_source"] == "champions_candidate"
+        assert corrected["prediction_id"] is None
+        assert corrected["corrected_source"] == "joint_temperature"
+        assert db.query(Prediction).filter_by(match_id=match.id).count() == 0
+    else:
+        assert corrected["corrected_source"] == "original_simplex_fallback"
     assert capture_strategy_due(db, now+timedelta(minutes=5)) == 0
     assert strategy_report(db)["strategies"]["original"]["settled"] == 0
     match.status, match.home_goals, match.away_goals = "finished", 2, 0

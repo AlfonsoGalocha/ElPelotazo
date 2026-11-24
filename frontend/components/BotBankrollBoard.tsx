@@ -1,76 +1,124 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { BotBankroll } from "@/lib/api";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 
 const euros = new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" });
-const madridTime = new Intl.DateTimeFormat("es-ES", { timeZone: "Europe/Madrid", hour: "2-digit", minute: "2-digit" });
-const states = { won: "Ganada", lost: "Perdida", void: "Anulada", pending: "Pendiente" };
+const madridDate = new Intl.DateTimeFormat("es-ES", {
+  timeZone: "Europe/Madrid", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit",
+});
+const states = { won: "Ganada", lost: "Fallo", void: "Anulada", pending: "Pendiente" };
 
-const decisions = {
-  goles: "Más de 1,5 o 2,5 goles", ambos_marcan: "Ambos marcan",
-  doble_oportunidad: "Doble oportunidad del favorito", pasar: "Pasar",
-};
-
-export default function BotBankrollBoard({ report, trial = false }: { report: BotBankroll | null; trial?: boolean }) {
+export default function BotBankrollBoard({ report }: { report: BotBankroll | null }) {
+  const router = useRouter();
+  useEffect(() => {
+    const timer = setInterval(() => router.refresh(), 60_000);
+    return () => clearInterval(timer);
+  }, [router]);
   if (!report) return <p>No se pudo consultar la banca del bot.</p>;
   const { initial_cents, balance_cents, reserved_cents, days } = report;
+  let settledCapital = initial_cents;
+  const curve = [
+    { cut: "Inicio", balance: initial_cents / 100 },
+    ...[...days].reverse().map(day => {
+      settledCapital += day.profit_cents;
+      return { cut: madridDate.format(new Date(day.captured_at)), balance: settledCapital / 100 };
+    }),
+  ];
+  const tickets = days.flatMap(day => day.tickets.map((ticket, index) => ({ day, ticket, index })));
   return (
-    <section className="space-y-4 rounded-xl border border-surface-border bg-card p-5">
-      <h2 className="text-lg font-semibold">{trial ? "Prueba prepartido con 300 €" : "Banca del bot"}</h2>
+    <section className="space-y-4 rounded-xl border border-surface-border bg-card p-4">
       <p className="text-sm text-slate-400">
-        {trial ? "Banca virtual independiente. Los tickets se fijan antes del inicio y se liquidan con los resultados reales." : "El bot decide antes del primer partido del día en La Liga, Premier y Serie A. Los cortes nuevos reparten todo el saldo virtual disponible si hay selecciones aptas."}
+        Los resultados en directo actualizan el saldo virtual. El bot reinvierte el retorno una vez confirmado el resultado final.
       </p>
       <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[
-          ["Banca inicial", initial_cents], ["Saldo disponible", balance_cents],
-          ["En juego", reserved_cents], ["Beneficio liquidado", balance_cents + reserved_cents - initial_cents],
+          ["Banca inicial", initial_cents], ["Saldo virtual", balance_cents],
+          ["En juego", reserved_cents], ["Beneficio neto", balance_cents + reserved_cents - initial_cents],
         ].map(([label, amount]) => (
           <div key={label}><dt className="text-sm text-slate-400">{label}</dt><dd className="font-semibold">{euros.format(Number(amount) / 100)}</dd></div>
         ))}
       </dl>
-      {!days.length && <p className="text-sm text-slate-400">El primer corte automático se registra durante la hora anterior al primer partido.</p>}
-      {days.map((day) => (
-        <article className="space-y-2 border-t border-surface-border pt-3" key={day.day}>
-          <h3 className="font-medium">{day.day.split("-").reverse().join("/")} · decisión a las {madridTime.format(new Date(day.captured_at))}</h3>
-          <p className="text-sm text-slate-400">Apostado {euros.format(day.tickets.reduce((sum, ticket) => sum + ticket.stake_cents, 0) / 100)} · Cuotas {day.odds_band.map((n) => n.toFixed(2)).join("–")} · Beneficio liquidado {euros.format(day.profit_cents / 100)}</p>
-          {!day.tickets.length && <p className="text-sm text-slate-300">El bot decidió no apostar en este corte.</p>}
-          <ul className="space-y-2 text-sm">
-            {day.tickets.map((ticket) => (
-              <li className="rounded border border-surface-border p-3" key={ticket.legs.map((leg) => leg.match_id).join("-")}>
-                <div className="font-medium">
-                  {ticket.legs.length === 1 ? "Simple" : "Doble"} · {euros.format(ticket.stake_cents / 100)} · {states[ticket.state]}
-                  {ticket.state !== "pending" && ` · Retorno ${euros.format(ticket.returned_cents / 100)}`}
-                </div>
-                {ticket.legs.map((leg) => (
-                  <div key={leg.match_id} className="mt-1 text-slate-300">
-                    <Link href={`/matches/${leg.match_id}`} className="hover:underline">{leg.match}</Link>
-                    {" · "}{MARKET_DISPLAY_NAMES[leg.market] ?? leg.market} · {(100 * leg.probability).toFixed(1)} % · {leg.price.toFixed(2)} · {leg.bookmaker}
-                    {leg.probability_source === "original" && " · Probabilidad original"}
-                  </div>
-                ))}
-              </li>
-            ))}
-          </ul>
-          <div className="space-y-1 text-xs text-slate-400">
-            {day.fixtures.map(({ match_id, match, assessed, eligible, decision, context }) => context ? (
-              <details key={match_id}>
-                <summary className="cursor-pointer">
-                  {match} · {decision ? decisions[decision] : "Decisión"} · {eligible} mercados aptos de {assessed}
-                </summary>
-                {([["Local", context.home_form, context.home_standing], ["Visitante", context.away_form, context.away_standing]] as const).map(([label, form, standing]) => (
-                  <p key={label} className="my-1">
-                    {label} · {standing ? `Puesto ${standing.position}` : "Puesto sin registrar"} ·
-                    Últimos {form.matches} partidos · {form.wins} ganados, {form.draws} empatados y {form.losses} perdidos
-                  </p>
-                ))}
-                <p>Cara a cara · Ambos marcaron en {context.h2h.both_scored} de {context.h2h.matches} · Hubo más de 2,5 goles en {context.h2h.over_2_5}</p>
-              </details>
-            ) : (
-              <p key={match_id}>{match} · {assessed} mercados evaluados · {eligible} aptos</p>
-            ))}
+      <div>
+        <h2 className="font-semibold">Evolución de la banca</h2>
+        <p className="text-xs text-slate-400">Capital tras resolver las apuestas de cada corte.</p>
+        <div className="mt-2 h-52">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={curve} margin={{ top: 8, right: 12, bottom: 4, left: 0 }}>
+              <CartesianGrid stroke="#334155" vertical={false} />
+              <XAxis dataKey="cut" tick={{ fill: "#94a3b8", fontSize: 11 }} minTickGap={24} />
+              <YAxis allowDecimals={false} tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={value => `${value} €`} />
+              <Tooltip formatter={(value: number) => [euros.format(value), "Capital"]} contentStyle={{ background: "#0f172a", borderColor: "#334155" }} />
+              <Line type="linear" dataKey="balance" stroke="#a78bfa" strokeWidth={2} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+      {days[0]?.fixtures.length > 0 && !days[0].tickets.length && (
+        <p className="text-sm text-slate-400">
+          Último corte · {madridDate.format(new Date(days[0].captured_at))} · El bot pasó en {days[0].fixtures.map(fixture => fixture.match).join(", ")}.
+        </p>
+      )}
+      <div>
+        <h2 className="mb-2 font-semibold">Historial de apuestas</h2>
+        {!tickets.length ? <p className="text-sm text-slate-400">Todavía no hay apuestas registradas.</p> : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead className="text-slate-400"><tr>
+                <th scope="col" className="px-2 py-2">Partido</th>
+                <th scope="col" className="px-2 py-2">Apuesta y cuota</th>
+                <th scope="col" className="px-2 py-2">Resultado</th>
+              </tr></thead>
+              <tbody>
+                {tickets.map(({ day, ticket, index }) => {
+                  const inPlay = ticket.legs.some(leg => leg.live);
+                  return (
+                  <tr key={`${day.captured_at}-${index}`} className="border-t border-surface-border align-top">
+                    <td className="px-2 py-2">
+                      {ticket.legs.map((leg, i) => (
+                        <div key={i}>
+                          <Link href={`/matches/${leg.match_id}`} className="hover:underline">{leg.match}</Link>
+                          {leg.live && (
+                            <div className="text-xs text-slate-400">
+                              {leg.live.home}–{leg.live.away} · {leg.live.status === "HT" ? "Descanso"
+                                : leg.live.status === "INT" || leg.live.status === "SUSP" ? "Interrumpido"
+                                : leg.live.minute == null ? "En directo"
+                                : `Min. ${leg.live.minute}${leg.live.extra ? `+${leg.live.extra}` : ""}`}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                      <span className="text-xs text-slate-400">{madridDate.format(new Date(day.captured_at))}{day.policy_version === "manual-in-play-historical" && " · Manual en juego · cuota histórica"}</span>
+                    </td>
+                    <td className="px-2 py-2">
+                      {ticket.legs.map((leg, i) => (
+                        <div key={i}>
+                          {MARKET_DISPLAY_NAMES[leg.market] ?? leg.market} · <strong>{leg.price.toFixed(2)}</strong>
+                          {ticket.legs.length > 1 && leg.live?.goal_met && (
+                            <div className="text-xs text-emerald-400">Gol cumplido</div>
+                          )}
+                        </div>
+                      ))}
+                      <span className="text-xs text-slate-400">{euros.format(ticket.stake_cents / 100)} apostados</span>
+                    </td>
+                    <td className="px-2 py-2 whitespace-nowrap">
+                      <div className={ticket.state === "won" ? "text-emerald-400" : ticket.state === "lost" ? "text-red-400" : "text-slate-300"}>
+                        {ticket.state === "pending" && inPlay ? "En juego" : states[ticket.state]}
+                      </div>
+                      {ticket.state !== "pending" && <span className="text-xs text-slate-400">{euros.format((ticket.returned_cents - ticket.stake_cents) / 100)} netos</span>}
+                    </td>
+                  </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        </article>
-      ))}
+        )}
+      </div>
     </section>
   );
 }

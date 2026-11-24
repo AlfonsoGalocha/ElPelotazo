@@ -156,7 +156,7 @@ class TotalCountPoissonModel:
             if spec.stat_family != self.stat_family:
                 continue
             # P(total > line) = 1 - CDF(floor(line)) para lineas .5
-            p_over = 1.0 - poisson.cdf(np.floor(spec.line), lam)
+            p_over = poisson.sf(np.floor(spec.line), lam)
             p = p_over if spec.kind == "over" else 1.0 - p_over
             out[market_key] = np.clip(p, 1e-3, 1.0 - 1e-3)
         return out
