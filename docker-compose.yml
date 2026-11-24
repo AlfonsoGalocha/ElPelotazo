@@ -177,7 +177,7 @@ services:
     command:
       - >
         (while true; do
-          football-edge bot-decision --trial --continuous || echo "[scheduler] fallo banca virtual";
+          football-edge bot-decision --trial --continuous --refresh-odds || echo "[scheduler] fallo banca virtual";
           football-edge capture-strategies || echo "[scheduler] fallo corte de estrategias";
           football-edge publish-upcoming || echo "[scheduler] no se pudo publicar el corte prepartido";
           sleep 600;

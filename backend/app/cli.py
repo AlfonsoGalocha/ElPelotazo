@@ -630,12 +630,41 @@ def bot_decision(
     dry_run: bool = typer.Option(False, help="Consulta las opciones actuales sin registrar la decisión."),
     trial: bool = typer.Option(False, help="Usa una banca de prueba independiente de 300 euros."),
     continuous: bool = typer.Option(False, help="Continúa la banca virtual de prueba con cada corte."),
+    refresh_odds: bool = typer.Option(False, help="Actualiza antes las cuotas de los partidos de la próxima hora."),
 ) -> None:
-    from backend.app.services.bot_bankroll import capture_bot_decision
+    from backend.app.services.bot_bankroll import capture_bot_decision, refresh_imminent_odds
 
+    if refresh_odds:
+        with session_scope() as db:
+            refreshed = refresh_imminent_odds(db)
+        if refreshed:
+            typer.echo(f"[bot-decision] cuotas actualizadas: {refreshed}", err=True)
     with session_scope() as db:
         decision = capture_bot_decision(db, early=early or dry_run, dry_run=dry_run, trial=trial, continuous=continuous)
     typer.echo(json.dumps(decision, ensure_ascii=False))
+
+
+@app.command("bot-manual-ticket")
+def bot_manual_ticket(
+    quote_id: int = typer.Option(..., help="Cuota prepartido archivada (match_odds_history.id)."),
+    stake_eur: float = typer.Option(..., min=0.01, help="Stake virtual en euros, sujeto a los límites de riesgo."),
+) -> None:
+    """Registra una apuesta virtual manual, separada de las decisiones automáticas."""
+    from backend.app.services.bot_bankroll import record_manual_ticket
+
+    with session_scope() as db:
+        payload = record_manual_ticket(db, quote_id, round(stake_eur * 100))
+    typer.echo(json.dumps(payload, ensure_ascii=False))
+
+
+@app.command("bot-simulate")
+def bot_simulate(
+    paths: int = typer.Option(2000, min=100), bets: int = typer.Option(150, min=10),
+) -> None:
+    """Simula los perfiles de riesgo del bot sobre oportunidades sintéticas, sin tocar ninguna banca."""
+    from backend.app.services.bot_capital import simulate_profiles
+
+    typer.echo(json.dumps(simulate_profiles(paths, bets), ensure_ascii=False, indent=2))
 
 
 @app.command("reconcile-published-corners", hidden=True)
