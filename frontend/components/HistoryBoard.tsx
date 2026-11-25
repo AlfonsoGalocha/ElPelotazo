@@ -108,7 +108,8 @@ function groupByCompetitionLatestMatchday(rows: MatchHistory[]): CompetitionGrou
       : groupRows.filter((row) => seasonLabelFor(row.match.kickoff_utc) === latestSeason);
     const matchdays = seasonRows.map((r) => r.match.matchday).filter((m): m is number => m !== null);
     const matchday = matchdays.length ? Math.max(...matchdays) : null;
-    const roundName = code === "champions_league"
+    // Competitions without matchdays (Champions, AFC Elite...) group by their latest round name.
+    const roundName = code === "champions_league" || matchday === null
       ? [...seasonRows].sort((a, b) => Date.parse(b.match.kickoff_utc) - Date.parse(a.match.kickoff_utc))[0].match.round_name
       : null;
     const listedRows = roundName ? seasonRows.filter((row) => row.match.round_name === roundName)

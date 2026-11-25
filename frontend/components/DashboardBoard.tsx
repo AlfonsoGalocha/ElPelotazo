@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useCachedData } from "@/lib/clientCache";
 import { Sparkles, SlidersHorizontal } from "lucide-react";
 import { getTodayPreviews, getCompetitions, getMatchesList, getSummary, getTopSignals, type TodayPreview } from "@/lib/api";
 import { isInternationalCompetition } from "@/lib/internationalCompetitions";
@@ -141,61 +142,30 @@ const QUALITY_LABELS: Record<QualityFilter, string> = {
 };
 
 export default function DashboardBoard() {
-  const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [competitionCode, setCompetitionCode] = useState<string | null>(null);
   const [quality, setQuality] = useState<QualityFilter>("ALL");
-  const [previews, setPreviews] = useState<Record<string, TodayPreview> | null>(null);
-  const [previewError, setPreviewError] = useState(false);
-  const [schedule, setSchedule] = useState<Match[] | null>(null);
-  const [scheduleError, setScheduleError] = useState(false);
-  const [predictions, setPredictions] = useState<Prediction[]>([]);
-  const [summary, setSummary] = useState<Summary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    getCompetitions()
-      .then(setCompetitions)
-      .catch(() => setCompetitions([]));
-    getSummary()
-      .then(setSummary)
-      .catch(() => setSummary(null));
-  }, []);
-
-  useEffect(() => {
-    let current = true;
-    setSchedule(null);
-    setScheduleError(false);
-    // The calendar API accepts UTC dates. Include the preceding UTC date around Madrid midnight.
+  const competitions = useCachedData<Competition[]>("competitions", getCompetitions).data ?? [];
+  const summary = useCachedData<Summary>("summary", getSummary).data ?? null;
+  // The calendar API accepts UTC dates. Include the preceding UTC date around Madrid midnight.
+  const scheduleState = useCachedData<Match[]>(`schedule:${competitionCode ?? "all"}`, () => {
     const now = Date.now();
     const dateFrom = new Date(now - 86_400_000).toISOString().slice(0, 10);
     const dateTo = new Date(now + 14 * 86_400_000).toISOString().slice(0, 10);
-    getMatchesList({ dateFrom, dateTo, competitionCode: competitionCode ?? undefined, limit: 500 })
-      .then(rows => { if (current) setSchedule(rows); })
-      .catch(() => { if (current) setScheduleError(true); });
-    return () => { current = false; };
-  }, [competitionCode]);
-
-
-  useEffect(() => {
-    let current = true;
-    setLoading(true);
-    setError(null);
-    const timeout = setTimeout(() => {
-      getTopSignals({
-        limit: 24,
-        opportunityView: "explore",
-        scope: "all_upcoming",
-        days: 1,
-        competitionCode: competitionCode ?? undefined,
-        quality,
-      }, true)
-        .then(rows => { if (current) setPredictions(rows); })
-        .catch(() => { if (current) setError("No se pudieron cargar las selecciones de hoy."); })
-        .finally(() => { if (current) setLoading(false); });
-    }, 150);
-    return () => { current = false; clearTimeout(timeout); };
-  }, [competitionCode, quality]);
+    return getMatchesList({ dateFrom, dateTo, competitionCode: competitionCode ?? undefined, limit: 500 });
+  });
+  const schedule = scheduleState.data ?? null;
+  const scheduleError = scheduleState.error;
+  const signals = useCachedData<Prediction[]>(`top-signals:${competitionCode ?? "all"}:${quality}`, () => getTopSignals({
+    limit: 24,
+    opportunityView: "explore",
+    scope: "all_upcoming",
+    days: 1,
+    competitionCode: competitionCode ?? undefined,
+    quality,
+  }, true), { delayMs: 150 });
+  const predictions = signals.data ?? [];
+  const loading = signals.data === undefined && !signals.error;
+  const error = signals.error ? "No se pudieron cargar las selecciones de hoy." : null;
 
   const today = madridDate.format(new Date());
   const todayPicks = predictions.filter(p => madridDate.format(new Date(p.match.kickoff_utc)) === today);
@@ -207,18 +177,13 @@ export default function DashboardBoard() {
   const nextDates = [...new Set(future.map(match => madridDate.format(new Date(match.kickoff_utc))))].slice(0, 2);
   const visiblePreviewIds = [...todayFixtures, ...future.filter(match => nextDates.includes(madridDate.format(new Date(match.kickoff_utc))))]
     .filter(match => match.status === "scheduled").map(match => match.id).join(",");
-  useEffect(() => {
-    if (!visiblePreviewIds) return;
-    let current = true;
-    setPreviews(null);
-    setPreviewError(false);
+  const previewState = useCachedData<Record<string, TodayPreview>>(visiblePreviewIds ? `previews:${visiblePreviewIds}` : null, () => {
     const ids = visiblePreviewIds.split(",").map(Number);
-    Promise.all(Array.from({ length: Math.ceil(ids.length / 200) }, (_, index) =>
-      getTodayPreviews(ids.slice(index * 200, (index + 1) * 200))))
-      .then(items => { if (current) setPreviews(Object.assign({}, ...items)); })
-      .catch(() => { if (current) setPreviewError(true); });
-    return () => { current = false; };
-  }, [visiblePreviewIds]);
+    return Promise.all(Array.from({ length: Math.ceil(ids.length / 200) }, (_, index) =>
+      getTodayPreviews(ids.slice(index * 200, (index + 1) * 200)))).then(items => Object.assign({}, ...items));
+  });
+  const previews = previewState.data ?? null;
+  const previewError = previewState.error;
   // Pedido real del usuario: "ponme el mismo filtro de oportunidades en
   // todas las secciones de la app" -- mismo desplegable con optgroup
   // Ligas/Selecciones que /top-signals, nunca botones sueltos.

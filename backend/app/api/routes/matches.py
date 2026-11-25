@@ -198,21 +198,81 @@ def list_champions_previews(
     return champions_preview_selections(db, fixtures, policy=policy)
 
 
+@router.get("/candidate-opportunities")
+def list_candidate_opportunities(days: int = Query(3, ge=1, le=10)):
+    """Verified opportunities of competitions forecast on the fly (Champions, AFC Elite, Liga F).
+
+    They come from the same main-page previews; they are kept apart from the stored-forecast
+    ranking because their model is a candidate that has not gone through promotion.
+    """
+    from sqlalchemy.orm import selectinload
+
+    from backend.app.db.database import SessionLocal
+    from backend.app.db.models.matches import MatchOdds
+    from backend.app.services.response_cache import cached
+    from backend.app.services.today_preview import build_today_previews
+
+    def compute():
+        session = SessionLocal()
+        try:
+            now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+            fixtures = session.query(Match).join(Competition).options(
+                selectinload(Match.competition), selectinload(Match.home_team), selectinload(Match.away_team),
+                selectinload(Match.odds).selectinload(MatchOdds.archived_quote),
+            ).filter(Competition.code.in_(API_CANDIDATE_COMPETITIONS), Match.status == "scheduled",
+                     Match.kickoff_utc > now, Match.kickoff_utc <= now + dt.timedelta(days=days)).all()
+            previews = build_today_previews(session, fixtures, now)
+            by_id = {m.id: m for m in fixtures}
+            rows = []
+            for match_id, preview in previews.items():
+                pick = preview.get("opportunity")
+                if not pick:
+                    continue
+                m = by_id[match_id]
+                rows.append(dict(
+                    match=dict(id=m.id, kickoff_utc=m.kickoff_utc.isoformat() + "Z",
+                               competition=dict(code=m.competition.code, name=m.competition.name),
+                               home=dict(id=m.home_team_id, name=m.home_team.canonical_name, logo_url=m.home_team.logo_url),
+                               away=dict(id=m.away_team_id, name=m.away_team.canonical_name, logo_url=m.away_team.logo_url)),
+                    opportunity=pick, eligible=preview["counts"]["eligible"],
+                    local_evidence=preview["counts"]["local_evidence"],
+                ))
+            return sorted(rows, key=lambda row: (row["match"]["kickoff_utc"], -(row["opportunity"].get("ev") or 0)))
+        finally:
+            session.rollback()
+            session.close()
+
+    rows, _ = cached(("candidate-opportunities", days), compute, fresh_seconds=300, max_stale_seconds=1800)
+    return rows
+
+
 @router.get("/today/previews")
 def list_today_previews(
     match_ids: list[int] = Query(..., min_length=1, max_length=200), db: Session = Depends(get_db),
 ):
     from sqlalchemy.orm import selectinload
 
+    from backend.app.db.database import SessionLocal
     from backend.app.db.models.matches import MatchOdds
+    from backend.app.services.response_cache import cached
     from backend.app.services.today_preview import build_today_previews
 
-    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
-    fixtures = (db.query(Match).options(
-        selectinload(Match.competition), selectinload(Match.odds).selectinload(MatchOdds.archived_quote),
-    ).filter(Match.id.in_(match_ids), Match.status == "scheduled",
-             Match.kickoff_utc > now, Match.kickoff_utc <= now + dt.timedelta(days=10)).all())
-    return build_today_previews(db, fixtures, now)
+    def compute():
+        # On-the-fly forecasts take seconds; the cache serves the last result while this refreshes.
+        session = SessionLocal()
+        try:
+            now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+            fixtures = (session.query(Match).options(
+                selectinload(Match.competition), selectinload(Match.odds).selectinload(MatchOdds.archived_quote),
+            ).filter(Match.id.in_(match_ids), Match.status == "scheduled",
+                     Match.kickoff_utc > now, Match.kickoff_utc <= now + dt.timedelta(days=10)).all())
+            return build_today_previews(session, fixtures, now)
+        finally:
+            session.rollback()
+            session.close()
+
+    previews, _ = cached(("today-previews", tuple(sorted(set(match_ids)))), compute, fresh_seconds=300, max_stale_seconds=1800)
+    return previews
 
 
 @router.get("/{match_id}", response_model=MatchOut)
@@ -253,10 +313,23 @@ def get_match_predictions(match_id: int, db: Session = Depends(get_db)) -> list[
 def get_match_preview(match_id: int, db: Session = Depends(get_db)):
     from backend.app.services.prediction_service import preview_champions_predictions
 
-    match = db.get(Match, match_id)
-    if match is None:
+    from backend.app.db.database import SessionLocal
+    from backend.app.services.response_cache import cached
+
+    if db.get(Match, match_id) is None:
         raise HTTPException(status_code=404, detail="Partido no encontrado")
-    return preview_champions_predictions(db, match)
+
+    def compute():
+        # Same on-the-fly forecast; cached like the main-page previews so each visit does not rebuild it.
+        session = SessionLocal()
+        try:
+            return preview_champions_predictions(session, session.get(Match, match_id))
+        finally:
+            session.rollback()
+            session.close()
+
+    preview, _ = cached(("match-preview", match_id), compute, fresh_seconds=300, max_stale_seconds=1800)
+    return preview
 
 
 def _recent_finished_matches(

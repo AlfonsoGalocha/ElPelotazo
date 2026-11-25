@@ -21,7 +21,7 @@ from backend.app.models.calibration.coherent import RESULT, corrected_forecasts
 from backend.app.normalization.bookmakers import is_excluded_bookmaker
 from backend.app.prediction.eligibility import observed_corner_total
 from backend.app.prediction.market_labels import DOUBLE_CHANCE_COMPONENTS
-from backend.app.prediction.opportunities import quote_age, ranking_score, valid_probability
+from backend.app.prediction.opportunities import confirmed_quote_age, ranking_score, valid_probability
 from backend.app.services.publication_service import selection_outcome
 
 from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS, CONTINENTAL_CHAMPIONS
@@ -31,7 +31,8 @@ WEIGHTS = {"original": 1., "corregida": None, "mixta_80_20": .8, "mixta_65_35": 
 BANDS = {"principal": (1.35, 1.90), "1.20-1.34": (1.20, 1.35), "1.35-1.50": (1.35, 1.51),
          "1.51-1.70": (1.51, 1.71), "1.71-1.90": (1.71, 1.90), "1.20-1.90": (1.20, 1.90)}
 LEAGUES = ("laliga", "premier_league", "bundesliga", "ligue_1", "serie_a", *API_CANDIDATE_COMPETITIONS)
-SCHEMA_VERSION = "shadow-v2-1"
+# v2-2: quote currency follows the last confirmed download (as in the ranking), not the origin stamp.
+SCHEMA_VERSION = "shadow-v2-2"
 
 
 def in_band(price, name):
@@ -198,7 +199,7 @@ def capture_strategy_due(db, now=None):
         } if candidate_only else corrected_forecasts(correction_input, marginals, t))
         quotes = [q for q in match.odds if q.snapshot_type == "pre_match" and not is_excluded_bookmaker(q.bookmaker)
                   and math.isfinite(q.price) and q.price > 1
-                  and (age := quote_age(q, cutoff)) is not None and age <= max_age]
+                  and (age := confirmed_quote_age(q, cutoff)) is not None and age <= max_age]
         candidates = []
         for market, p in predictions.items():
             for quote in quotes:
@@ -207,7 +208,7 @@ def capture_strategy_due(db, now=None):
                 reference = independent_reference(quotes, market, lookup, quote)
                 corrected_p, source = corrected[market]
                 probabilities = probabilities_for(raw[market], corrected_p, reference)
-                age = quote_age(quote, cutoff)
+                age = confirmed_quote_age(quote, cutoff)
                 scores = {name: candidate_score(prob, quote.price, p.data_quality, p.confidence, p.uncertainty_low,
                                                 p.uncertainty_high, age, max_age)
                           for name, prob in probabilities.items()}

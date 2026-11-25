@@ -8,7 +8,7 @@ from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS, C
 from backend.app.normalization.bookmakers import is_excluded_bookmaker
 
 from backend.app.db.models.modeling import ModelVersion, Prediction
-from backend.app.prediction.opportunities import QUOTE_FIELDS, quote_age, ranking_score, valid_probability
+from backend.app.prediction.opportunities import QUOTE_FIELDS, confirmed_quote_age, quote_age, ranking_score, valid_probability
 from backend.app.services.evaluation_service import market_track_records_with_provenance
 from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP, rank_champions_preview, score_api_candidate, score_champions_candidate
 from backend.app.utils.logging import get_logger
@@ -57,9 +57,10 @@ def informative_pick(rows, competition, reliability, model_version_id, now, *, o
                     or quote.fetched_at is None or quote.recorded_at is None
                     or not quote.fetched_at <= quote.recorded_at <= now):
                 continue
-            age = quote_age(quote, now)
-            if age is None and quote.provider_updated_at is not None:
+            if quote_age(quote, now) is None and quote.provider_updated_at is not None:
                 continue
+            # Currency follows the last confirmed download, like the ranking.
+            age = confirmed_quote_age(quote, now)
             state = "current" if age is not None and age <= max_age else "stale" if age is not None else "unverified"
             prices.append((state, quote, age))
         if not prices:

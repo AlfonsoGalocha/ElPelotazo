@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.api.routes import (
     agent,
+    analysis,
     backtesting,
     competitions,
     health,
@@ -50,4 +51,5 @@ app.include_router(publications.router)
 app.include_router(backtesting.router)
 app.include_router(models.router)
 app.include_router(history.router)
+app.include_router(analysis.router)
 app.include_router(agent.router)

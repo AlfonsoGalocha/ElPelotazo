@@ -181,7 +181,7 @@ export default function BotBankrollBoard({ report, simulations }: { report: BotB
                           <span className="block text-xs text-slate-400">{madridDate.format(new Date(day.captured_at))}</span>
                         </td>
                         <td className="px-2 py-2">
-                          <div>{kind_labels[ticket.kind] ?? ticket.kind}</div>
+                          <div>{kind_labels[ticket.kind] ?? ticket.kind}{ticket.strategy === "alta_probabilidad" && " · alta probabilidad"}</div>
                           <div className="text-xs text-slate-400">
                             {isDouble ? "Cuota combinada sintética" : market(ticket.legs[0].market)} · <strong className="text-slate-200">{price.toFixed(2)}</strong>
                             {ticket.kind === "manual_live" && " · cuota histórica prepartido"}
@@ -229,7 +229,7 @@ export default function BotBankrollBoard({ report, simulations }: { report: BotB
         <h2 className="mb-1 font-semibold">Explicación de decisiones</h2>
         <p className="mb-2 text-xs text-slate-400">
           En cada corte el bot evalúa conjuntamente todas las alternativas (no apostar, individuales, combinadas y mezclas) y elige la de mayor
-          crecimiento logarítmico en el peor escenario de dependencia y calibración. Las cuotas combinadas son sintéticas, no ofertas de una casa.
+          crecimiento logarítmico en el peor escenario de dependencia entre partidos (la incertidumbre de calibración ya está descontada en la probabilidad efectiva). Las cuotas combinadas son sintéticas, no ofertas de una casa.
         </p>
         {!explained.length ? <p className="text-sm text-slate-400">Aún no hay cortes con el nuevo motor de capital.</p> : explained.map(day => {
           const capital = day.capital!;
@@ -268,7 +268,7 @@ export default function BotBankrollBoard({ report, simulations }: { report: BotB
               </div>
               {capital.accepted_doubles.length > 0 && (
                 <p className="mt-2 text-xs text-slate-400">Combinadas candidatas: {capital.accepted_doubles.map(d =>
-                  `${d.matches.join(" + ")} @ ${d.price.toFixed(2)} (p efectiva ${pct(d.effective_probability)}, EV peor caso ${pct(d.robust_ev)})`).join(" · ")}</p>
+                  `${d.matches.join(" + ")} @ ${d.price.toFixed(2)} (p efectiva ${pct(d.effective_probability)}, EV con dependencia adversa ${pct(d.robust_ev)})`).join(" · ")}</p>
               )}
               <ul className="mt-2 space-y-1 text-xs text-slate-400">
                 {day.fixtures.map(fixture => (
@@ -369,7 +369,8 @@ export default function BotBankrollBoard({ report, simulations }: { report: BotB
           </p>
         )}
         {([
-          ["by_kind", "Individuales frente a combinadas"], ["by_staking", "Stake anterior frente a dinámico"],
+          ["by_kind", "Individuales frente a combinadas"], ["by_strategy", "Ventaja confirmada frente a alta probabilidad"],
+          ["by_staking", "Stake anterior frente a dinámico"],
           ["by_odds", "Por rango de cuota"], ["by_probability", "Por rango de probabilidad"],
           ["by_confidence", "Por confianza estadística"], ["by_market", "Por mercado"], ["by_competition", "Por competición"],
         ] as const).map(([key, title]) => Object.keys(report.learning[key]).length > 0 && (

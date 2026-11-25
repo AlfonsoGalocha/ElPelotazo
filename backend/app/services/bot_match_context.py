@@ -8,7 +8,7 @@ from sqlalchemy import or_
 from backend.app.db.models.matches import Match
 from backend.app.db.models.standings import StandingsSnapshot
 from backend.app.normalization.bookmakers import is_excluded_bookmaker
-from backend.app.prediction.opportunities import forecast_priority, quote_age, valid_probability
+from backend.app.prediction.opportunities import confirmed_quote_age, forecast_priority, valid_probability
 
 
 OUTSIDER_GOAL_BAND = (1.40, 1.50)
@@ -87,7 +87,7 @@ def team_win_prices(match, now, max_age_minutes):
                 or quote.snapshot_type != "pre_match" or quote.selection not in prices
                 or is_excluded_bookmaker(quote.bookmaker) or not isfinite(quote.price) or quote.price <= 1):
             continue
-        age = quote_age(quote, now)
+        age = confirmed_quote_age(quote, now)
         if age is not None and age <= max_age_minutes:
             prices[quote.selection][quote.bookmaker] = quote.price
     return {side: median(quotes.values()) for side, quotes in prices.items() if quotes}

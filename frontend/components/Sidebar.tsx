@@ -6,7 +6,6 @@ import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
   CalendarDays,
-  TrendingUp,
   History,
   Wallet,
   Bot,
@@ -17,20 +16,45 @@ import {
   Circle,
   LineChart,
   ChevronDown,
+  Star,
+  Compass,
+  Trophy,
+  Users,
+  FlaskConical,
+  Brain,
+  Gauge,
 } from "lucide-react";
 import { pingHealth } from "@/lib/api";
 import SearchBar from "@/components/SearchBar";
 
-const NAV_ITEMS = [
-  { href: "/", label: "Hoy", icon: LayoutDashboard, related: ["/top-signals", "/signals"] },
-  { href: "/matches", label: "Partidos", icon: CalendarDays, related: ["/selecciones"] },
-  { href: "/opportunity-performance", label: "Rendimiento", icon: TrendingUp, related: [] },
-  { href: "/history", label: "Histórico", icon: History, related: ["/prediction-history"] },
-  { href: "/bot-bankroll", label: "Banca del bot", icon: Wallet, related: [] },
+type NavItem = { href: string; label: string; icon: typeof LayoutDashboard; related: string[]; exact?: boolean };
+
+// Existing URLs are kept; only grouping and labels change.
+const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
+  {
+    title: "Fútbol",
+    items: [
+      { href: "/", label: "Hoy", icon: LayoutDashboard, related: ["/signals"] },
+      { href: "/matches", label: "Partidos", icon: CalendarDays, related: ["/selecciones"] },
+      { href: "/top-signals", label: "Mejores predicciones", icon: Star, related: [] },
+      { href: "/explorer", label: "Explorador estadístico", icon: Compass, related: [] },
+      { href: "/competitions", label: "Competiciones", icon: Trophy, related: [] },
+      { href: "/teams", label: "Equipos", icon: Users, related: [] },
+      { href: "/history", label: "Histórico", icon: History, related: ["/prediction-history"] },
+    ],
+  },
+  {
+    title: "Inteligencia artificial",
+    items: [
+      { href: "/model", label: "Rendimiento del modelo", icon: Gauge, related: [] },
+      { href: "/opportunity-performance/strategies", label: "Laboratorio de estrategias", icon: FlaskConical, related: [] },
+      { href: "/opportunity-performance/learning", label: "Aprendizaje continuo", icon: Brain, related: [] },
+      { href: "/bot-bankroll", label: "Banca del bot", icon: Wallet, related: [] },
+    ],
+  },
 ];
 
-const MORE_ITEMS = [
-  { href: "/model", label: "Laboratorio", icon: BarChart3, related: [] },
+const MORE_ITEMS: NavItem[] = [
   { href: "/ai-analyst", label: "Analista IA", icon: Bot, related: [] },
   { href: "/settings", label: "Configuración", icon: Settings, related: [] },
 ];
@@ -85,8 +109,8 @@ function ConnectionStatus() {
 function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
 
-  function navLink(item: (typeof NAV_ITEMS)[number]) {
-    const active = [item.href, ...item.related].some((href) => isActive(pathname, href));
+  function navLink(item: NavItem) {
+    const active = item.exact ? pathname === item.href : [item.href, ...item.related].some((href) => isActive(pathname, href));
     const Icon = item.icon;
     return (
       <Link
@@ -95,7 +119,7 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         onClick={onNavigate}
         aria-current={active ? "page" : undefined}
         className={
-          "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors " +
+          "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors " +
           (active
             ? "bg-accent/15 text-slate-100 shadow-[inset_2px_0_0_0_theme(colors.accent.DEFAULT)]"
             : "text-slate-400 hover:bg-surface-alt/60 hover:text-slate-200")
@@ -114,9 +138,9 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           <LineChart className="h-5 w-5" />
         </span>
         <span className="text-sm font-bold leading-tight tracking-tight text-slate-100">
-          FOOTBALL
+          ELPELOTAZO
           <br />
-          EDGE DETECTOR
+          <span className="text-[11px] font-medium tracking-wide text-slate-400">Football intelligence</span>
         </span>
       </Link>
 
@@ -125,7 +149,12 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </div>
 
       <nav aria-label="Navegación principal" className="flex flex-col gap-1">
-        {NAV_ITEMS.map(navLink)}
+        {NAV_GROUPS.map(group => (
+          <div key={group.title} className="mb-2 flex flex-col gap-0.5">
+            <p className="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">{group.title}</p>
+            {group.items.map(navLink)}
+          </div>
+        ))}
         <details className="mt-2 border-t border-surface-border pt-2" open={MORE_ITEMS.some((item) => isActive(pathname, item.href)) || undefined}>
           <summary className="flex cursor-pointer list-none items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-400 hover:text-slate-200">
             <ChevronDown className="h-4 w-4" />

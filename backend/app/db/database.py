@@ -38,6 +38,24 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _sync_missing_columns()
+    _ensure_read_indexes()
+
+
+# Read paths of the match analysis pages (team form, odds history). Idempotent; never drops data.
+READ_INDEXES = {
+    "ix_match_odds_history_match_recorded": "match_odds_history (match_id, recorded_at)",
+    "ix_match_odds_match": "match_odds (match_id)",
+    "ix_matches_home_team_kickoff": "matches (home_team_id, kickoff_utc)",
+    "ix_matches_away_team_kickoff": "matches (away_team_id, kickoff_utc)",
+    "ix_matches_status_kickoff": "matches (status, kickoff_utc)",
+    "ix_predictions_match": "predictions (match_id)",
+}
+
+
+def _ensure_read_indexes() -> None:
+    with engine.begin() as conn:
+        for name, target in READ_INDEXES.items():
+            conn.execute(text(f"CREATE INDEX IF NOT EXISTS {name} ON {target}"))
 
 
 def _sync_missing_columns() -> None:

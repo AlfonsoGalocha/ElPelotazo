@@ -174,16 +174,24 @@ services:
     # scheduler llevaba dias sin ejecutar nada. "$$" le dice a Compose "no
     # interpoles esto, es literal", y el shell del contenedor lo recibe
     # como un "$" normal.
+    # Cada paso del bucle del bot lleva `timeout`: un paso colgado (p.ej. la base de datos
+    # no disponible) nunca debe bloquear durante horas los cortes del bot ni el archivo
+    # prepartido. Ojo: dentro del bloque `>` de abajo NO se pueden poner comentarios `#` al
+    # nivel base de indentacion -- YAML une esas lineas y el comentario se traga el resto.
     command:
       - >
         (while true; do
-          football-edge bot-decision --trial --continuous --refresh-odds || echo "[scheduler] fallo banca virtual";
-          football-edge capture-strategies || echo "[scheduler] fallo corte de estrategias";
-          football-edge publish-upcoming || echo "[scheduler] no se pudo publicar el corte prepartido";
+          timeout 300 football-edge refresh-recent-results || echo "[scheduler] fallo o tiempo agotado: resultados recientes";
+          timeout 600 football-edge archive-forecasts || echo "[scheduler] fallo o tiempo agotado: archivo de previsiones";
+          timeout 600 football-edge bot-decision --trial --continuous --refresh-odds || echo "[scheduler] fallo o tiempo agotado: banca virtual";
+          timeout 600 football-edge capture-strategies || echo "[scheduler] fallo o tiempo agotado: corte de estrategias";
+          timeout 600 football-edge publish-upcoming || echo "[scheduler] fallo o tiempo agotado: corte prepartido";
+          free_mb=$$(df -Pm / | awk 'NR==2 {print $$4}');
+          if [ "$$free_mb" -lt 5000 ]; then echo "[scheduler] AVISO: solo $${free_mb} MB libres en disco"; fi;
           sleep 600;
         done) &
         (while true; do
-          football-edge learning-capture || echo "[scheduler] fallo comparación de modelos";
+          timeout 900 football-edge learning-capture || echo "[scheduler] fallo o tiempo agotado: comparación de modelos";
           sleep 600;
         done) &
         (while true; do
@@ -201,6 +209,10 @@ services:
           football-edge update-champions-statistics --competition liga_f || echo "[scheduler] fallo estadísticas Liga F";
           football-edge update-champions-statistics --competition afc_champions_league || echo "[scheduler] fallo estadísticas AFC Elite";
           football-edge update-champions-statistics || echo "[scheduler] fallo estadísticas Champions";
+          # Same batched call (20 partidos por petición) for the running season of the five leagues.
+          for league in laliga premier_league serie_a bundesliga ligue_1; do
+            football-edge update-champions-statistics --competition "$$league" || echo "[scheduler] fallo estadísticas $$league";
+          done;
           football-edge update-secondary-odds || echo "[scheduler] fallo update-secondary-odds, se reintenta en 1h";
           if [ $$((hour % 6)) -eq 0 ] && { [ "$$first_cycle" -eq 0 ] || [ "$$FOOTBALL_SKIP_INITIAL_TRAIN" -eq 0 ]; }; then
             # Refresh the historical source separately from the training worker.

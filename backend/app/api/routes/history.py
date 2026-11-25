@@ -21,7 +21,7 @@ from backend.app.db.models.core import Competition
 from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.matches import CornerObservation, Match, MatchOddsHistory
 from backend.app.db.models.modeling import Prediction, PredictionResult, PredictionSnapshot
-from backend.app.db.models.publication import FixturePublication
+from backend.app.db.models.publication import FixturePublication, PreMatchForecast, StrategyCapture
 from backend.app.prediction.eligibility import corner_verification, recorded_origin
 from backend.app.prediction.opportunities import MARKET_DISAGREEMENT_THRESHOLD, market_probability_gap
 from backend.app.prediction.anomaly import best_prediction_per_match
@@ -128,9 +128,12 @@ def list_history(
             return []
         query = query.filter(Match.competition_id == competition.id)
     if with_predictions:
+        # On-the-fly competitions keep their forecast only in the pre-match archive or lab capture.
         query = query.filter(or_(
             db.query(Prediction.id).filter(Prediction.match_id == Match.id).exists(),
             Match.competition.has(code="champions_league"),
+            db.query(PreMatchForecast.match_id).filter(PreMatchForecast.match_id == Match.id).exists(),
+            db.query(StrategyCapture.match_id).filter(StrategyCapture.match_id == Match.id).exists(),
         ))
     matches = query.order_by(Match.kickoff_utc.desc()).limit(limit).all()
 
@@ -151,6 +154,10 @@ def list_history(
         Match, Match.id == FixturePublication.match_id,
     ).filter(FixturePublication.match_id.in_(match_ids), FixturePublication.captured_at < Match.kickoff_utc)}
     model_picks = latest_model_picks(db, match_ids)
+    from backend.app.services.forecast_archive import archived_model_picks
+
+    model_picks.update(archived_model_picks(db, [m for m in matches if m.id not in model_picks]))
+
     out: list[dict] = []
     for match in matches:
         predictions = by_match.get(match.id, [])
@@ -160,6 +167,7 @@ def list_history(
         if with_predictions:
             # The jornada list has one row per fixture. Full markets stay on the detail endpoint.
             predictions = [best] if best is not None else predictions[:1]
+        selections = _published_selections(match, publications.get(match.id), corner_totals.get(match.id), model_picks.get(match.id))
         out.append(
             {
                 "match": match,
@@ -168,7 +176,7 @@ def list_history(
                     for p in predictions
                 ],
                 "best_prediction_id": best.id if best else None,
-                **_published_selections(match, publications.get(match.id), corner_totals.get(match.id), model_picks.get(match.id)),
+                **selections,
             }
         )
     return out
@@ -197,6 +205,20 @@ def get_history_detail(match_id: int, db: Session = Depends(get_db)) -> dict:
         ],
         "best_prediction_id": best.id if best else None,
     }
+
+
+@router.get("/{match_id}/pre-match")
+def pre_match(match_id: int, db: Session = Depends(get_db)):
+    """Forecast made before kickoff for a finished fixture, graded against the result."""
+    from backend.app.services.forecast_archive import pre_match_forecast
+
+    match = db.get(Match, match_id)
+    if match is None or match.status != "finished":
+        raise HTTPException(status_code=404, detail="Partido finalizado no encontrado")
+    forecast = pre_match_forecast(db, match)
+    if forecast is None:
+        raise HTTPException(status_code=404, detail="No se guardó ninguna previsión antes del partido")
+    return forecast
 
 
 @router.get("/{match_id}/snapshots")

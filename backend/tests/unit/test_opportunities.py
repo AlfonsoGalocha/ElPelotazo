@@ -76,9 +76,14 @@ def test_wide_interval_and_missing_history_reduce_confidence_without_discarding(
     assert assess(reliability=SimpleNamespace(value=.8, n_observations=30, source_level="competition_market")).high_confidence
 
 
-def test_quote_freshness_uses_origin_and_rejects_inconsistent_timestamps():
-    item = assess([quote(provider_updated_at=NOW - timedelta(hours=7))])
-    assert "cuota_desactualizada" in item.reasons
+def test_quote_currency_follows_last_confirmation_and_rejects_inconsistent_timestamps():
+    # A price unchanged for 7 h but downloaded 10 min ago is current; its origin age stays visible.
+    stable = assess([quote(provider_updated_at=NOW - timedelta(hours=7))])
+    assert "cuota_desactualizada" not in stable.reasons
+    assert stable.age_minutes == pytest.approx(7 * 60)
+    unconfirmed = assess([quote(provider_updated_at=NOW - timedelta(hours=8), fetched_at=NOW - timedelta(hours=7),
+                                recorded_at=NOW - timedelta(hours=7))])
+    assert "cuota_desactualizada" in unconfirmed.reasons
     invalid = assess([quote(provider_updated_at=NOW)])
     assert "origen_cuota_no_verificado" in invalid.reasons
 

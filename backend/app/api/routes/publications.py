@@ -160,6 +160,11 @@ def round_accuracy(db: Session = Depends(get_db), all_rounds: bool = False):
 
     seasons = dict(db.query(Season.id, Season.label).filter(Season.id.in_({g[1] for g in groups})))
     model_picks = latest_model_picks(db, list({match.id for *_, fixtures in groups for match, _, _ in fixtures}))
+    # Champions, AFC Elite and Liga F forecast on the fly: their pre-match forecast lives in the archive.
+    from backend.app.services.forecast_archive import archived_model_picks
+
+    unstored = [match for *_, fixtures in groups for match, _, _ in fixtures if match.id not in model_picks]
+    model_picks.update(archived_model_picks(db, unstored))
     for league, season_id, matchday, round_name, kickoff, fixtures in groups:
         counts = dict(wins=0, losses=0, pending=0, without_forecast=0, cancelled=0, awaiting_settlement=0)
         model_counts = dict(wins=0, losses=0, without_forecast=0, awaiting_settlement=0)
@@ -206,6 +211,24 @@ def bot_bankroll(trial: bool = False, live: bool = False, db: Session = Depends(
     from backend.app.services.bot_bankroll import bot_report
 
     return bot_report(db, trial=trial, include_live=live)
+
+
+@router.get("/bot-plan")
+def bot_plan():
+    from backend.app.db.database import SessionLocal
+    from backend.app.services.bot_bankroll import bot_plan as build_plan
+    from backend.app.services.response_cache import cached
+
+    def compute():
+        session = SessionLocal()
+        try:
+            return build_plan(session)
+        finally:
+            session.rollback()
+            session.close()
+
+    plan, age = cached("bot-plan", compute, fresh_seconds=180, max_stale_seconds=900)
+    return dict(plan, cache_age_seconds=round(age))
 
 
 @router.get("/bot-bankroll/simulations")

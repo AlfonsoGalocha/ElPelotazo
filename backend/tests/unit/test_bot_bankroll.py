@@ -102,7 +102,7 @@ def test_continuous_trial_keeps_balance_and_does_not_repeat_a_fixture(db_session
     season = Season(competition_id=league.id, label="rolling-trial")
     db.add(season)
     db.flush()
-    now = dt.datetime(2026, 11, 24, 8)
+    now = dt.datetime(2031, 3, 4, 8)  # far from fixtures committed by other suites
     fixtures = []
     for index, (hours, status) in enumerate(((-16, "finished"), (.5, "scheduled"), (3, "scheduled"))):
         match = Match(provider="test", provider_id=f"rolling-trial-{index}", competition_id=league.id,

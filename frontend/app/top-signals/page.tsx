@@ -8,6 +8,7 @@ import { MARKET_DISPLAY_NAMES } from "@/types";
 import MarketQualityBadge from "@/components/MarketQualityBadge";
 import AnomalyBadges from "@/components/AnomalyBadge";
 import { EmptyState } from "@/components/EmptyState";
+import CandidateOpportunities from "@/components/CandidateOpportunities";
 
 const EXCLUSION_LABELS: Record<string, string> = {
   ventaja_extrema_frente_al_mercado: "Revisar: el modelo supera al mercado en más de 25 puntos",
@@ -544,6 +545,7 @@ export default async function TopSignalsPage({
           </div>
         )}
       </div>
+      {!competitionCode || ["champions_league", "afc_champions_league", "liga_f"].includes(competitionCode) ? <CandidateOpportunities days={Math.max(Number(days) || 3, 1)} /> : null}
     </div>
   );
 }

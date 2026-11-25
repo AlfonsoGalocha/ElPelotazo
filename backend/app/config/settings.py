@@ -125,6 +125,8 @@ class Settings(BaseSettings):
     # aggressive profile needs BOT_AGGRESSIVE_AUTHORIZED=true as well.
     bot_risk_profile: str = "moderado"
     bot_aggressive_authorized: bool = False
+    # Floor for every automatic stake, in euros. It never overrides exposure or reserve limits.
+    bot_min_stake_eur: float = 2.0
     max_opportunity_odds: float = 1.80
 
     # --- Calidad de mercado (prediction/market_quality.py) ---

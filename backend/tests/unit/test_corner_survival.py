@@ -46,7 +46,9 @@ def test_hoy_excludes_stale_and_unverified_prices_and_ranks_one_per_match():
         key, line, side = ALL_MARKET_TO_ODDS_LOOKUP[market]
         fields = dict(match_id=1, market=key, line=line, selection=side, bookmaker="Pinnacle",
                       snapshot_type="pre_match", price=price,
-                      provider_updated_at=now - timedelta(minutes=age), fetched_at=now, recorded_at=now)
+                      # `age` = minutes since the price was last downloaded (currency follows confirmation).
+                      provider_updated_at=now - timedelta(minutes=age + 5), fetched_at=now - timedelta(minutes=age),
+                      recorded_at=now - timedelta(minutes=age))
         match.odds.append(Record(**fields, history_quote_id=1, archived_quote=Record(**fields)))
         complementary = {**fields, "selection": "under", "price": price * market_p / (1 - market_p)}
         match.odds.append(Record(**complementary, history_quote_id=2, archived_quote=Record(**complementary)))

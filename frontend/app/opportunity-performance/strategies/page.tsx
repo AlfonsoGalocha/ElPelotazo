@@ -16,6 +16,15 @@ const outcomes: Record<string, string> = {
 };
 const passes: Record<string, string> = { no_prediction: "Sin pronóstico", no_valid_quotes: "Sin cuota verificable",
   no_independent_reference: "Sin referencia independiente", no_eligible_market: "Ningún mercado cumple los filtros" };
+const SHORT: Record<string, string> = {
+  original: "Original", corregida: "Corregida", mixta_80_20: "80/20", mixta_65_35: "65/35", mixta_50_50: "50/50",
+  mixta_35_65: "35/65", mixta_20_80: "20/80", mercado: "Mercado",
+};
+const ORDER = ["original", "corregida", "mixta_80_20", "mixta_65_35", "mixta_50_50", "mixta_35_65", "mixta_20_80", "mercado"];
+const OUTCOME_CLASS: Record<string, string> = {
+  won: "text-emerald-400", lost: "text-red-400", void: "text-slate-400", pending: "text-slate-300", unverified: "text-amber-300",
+};
+const OUTCOME_MARK: Record<string, string> = { won: "✓", lost: "✗", void: "∅", pending: "…", unverified: "?" };
 const rate = (n: number | null) => n === null ? "—" : pct.format(n);
 const num = (n: number | null) => n === null ? "—" : n.toFixed(3);
 const money = (n: number) => euros.format(n / 100);
@@ -28,12 +37,12 @@ export default async function StrategiesPage({ searchParams }: { searchParams: {
   ]);
   return (
     <main className="space-y-5">
-      <Link href="/opportunity-performance" className="text-sm text-accent">Volver a Rendimiento</Link>
+      <Link href="/model" className="text-sm text-accent">Volver a Rendimiento del modelo</Link>
       <h1 className="text-2xl font-bold">Laboratorio de estrategias</h1>
       <div className="text-sm text-slate-400">
         <p>Simulación prospectiva · En evaluación · 10 € virtuales por selección.</p>
         <p>La estrategia activa de la app funciona por separado.</p>
-        <p><Link className="text-accent underline" href="/opportunity-performance#acierto">Ver la jornada anterior y la simulación retrospectiva de 10 €</Link></p>
+        <p><Link className="text-accent underline" href="/model#acierto">Ver la jornada anterior y la simulación retrospectiva de 10 €</Link></p>
       </div>
       {operations ? <Operations report={operations} /> : <p className="text-sm text-slate-400">Estado operativo temporalmente no disponible.</p>}
       {!report ? <p>No se pudo consultar la comparación.</p> : (
@@ -90,6 +99,30 @@ export default async function StrategiesPage({ searchParams }: { searchParams: {
             <details key={name} className="rounded-lg border border-surface-border p-3">
               <summary className="cursor-pointer">{labels[name]} · Evolución y desgloses</summary>
               {row.roi_interval && <p className="mt-2 text-sm">Intervalo descriptivo de ROI por bloques de fecha · {row.roi_interval.map(rate).join(" a ")}</p>}
+              <div className="mt-3 overflow-x-auto">
+                <h3 className="text-sm font-semibold">Sus selecciones</h3>
+                <table className="mt-1 w-full whitespace-nowrap text-left text-sm">
+                  <thead className="text-xs text-slate-400"><tr>
+                    {["Partido", "Corte", "Mercado", "Prob.", "Cuota", "Casa", "Resultado"].map(h => <th key={h} className="py-1 pr-3">{h}</th>)}
+                  </tr></thead>
+                  <tbody>
+                    {report.history.filter(f => f.decisions[name]).map(f => {
+                      const pick = f.decisions[name]!;
+                      return (
+                        <tr key={f.match_id} className="border-t border-surface-border">
+                          <td className="py-1 pr-3"><Link href={`/matches/${f.match_id}`} className="hover:underline">{f.match}</Link></td>
+                          <td className="py-1 pr-3 text-slate-400">{formatMatchDateTime(f.capture)}</td>
+                          <td className="py-1 pr-3">{MARKET_DISPLAY_NAMES[pick.market] ?? pick.market}</td>
+                          <td className="py-1 pr-3">{rate(pick.probability)}</td>
+                          <td className="py-1 pr-3">{pick.price.toFixed(2)}</td>
+                          <td className="py-1 pr-3 text-slate-400">{pick.bookmaker}</td>
+                          <td className={`py-1 pr-3 ${OUTCOME_CLASS[pick.outcome] ?? ""}`}>{outcomes[pick.outcome] ?? pick.outcome}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
               <div className="mt-3 grid gap-4 md:grid-cols-2">
                 <div>
                   <h3 className="text-sm font-semibold">Beneficio acumulado</h3>
@@ -110,18 +143,42 @@ export default async function StrategiesPage({ searchParams }: { searchParams: {
               </div>
             </details>
           ))}
-          <section className="space-y-2">
-            <h2 className="font-semibold">Historial de decisiones prepartido</h2>
-            {report.history.map((fixture) => (
-              <details key={fixture.match_id} className="rounded-lg border border-surface-border p-3">
-                <summary className="cursor-pointer">{fixture.match} · {formatMatchDateTime(fixture.capture)}</summary>
-                <ul className="mt-2 space-y-1 text-sm text-slate-300">
-                  {Object.entries(fixture.decisions).map(([key, pick]) => (
-                    <li key={key}>{labels[key]} · {pick ? `${MARKET_DISPLAY_NAMES[pick.market] ?? pick.market} · ${rate(pick.probability)} · ${pick.price.toFixed(2)} · ${pick.bookmaker} · ${outcomes[pick.outcome]} ${key === "corregida" && pick.corrected_source.startsWith("original") ? "· Respaldo original" : ""}` : "Sin selección"}</li>
-                  ))}
-                </ul>
-              </details>
-            ))}
+          <section className="overflow-x-auto rounded-lg border border-surface-border bg-card p-4">
+            <h2 className="font-semibold">Qué eligió cada estrategia, partido a partido</h2>
+            <p className="text-sm text-slate-400">
+              Cada celda es la selección de esa estrategia en el corte prepartido: mercado, cuota y resultado
+              (✓ acierto · ✗ fallo · … pendiente · ? sin verificar). Pasa el ratón para ver probabilidad y casa;
+              «—» significa que no eligió nada (el motivo aparece al pasar el ratón).
+            </p>
+            <table className="mt-2 w-full whitespace-nowrap text-left text-xs">
+              <thead className="text-slate-400"><tr>
+                <th className="sticky left-0 bg-card py-2 pr-3">Partido</th>
+                {ORDER.filter(k => k in (report.history[0]?.decisions ?? labels)).map(k => <th key={k} className="py-2 pr-3">{SHORT[k] ?? labels[k]}</th>)}
+              </tr></thead>
+              <tbody>
+                {report.history.map(fixture => (
+                  <tr key={fixture.match_id} className="border-t border-surface-border align-top">
+                    <td className="sticky left-0 bg-card py-1.5 pr-3">
+                      <Link href={`/matches/${fixture.match_id}`} className="text-sm text-slate-200 hover:underline">{fixture.match}</Link>
+                      <div className="text-slate-500">{formatMatchDateTime(fixture.capture)}</div>
+                    </td>
+                    {ORDER.filter(k => k in fixture.decisions).map(k => {
+                      const pick = fixture.decisions[k];
+                      if (!pick) {
+                        const reason = fixture.decision_reasons?.[k];
+                        return <td key={k} className="py-1.5 pr-3 text-slate-600" title={reason ? passes[reason] ?? reason : "Sin selección"}>—</td>;
+                      }
+                      return (
+                        <td key={k} className="py-1.5 pr-3" title={`${labels[k]} · ${rate(pick.probability)} · ${pick.bookmaker} · ${outcomes[pick.outcome] ?? pick.outcome}`}>
+                          <span className="text-slate-200">{MARKET_DISPLAY_NAMES[pick.market] ?? pick.market}</span>
+                          <span className="block text-slate-400">{pick.price.toFixed(2)} <span className={OUTCOME_CLASS[pick.outcome] ?? ""}>{OUTCOME_MARK[pick.outcome] ?? ""}</span></span>
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </section>
         </>
       )}

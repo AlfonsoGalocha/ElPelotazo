@@ -10,7 +10,7 @@ export default async function LearningPage() {
   const rows = await getModelLearning().catch(() => null);
   return (
     <main className="space-y-4">
-      <Link href="/opportunity-performance" className="text-sm text-accent">Volver a Rendimiento</Link>
+      <Link href="/model" className="text-sm text-accent">Volver a Rendimiento del modelo</Link>
       <h1 className="text-2xl font-bold">Aprendizaje del modelo</h1>
       <p className="text-sm text-slate-400">Comparación de pronósticos congelados antes del inicio. La promoción sigue bloqueada mientras falte certificar la disponibilidad histórica de los datos.</p>
       {!rows && <p>No se pudo consultar el aprendizaje.</p>}

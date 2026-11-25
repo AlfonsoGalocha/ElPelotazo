@@ -99,3 +99,13 @@ class ModelComparisonCut(Base):
     match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"), primary_key=True)
     captured_at = mapped_column(DateTime, nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class PreMatchForecast(Base):
+    """Last forecast shown before kickoff (main-page preview), kept after the match ends."""
+
+    __tablename__ = "pre_match_forecasts"
+
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"), primary_key=True)
+    captured_at = mapped_column(DateTime, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)

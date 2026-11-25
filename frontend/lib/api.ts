@@ -36,7 +36,7 @@ function resolveApiUrl(): string {
   return browserUrl;
 }
 
-async function apiFetch<T>(path: string): Promise<T> {
+export async function apiFetch<T>(path: string): Promise<T> {
   const res = await fetch(`${resolveApiUrl()}${path}`, { cache: "no-store" });
   if (!res.ok) {
     throw new Error(`API ${path} respondio ${res.status}`);
@@ -489,6 +489,7 @@ export type BotTicket = {
   returned_cents: number;
   state: "won" | "lost" | "void" | "pending";
   kind: BotTicketKind;
+  strategy?: "ventaja_confirmada" | "alta_probabilidad";
   leg_states: ("won" | "lost" | "void" | "pending")[];
   legs: BotLeg[];
   price?: number;
@@ -530,7 +531,7 @@ export type BotBankroll = {
     by_kind: Record<BotTicketKind, BotPerformance>;
   };
   learning: { note: string; min_settled_for_adjustment: number } & Record<
-    "by_kind" | "by_staking" | "by_odds" | "by_probability" | "by_market" | "by_competition" | "by_confidence",
+    "by_kind" | "by_strategy" | "by_staking" | "by_odds" | "by_probability" | "by_market" | "by_competition" | "by_confidence",
     Record<string, BotPerformance>
   >;
   shadow: { cuts: number; note: string; banks: Record<string, { balance_cents: number; tickets: number; pending: number; profit_cents: number }> };
@@ -587,6 +588,49 @@ export function getBotBankroll(trial = false, live = false) {
   return apiFetch<BotBankroll>(`/publications/bot-bankroll?trial=${trial}&live=${live}`);
 }
 
+export type BotPlanStep = {
+  cut_at: string;
+  fixtures: { match_id: number; match: string; kickoff: string; eligible?: number; assessed?: number;
+    single?: { market: string; price: number; probability: number; effective_probability: number | null; confidence: number; confidence_gates: string[] } | null;
+    combo_rejected?: { market: string; price: number; probability: number; ev: number | null; reasons: string[] }[] }[];
+  lookahead?: number[];
+  chosen: string;
+  reason: string;
+  tickets: BotTicket[];
+  alternatives: BotAlternative[];
+  evaluated_alternatives?: number;
+  capital_before: { available: number; reserved: number };
+  capital_after: { available: number; reserved: number };
+};
+
+export type BotPlan = {
+  generated_at: string; day: string; available_cents: number; reserved_cents: number; note: string;
+  cache_age_seconds: number;
+  next: BotPlanStep | null;
+  steps: BotPlanStep[];
+  executed: { captured_at: string; policy_version?: string; chosen: string | null; reason: string | null;
+    fixtures: { match_id: number; match: string }[]; tickets: BotTicket[] }[];
+};
+
+export type GradedPick = { market: string; probability: number; odds: number | null; is_correct: boolean | null;
+  bookmaker?: string; ev?: number | null };
+
+export type PreMatchForecast = {
+  source: "previsión_prepartido" | "captura_laboratorio";
+  captured_at: string;
+  forecast: GradedPick | null;
+  opportunity: GradedPick | null;
+  markets: GradedPick[];
+};
+
+export function getPreMatchForecast(matchId: number) {
+  return apiFetch<PreMatchForecast>(`/history/${matchId}/pre-match`);
+}
+
+export function getBotPlan() {
+  return apiFetch<BotPlan>("/publications/bot-plan");
+}
+
 export function getBotSimulations() {
   return apiFetch<BotSimulations>("/publications/bot-bankroll/simulations");
 }
@@ -611,7 +655,7 @@ export type ShadowReport = {
     by_odds: Record<string, ShadowEconomics>;
   }>;
   history: {
-    match_id: number; match: string; capture: string;
+    match_id: number; match: string; capture: string; kickoff?: string; league?: string;
     decision_reasons: Record<string, string | null>;
     decisions: Record<string, {
       market: string; price: number; bookmaker: string; probability: number;

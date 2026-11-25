@@ -17,8 +17,8 @@ def price(market, now, value, age=20):
     from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP
     category, line, side = ALL_MARKET_TO_ODDS_LOOKUP[market]
     fields = dict(match_id=1, market=category, line=line, selection=side, snapshot_type="pre_match",
-                  bookmaker="Pinnacle", price=value, provider_updated_at=now - timedelta(minutes=age),
-                  fetched_at=now, recorded_at=now)
+                  bookmaker="Pinnacle", price=value, provider_updated_at=now - timedelta(minutes=age + 5),
+                  fetched_at=now - timedelta(minutes=age), recorded_at=now - timedelta(minutes=age))
     return Record(**fields, archived_quote=Record(**fields))
 
 

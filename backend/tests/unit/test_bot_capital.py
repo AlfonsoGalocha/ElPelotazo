@@ -233,8 +233,8 @@ def test_double_requires_two_fixtures_and_robust_positive_ev():
     assert double["accepted"] and double["synthetic_price"]
     assert double["price"] == pytest.approx(1.525)
     labels = [row["scenario"] for row in double["sensitivity"]]
-    assert labels == ["independencia", "dependencia_negativa", "dependencia_positiva", "error_calibracion", "peor_caso"]
-    assert double["robust_ev"] == min(row["ev"] for row in double["sensitivity"])
+    assert labels == ["independencia", "dependencia_positiva", "dependencia_negativa", "error_calibracion_adicional"]
+    assert double["robust_ev"] == min(row["ev"] for row in double["sensitivity"][:3])
     assert assess_double(a, dict(a, market="btts"))["reasons"][0] == "mismo_partido"
     thin = assess_double(_leg(1, 1.15, .88, confidence=.5), _leg(2, 1.18, .86, confidence=.5))
     assert not thin["accepted"]
@@ -342,7 +342,7 @@ def test_restart_does_not_duplicate_and_lookahead_keeps_its_own_cut(db_session, 
     from backend.app.db.models.publication import BotTrialCut
     from backend.app.services import bot_bankroll, prediction_service
 
-    now = dt.datetime(2026, 11, 24, 11, 45)
+    now = dt.datetime(2031, 3, 4, 11, 45)  # far from fixtures committed by other suites
     first, later = _afc_pair(db_session, now)
     monkeypatch.setattr(prediction_service, "score_api_candidate", lambda *args, **kwargs: (None, [], {}))
     monkeypatch.setattr(bot_bankroll, "market_track_records_with_provenance", lambda *args, **kwargs: {})
@@ -366,7 +366,7 @@ def test_dry_run_never_touches_the_bank(db_session, monkeypatch):
     from backend.app.db.models.publication import BotTrialCut
     from backend.app.services import bot_bankroll, prediction_service
 
-    now = dt.datetime(2026, 11, 24, 11, 45)
+    now = dt.datetime(2031, 3, 4, 11, 45)  # far from fixtures committed by other suites
     _afc_pair(db_session, now)
     monkeypatch.setattr(prediction_service, "score_api_candidate", lambda *args, **kwargs: (None, [], {}))
     monkeypatch.setattr(bot_bankroll, "market_track_records_with_provenance", lambda *args, **kwargs: {})
@@ -417,9 +417,127 @@ def test_eight_laboratory_strategies_and_ranking_are_untouched():
     assert len(WEIGHTS) == 8
     settings = get_settings()
     assert (settings.min_opportunity_odds, settings.max_opportunity_odds) == (1.30, 1.80)
-    assert settings.bot_risk_profile == "moderado" and settings.bot_aggressive_authorized is False
+    from backend.app.config.settings import Settings
+
+    # Code defaults stay prudent; the experimental profile only comes from explicit configuration.
+    assert Settings.model_fields["bot_risk_profile"].default == "moderado"
+    assert Settings.model_fields["bot_aggressive_authorized"].default is False
 
 
 def test_minimum_stake_constant_is_respected():
     decision = _choose([_leg(1, 1.40, .80, confidence=.9)])
     assert all(t["stake_cents"] >= MIN_STAKE_CENTS and t["stake_cents"] % 100 == 0 for t in decision["tickets"])
+
+
+# --- Provisional plan of the day ----------------------------------------------------------------------
+
+def test_plan_replays_cuts_in_order_carries_capital_and_writes_nothing(db_session, monkeypatch):
+    from backend.app.db.models.publication import BotTrialCut, BotTrialDecision
+    from backend.app.services import bot_bankroll
+
+    now = dt.datetime(2031, 3, 4, 9, 0)  # 10:00 in Madrid, far from fixtures of other suites
+    first, later = _afc_pair(db_session, now)  # kickoffs 09:30 and 11:30 UTC, within the double lookahead
+    monkeypatch.setattr(bot_bankroll, "load_predictions", lambda *args, **kwargs: {})
+    monkeypatch.setattr(bot_bankroll, "market_track_records_with_provenance", lambda *args, **kwargs: {})
+    seen_capital = []
+
+    def fake_cut(db, fixtures, lookahead, capital, at, **kwargs):
+        seen_capital.append((capital["available"], [m.id for m in fixtures], [m.id for m in lookahead]))
+        tickets = [{"stake_cents": 4_000, "legs": [{"match_id": fixtures[0].id}]}] if fixtures[0].id == first.id else []
+        return {"fixtures": [], "tickets": tickets, "capital": {
+            "chosen": "x", "reason": "y", "alternatives": [], "evaluated_alternatives": 1, "accepted_doubles": []}}
+
+    monkeypatch.setattr(bot_bankroll, "evaluate_cut", fake_cut)
+    before = (db_session.query(BotTrialCut).count(), db_session.query(BotTrialDecision).count())
+    plan = bot_bankroll.bot_plan(db_session, now=now)
+    assert [step["cut_at"] for step in plan["steps"]] == ["2031-03-04T09:00:00Z", "2031-03-04T10:30:00Z"]
+    assert seen_capital == [(30_000, [first.id], [later.id]), (26_000, [later.id], [])]
+    assert plan["steps"][1]["capital_before"] == {"available": 26_000, "reserved": 4_000}
+    assert plan["next"] is plan["steps"][0]
+    assert (db_session.query(BotTrialCut).count(), db_session.query(BotTrialDecision).count()) == before
+
+
+def test_response_cache_serves_stale_value_while_refreshing(monkeypatch):
+    import threading
+
+    from backend.app.services import response_cache
+
+    response_cache.clear()
+    calls = []
+    release = threading.Event()
+
+    def compute():
+        calls.append(1)
+        if len(calls) > 1:
+            release.wait(2)
+        return len(calls)
+
+    assert response_cache.cached("k", compute, fresh_seconds=0)[0] == 1
+    # Stale: answered immediately with the previous value; the refresh runs in the background.
+    assert response_cache.cached("k", compute, fresh_seconds=0)[0] == 1
+    release.set()
+    for _ in range(100):
+        if response_cache._entries["k"][1] == 2:
+            break
+        threading.Event().wait(.01)
+    assert response_cache.cached("k", compute, fresh_seconds=60)[0] == 2
+    response_cache.clear()
+
+
+def test_calibration_error_is_not_counted_twice_when_sizing():
+    # Real Madrid–PSV, 24/11: away team to score at 1.50, p 76.9 %, confidence 0.51 → effective 69.7 %.
+    leg = dict(_leg(1, 1.50, .769, confidence=.506), effective_probability=.697181, calibration_error=.05)
+    decision = _choose([leg], equity=29_610, peak=30_000)
+    assert decision["chosen"] == "Individual Partido 1"
+    assert 500 <= decision["tickets"][0]["stake_cents"] <= 1_500
+    chosen = [a for a in decision["alternatives"] if a["chosen"]][0]
+    assert chosen["calibration_stress_log_growth"] < chosen["robust_log_growth"]
+    # A sub-1 % effective edge still abstains.
+    thin = dict(_leg(2, 1.75, .679, confidence=.495), effective_probability=.576828, calibration_error=.05)
+    assert _choose([thin], equity=29_610)["tickets"] == []
+
+
+# --- User stake floor and high-probability doubles ---------------------------------------------------
+
+AGGRESSIVE = PROFILES["agresivo_experimental"]
+
+
+def test_stake_floor_bets_thin_positive_edges_at_the_floor_but_never_without_edge():
+    thin = dict(_leg(1, 1.75, .679, confidence=.495), effective_probability=.5768)
+    decision = choose_portfolio([thin], [], AGGRESSIVE, equity=29_610, available=29_610, reserved=0,
+                                peak=30_000, min_stake_cents=5_000)
+    assert [t["stake_cents"] for t in decision["tickets"]] == [5_000]
+    none = dict(_leg(2, 1.66, .689, confidence=.47), effective_probability=.60)  # break-even 60.2 %
+    decision = choose_portfolio([none], [], AGGRESSIVE, equity=29_610, available=29_610, reserved=0,
+                                peak=30_000, min_stake_cents=5_000)
+    assert decision["tickets"] == []
+
+
+def test_stake_floor_respects_exposure_limits():
+    legs = [dict(_leg(i, 1.60, .80, confidence=.9, kickoff=f"2026-11-2{i}T20:00:00Z")) for i in range(1, 6)]
+    decision = choose_portfolio(legs, [], AGGRESSIVE, equity=30_000, available=30_000, reserved=0,
+                                peak=30_000, min_stake_cents=5_000)
+    total = sum(t["stake_cents"] for t in decision["tickets"])
+    assert all(t["stake_cents"] >= 5_000 for t in decision["tickets"])
+    assert total <= AGGRESSIVE.max_exposure_fraction * 30_000 and total <= (1 - AGGRESSIVE.min_reserve_fraction) * 30_000
+    assert choose_portfolio(legs, [], AGGRESSIVE, equity=30_000, available=6_000, reserved=24_000,
+                            peak=30_000, min_stake_cents=5_000)["tickets"] == []
+
+
+def test_high_probability_double_uses_model_probabilities_and_needs_positive_ev():
+    from backend.app.services.bot_capital import assess_high_probability_double
+
+    city = _leg(1, 1.15, .875, confidence=.64, competition="champions_league")
+    psg = _leg(2, 1.18, .954, confidence=.60, competition="champions_league", kickoff="2026-11-25T20:00:00Z")
+    double = assess_high_probability_double(city, psg)
+    assert double["accepted"] and double["strategy"] == "alta_probabilidad"
+    assert double["legs"][0]["effective_probability"] == .875
+    assert double["effective_probability"] == min(r["probability"] for r in double["sensitivity"][:3])
+    # Two likely selections priced below their probability never qualify.
+    poor = assess_high_probability_double(_leg(1, 1.10, .85), _leg(2, 1.12, .86, kickoff="2026-11-25T20:00:00Z"))
+    assert not poor["accepted"]
+    assert assess_high_probability_double(_leg(1, 1.15, .70), psg) is None
+    decision = choose_portfolio([], [double], AGGRESSIVE, equity=29_610, available=29_610, reserved=0,
+                                peak=30_000, min_stake_cents=5_000)
+    assert decision["tickets"][0]["strategy"] == "alta_probabilidad"
+    assert 5_000 <= decision["tickets"][0]["stake_cents"] <= AGGRESSIVE.max_double_fraction * 29_610

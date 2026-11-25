@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.config.settings import get_settings
 from backend.app.models.calibration.corners import correct_probability
-from backend.app.prediction.opportunities import assess_opportunity, market_probability_gap, quote_age
+from backend.app.prediction.opportunities import assess_opportunity, confirmed_quote_age, market_probability_gap
 from backend.app.db.models.core import Competition
 from backend.app.db.models.features import TeamMatchFeatures
 from backend.app.db.models.matches import Match
@@ -408,7 +408,7 @@ def rank_champions_preview(
     max_age = policy.max_odds_age_minutes or policy.opportunity_max_odds_age_minutes
     current_references = _market_quotes_for_matches({
         match.id: [quote for quote in match.odds
-                   if (age := quote_age(quote, now)) is not None and age <= max_age]
+                   if (age := confirmed_quote_age(quote, now)) is not None and age <= max_age]
         for match in fixtures
     })
     best, priorities, diagnostics = {}, {}, {}
@@ -449,6 +449,8 @@ def rank_champions_preview(
             "quote_current": assessment.quote is not None,
             "evidence_sufficient": "fiabilidad_historica_insuficiente" not in assessment.confidence_reasons,
             "original_probability": row.model_probability, "probability": probability,
+            "odds": reference_quote.price if reference_quote is not None else None,
+            "bookmaker": reference_quote.bookmaker if reference_quote is not None else None,
         }
         if reasons:
             continue

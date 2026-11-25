@@ -226,7 +226,9 @@ def update_champions_statistics(
     from backend.app.services.champions_statistics import refresh_champions_statistics
 
     with session_scope() as db:
-        if competition not in API_CANDIDATE_COMPETITIONS:
+        from backend.app.services.champions_statistics import DOMESTIC_LEAGUES
+
+        if competition not in (*API_CANDIDATE_COMPETITIONS, *DOMESTIC_LEAGUES):
             raise typer.BadParameter("Competición no soportada")
         count = refresh_champions_statistics(db, ApiFootballMatchProvider(), batches, competition)
     typer.echo(f"[update-champions-statistics] {count} partidos enriquecidos")
@@ -642,6 +644,27 @@ def bot_decision(
     with session_scope() as db:
         decision = capture_bot_decision(db, early=early or dry_run, dry_run=dry_run, trial=trial, continuous=continuous)
     typer.echo(json.dumps(decision, ensure_ascii=False))
+
+
+@app.command("archive-forecasts")
+def archive_forecasts() -> None:
+    """Guarda la previsión prepartido de los partidos de las próximas 3 horas (se congela al empezar)."""
+    from backend.app.services.forecast_archive import archive_pre_match_forecasts
+
+    init_db()
+    with session_scope() as db:
+        stored = archive_pre_match_forecasts(db)
+    typer.echo(f"[archive-forecasts] {stored} previsiones guardadas")
+
+
+@app.command("refresh-recent-results")
+def refresh_recent_results_command() -> None:
+    """Marca como terminados (con resultado) los partidos de las últimas 5 horas sin esperar al ciclo horario."""
+    from backend.app.services.recent_results import refresh_recent_results
+
+    with session_scope() as db:
+        closed = refresh_recent_results(db)
+    typer.echo(f"[refresh-recent-results] {closed} partidos cerrados")
 
 
 @app.command("bot-manual-ticket")

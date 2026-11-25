@@ -53,7 +53,7 @@ PROFILES = {
     "prudente": RiskProfile("prudente", "Prudente", .25, .08, 3_000, .04, .20, .70, .15),
     "moderado": RiskProfile("moderado", "Moderado", .35, .20, 7_500, .10, .40, .50, .30),
     "agresivo_experimental": RiskProfile(
-        "agresivo_experimental", "Agresivo experimental", .50, .50, 15_000, .20, .60, .35, .50, experimental=True,
+        "agresivo_experimental", "Agresivo experimental", .50, .50, 15_000, .35, .60, .35, .50, experimental=True,
     ),
 }
 DEFAULT_PROFILE = "moderado"
@@ -153,6 +153,41 @@ def pair_rho(a, b):
     return RHO_SAME_COMPETITION_DAY if same else RHO_DEFAULT
 
 
+HIGH_PROBABILITY_LEG = .80
+HIGH_PROBABILITY_MAX_PRICE = 1.40
+
+
+def assess_high_probability_double(a, b):
+    """User-requested double of two very likely selections, sized on the model's own probabilities.
+
+    It skips the confidence shrinkage on purpose, so it is recorded as its own strategy and
+    evaluated separately; it still needs a positive expected value under adverse dependence.
+    """
+    if a["match_id"] == b["match_id"] or any(
+        leg["probability"] < HIGH_PROBABILITY_LEG or leg["price"] > HIGH_PROBABILITY_MAX_PRICE for leg in (a, b)
+    ):
+        return None
+    a, b = (dict(leg, effective_probability=leg["probability"]) for leg in (a, b))
+    price = round(a["price"] * b["price"], 4)
+    rho = pair_rho(a, b)
+    sensitivity = []
+    for label, shift, r in (("independencia", 0, 0.), ("dependencia_positiva", 0, rho),
+                            ("dependencia_negativa", 0, -rho), ("error_calibracion_adicional", 1, -rho)):
+        joint = joint_probability(_clip(a["probability"] - shift * a["calibration_error"]),
+                                  _clip(b["probability"] - shift * b["calibration_error"]), r)
+        sensitivity.append(dict(scenario=label, rho=r, probability=round(joint, 4), ev=round(joint * price - 1, 4)))
+    robust = min(row["ev"] for row in sensitivity[:3])
+    reasons = [] if robust > 0 else ["ev_negativo_con_dependencia_adversa"]
+    if not COMBO_PRICE_RANGE[0] <= price <= COMBO_PRICE_RANGE[1]:
+        reasons.append("cuota_combinada_fuera_de_rango")
+    model_joint = a["probability"] * b["probability"]
+    return dict(
+        legs=[a, b], price=price, model_probability=round(model_joint, 4), model_ev=round(model_joint * price - 1, 4),
+        rho_stress=rho, sensitivity=sensitivity, effective_probability=sensitivity[2]["probability"],
+        robust_ev=robust, synthetic_price=True, accepted=not reasons, reasons=reasons, strategy="alta_probabilidad",
+    )
+
+
 def assess_double(a, b):
     """Joint estimate of a two-fixture double, with dependence and calibration stress."""
     reasons = []
@@ -169,22 +204,23 @@ def assess_double(a, b):
     rho = pair_rho(a, b)
     sensitivity = []
     if not reasons:
-        for label, shift, r in (("independencia", 0, 0.), ("dependencia_negativa", 0, -rho),
-                                ("dependencia_positiva", 0, rho), ("error_calibracion", 1, 0.),
-                                ("peor_caso", 1, -rho)):
+        # Effective probabilities already price calibration error; the gate stresses dependence.
+        # The extra calibration scenario is reported for transparency only.
+        for label, shift, r in (("independencia", 0, 0.), ("dependencia_positiva", 0, rho),
+                                ("dependencia_negativa", 0, -rho), ("error_calibracion_adicional", 1, -rho)):
             p1 = _clip(a["effective_probability"] - shift * a["calibration_error"])
             p2 = _clip(b["effective_probability"] - shift * b["calibration_error"])
             joint = joint_probability(p1, p2, r)
             sensitivity.append(dict(scenario=label, rho=r, probability=round(joint, 4), ev=round(joint * price - 1, 4)))
-        if sensitivity[-1]["ev"] <= 0:
-            reasons.append("ev_negativo_en_peor_caso")
+        if min(row["ev"] for row in sensitivity[:3]) <= 0:
+            reasons.append("ev_negativo_con_dependencia_adversa")
     model_joint = a["probability"] * b["probability"]
     return dict(
         legs=[a, b], price=price, model_probability=round(model_joint, 4),
         model_ev=round(model_joint * price - 1, 4), rho_stress=rho, sensitivity=sensitivity,
         effective_probability=sensitivity[0]["probability"] if sensitivity else None,
-        robust_ev=sensitivity[-1]["ev"] if sensitivity else None,
-        synthetic_price=True, accepted=not reasons, reasons=reasons,
+        robust_ev=min(row["ev"] for row in sensitivity[:3]) if sensitivity else None,
+        synthetic_price=True, accepted=not reasons, reasons=reasons, strategy="ventaja_confirmada",
     )
 
 
@@ -213,10 +249,18 @@ def _growth(stakes, prices, probs, wins, equity):
     return float(probs @ np.log1p(pnl / equity)), pnl
 
 
-def evaluate_alternative(positions, profile, equity, available, reserved, multiplier):
-    """Size one alternative (a set of positions) and describe its joint risk."""
+def evaluate_alternative(positions, profile, equity, available, reserved, multiplier, min_stake_cents=MIN_STAKE_CENTS):
+    """Size one alternative (a set of positions) and describe its joint risk.
+
+    Stakes follow fractional Kelly, raised to `min_stake_cents` when the user sets a floor.
+    The floor never breaks the exposure, reserve or scenario-loss limits: an alternative that
+    cannot fund every position at the floor within those limits is not viable.
+    """
     prices = np.array([pos["price"] for pos in positions])
-    tables = [_scenario_table(positions, sign, shift) for sign, shift in ((0, 0), (-1, 0), (1, 0), (-1, 1))]
+    # Sizing stresses dependence only: calibration error is already priced into the effective
+    # probability (interval midpoint + confidence shrinkage); subtracting it again would count it twice.
+    tables = [_scenario_table(positions, sign, 0) for sign in (0, -1, 1)]
+    calibration_table = _scenario_table(positions, -1, 1)
     _, outcomes, base_probs, wins = tables[0]
     cash = available - profile.min_reserve_fraction * equity
     bounds = []
@@ -226,7 +270,7 @@ def evaluate_alternative(positions, profile, equity, available, reserved, multip
     if not positions or all(high <= 0 for _, high in bounds):
         return None
 
-    # Robust full-Kelly reference: maximise the worst expected log growth across stress tables.
+    # Robust full-Kelly reference: maximise the worst expected log growth across dependence stresses.
     # Optimised in fractions of equity: cents would hide the gradient below the solver tolerance.
     def objective(x):
         return -min(_growth(x * equity, prices, probs, wins, equity)[0] for _, _, probs, _ in tables)
@@ -236,7 +280,13 @@ def evaluate_alternative(positions, profile, equity, available, reserved, multip
     full = minimize(objective, np.array([high / 4 for _, high in unit_bounds]), bounds=unit_bounds,
                     method="L-BFGS-B", options=dict(ftol=1e-12, gtol=1e-10)).x * equity
     scaled = full * profile.kelly_fraction * multiplier
-    stakes = np.minimum(scaled, [high for _, high in bounds])
+    caps = np.array([high for _, high in bounds])
+    stakes = np.minimum(scaled, caps)
+    floored = min_stake_cents > MIN_STAKE_CENTS
+    if floored:
+        if (full < STAKE_STEP_CENTS).any() or (caps < min_stake_cents).any():
+            return dict(feasible=False, reason="sin_ventaja_o_sin_margen_para_el_stake_minimo", binding_limits=[])
+        stakes = np.maximum(stakes, min_stake_cents)
     # Joint limits: worst joint outcome, total exposure including pending tickets, liquidity reserve.
     limits = dict(
         perdida_maxima_escenario=profile.max_scenario_loss_fraction * equity,
@@ -250,9 +300,10 @@ def evaluate_alternative(positions, profile, equity, available, reserved, multip
             stakes *= max(limit, 0) / total
             binding.append(label)
     stakes = np.floor(stakes / STAKE_STEP_CENTS) * STAKE_STEP_CENTS
-    if not (stakes >= MIN_STAKE_CENTS).all():
+    if not (stakes >= min_stake_cents).all():
         return dict(feasible=False, reason="stake_inferior_al_minimo", binding_limits=binding)
     growth = [_growth(stakes, prices, probs, wins, equity)[0] for _, _, probs, _ in tables]
+    calibration_growth = _growth(stakes, prices, calibration_table[2], calibration_table[3], equity)[0]
     _, pnl = _growth(stakes, prices, base_probs, wins, equity)
     model_probs = _model_probabilities(positions, outcomes)
     scenarios = [
@@ -261,13 +312,16 @@ def evaluate_alternative(positions, profile, equity, available, reserved, multip
         for row, pr, pl in zip(outcomes, base_probs, pnl)
     ]
     mean = float(base_probs @ pnl)
+    robust_profit = min(float(probs @ _growth(stakes, prices, probs, w, equity)[1]) for _, _, probs, w in tables)
     return dict(
+        robust_expected_profit_cents=int(round(robust_profit)),
         feasible=True, stakes_cents=[int(s) for s in stakes],
         full_kelly_cents=[int(round(f)) for f in full],
         committed_cents=int(stakes.sum()), committed_share=round(float(stakes.sum()) / equity, 4),
         expected_profit_cents=int(round(mean)),
         model_expected_profit_cents=int(round(float(model_probs @ pnl))),
         expected_log_growth=round(growth[0], 6), robust_log_growth=round(min(growth), 6),
+        calibration_stress_log_growth=round(calibration_growth, 6),
         loss_probability=round(float(base_probs[pnl < 0].sum()), 4),
         volatility_cents=int(round(sqrt(float(base_probs @ (pnl - mean) ** 2)))),
         max_loss_cents=int(-pnl.min()), max_loss_share=round(float(-pnl.min()) / equity, 4),
@@ -282,10 +336,11 @@ def _model_probabilities(positions, outcomes):
 
 
 def _describe(positions):
-    return " + ".join(
-        ("Combinada " if len(pos["legs"]) > 1 else "Individual ") + " / ".join(leg["match"] for leg in pos["legs"])
-        for pos in positions
-    ) or "No apostar"
+    def name(pos):
+        if len(pos["legs"]) == 1:
+            return f"Individual {pos['legs'][0]['match']}"
+        return "Combinada " + " / ".join(f"{leg['match']} ({leg['market']})" for leg in pos["legs"])
+    return " + ".join(name(pos) for pos in positions) or "No apostar"
 
 
 def drawdown_multiplier(equity, peak):
@@ -296,28 +351,38 @@ def drawdown_multiplier(equity, peak):
     return max(.25, 1 - (drawdown - .10) * 2.5)
 
 
-def choose_portfolio(singles, doubles, profile, *, equity, available, reserved, peak, max_positions=5):
-    """Compare every compatible alternative as a portfolio; abstaining is always one of them."""
+def choose_portfolio(singles, doubles, profile, *, equity, available, reserved, peak, max_positions=6,
+                     min_stake_cents=MIN_STAKE_CENTS):
+    """Compare every compatible alternative as a portfolio; abstaining is always one of them.
+
+    With a user stake floor, an alternative qualifies when its expected profit stays positive under
+    adverse dependence; otherwise it must also add expected log growth. Robust log growth ranks them.
+    """
     multiplier = drawdown_multiplier(equity, peak)
     pool = [dict(kind="auto_single", legs=[leg], price=leg["price"]) for leg in singles
             if leg["effective_probability"] is not None and not leg["confidence_gates"]
             and leg["effective_probability"] * leg["price"] > 1]
-    pool += [dict(kind="auto_double", legs=d["legs"], price=d["price"], double=d) for d in doubles if d["accepted"]]
+    pool += [dict(kind="auto_double", legs=d["legs"], price=d["price"], double=d,
+                  strategy=d.get("strategy", "ventaja_confirmada")) for d in doubles if d["accepted"]]
     pool = sorted(pool, key=lambda pos: _edge(pos), reverse=True)[:max_positions]
     alternatives = [dict(description="No apostar", positions=[], feasible=True, expected_log_growth=0.,
                          robust_log_growth=0., committed_cents=0, max_loss_cents=0, loss_probability=0.,
                          expected_profit_cents=0)]
     for size in range(1, len(pool) + 1):
         for subset in combinations(pool, size):
-            # Two positions on one fixture must share the selection, so the joint scenarios stay exact.
+            # Two positions on one fixture must share the selection (and its probability), so the joint
+            # scenarios stay exact.
             chosen = {}
-            if any(chosen.setdefault(leg["match_id"], leg_key(leg)) != leg_key(leg) for pos in subset for leg in pos["legs"]):
+            if any(chosen.setdefault(leg["match_id"], (leg_key(leg), leg["effective_probability"]))
+                   != (leg_key(leg), leg["effective_probability"]) for pos in subset for leg in pos["legs"]):
                 continue
-            result = evaluate_alternative(list(subset), profile, equity, available, reserved, multiplier)
+            result = evaluate_alternative(list(subset), profile, equity, available, reserved, multiplier, min_stake_cents)
             if result is None:
                 continue
             alternatives.append(dict(result, description=_describe(subset), positions=list(subset)))
-    feasible = [alt for alt in alternatives[1:] if alt["feasible"] and alt["robust_log_growth"] > MIN_LOG_GROWTH]
+    floored = min_stake_cents > MIN_STAKE_CENTS
+    feasible = [alt for alt in alternatives[1:] if alt["feasible"] and (
+        alt["robust_log_growth"] > MIN_LOG_GROWTH or (floored and alt["robust_expected_profit_cents"] > 0))]
     best = max(feasible, key=lambda alt: (alt["robust_log_growth"], -alt["committed_cents"]), default=alternatives[0])
     for alt in alternatives:
         alt["chosen"] = alt is best
@@ -327,7 +392,8 @@ def choose_portfolio(singles, doubles, profile, *, equity, available, reserved, 
         p_eff = pos["double"]["effective_probability"] if pos["kind"] == "auto_double" else pos["legs"][0]["effective_probability"]
         model_p = pos["double"]["model_probability"] if pos["kind"] == "auto_double" else pos["legs"][0]["probability"]
         tickets.append(dict(
-            kind=pos["kind"], legs=pos["legs"], stake_cents=stake, price=pos["price"],
+            kind=pos["kind"], strategy=pos.get("strategy", "ventaja_confirmada"), legs=pos["legs"],
+            stake_cents=stake, price=pos["price"],
             probability=model_p, effective_probability=p_eff,
             confidence=min(leg["confidence"] for leg in pos["legs"]),
             ev=round(model_p * pos["price"] - 1, 4), effective_ev=round(p_eff * pos["price"] - 1, 4),
@@ -365,10 +431,12 @@ def _verdict(alt, best):
 def _decision_reason(best, alternatives):
     if not best["positions"]:
         viable = [a for a in alternatives[1:] if a["feasible"]]
+        if any(a.get("reason") == "sin_ventaja_o_sin_margen_para_el_stake_minimo" for a in alternatives[1:]) and not viable:
+            return "Abstención: ninguna posición tiene ventaja positiva o margen de riesgo para el stake mínimo."
         if not viable:
             return "Abstención: ninguna posición supera los filtros de confianza, ventaja y stake mínimo."
-        return "Abstención: ninguna alternativa ofrece crecimiento logarítmico positivo en el peor escenario de dependencia y calibración."
-    return (f"{best['description']}: mayor crecimiento logarítmico robusto ({best['robust_log_growth']:.4%}) "
+        return "Abstención: ninguna alternativa ofrece crecimiento logarítmico suficiente en el peor escenario de dependencia."
+    return (f"{best['description']}: mayor crecimiento logarítmico robusto ({best['robust_log_growth']:.3%} de la banca) "
             f"de {len(alternatives)} alternativas; compromete {best['committed_share']:.1%} de la banca, "
             f"pérdida máxima {best['max_loss_cents'] / 100:.2f} € y probabilidad de pérdida {best['loss_probability']:.1%}."
             + (f" Límites activos: {', '.join(best['binding_limits'])}." if best["binding_limits"] else ""))
@@ -376,10 +444,15 @@ def _decision_reason(best, alternatives):
 
 def _ticket_reason(pos, stake, best):
     leg = pos["legs"][0]
+    if pos.get("strategy") == "alta_probabilidad":
+        d = pos["double"]
+        return (f"Combinada de alta probabilidad {pos['price']:.2f}: dos selecciones ≥{HIGH_PROBABILITY_LEG:.0%} según el modelo, "
+                f"probabilidad conjunta {d['effective_probability']:.1%} con dependencia adversa, EV {d['robust_ev']:+.1%}. "
+                "Usa la probabilidad del modelo sin rebaja por confianza.")
     if pos["kind"] == "auto_double":
         d = pos["double"]
         return (f"Combinada sintética {pos['price']:.2f}: probabilidad conjunta efectiva {d['effective_probability']:.1%}, "
-                f"EV en peor caso {d['robust_ev']:+.1%} (ρ={-d['rho_stress']:+.2f} y error de calibración).")
+                f"EV con dependencia adversa {d['robust_ev']:+.1%} (ρ={-d['rho_stress']:+.2f}).")
     return (f"Probabilidad {leg['probability']:.1%} con confianza {leg['confidence']:.2f} → efectiva "
             f"{leg['effective_probability']:.1%} frente al equilibrio {1 / leg['price']:.1%}.")
 
@@ -392,6 +465,7 @@ def _public_position(pos):
 def _public_alternative(alt):
     keys = ("description", "feasible", "chosen", "verdict", "stakes_cents", "committed_cents", "committed_share",
             "expected_profit_cents", "model_expected_profit_cents", "expected_log_growth", "robust_log_growth",
+            "calibration_stress_log_growth",
             "loss_probability", "volatility_cents", "max_loss_cents", "max_loss_share", "scenarios", "binding_limits")
     return {k: alt[k] for k in keys if k in alt}
 

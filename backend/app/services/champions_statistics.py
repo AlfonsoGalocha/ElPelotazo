@@ -8,6 +8,10 @@ from backend.app.db.models.core import Competition, ProviderResponse, Season
 from backend.app.db.models.matches import Match, MatchStatistics
 from backend.app.normalization.competitions import CHAMPIONS_LEAGUE, LIGA_F
 from backend.app.services.data_service import _archive_if_api_football
+from backend.app.utils.dates import season_label
+
+# Domestic leagues whose current-season statistics are completed through the same batched call.
+DOMESTIC_LEAGUES = ("laliga", "premier_league", "serie_a", "bundesliga", "ligue_1")
 
 FIELDS = {
     "Total Shots": "shots", "Shots on Goal": "shots_on_target", "Corner Kicks": "corners",
@@ -46,12 +50,18 @@ def refresh_champions_statistics(db, provider, batches, competition=CHAMPIONS_LE
     }
     missing = db.query(Match).join(Competition).outerjoin(MatchStatistics).filter(
         Competition.code == competition, Match.provider == "api_football",
-        Match.status == "finished", Match.provider_status == "FT",
+        Match.status == "finished",
+        # Domestic fixtures do not store the provider status; the payload itself must say FT.
+        or_(Match.provider_status == "FT", Competition.code.in_(DOMESTIC_LEAGUES)),
         or_(*(getattr(MatchStatistics, f"{side}_{stat}").is_(None)
               for side in ("home", "away") for stat in ("corners", "shots", "shots_on_target"))),
     ).order_by(Match.kickoff_utc.desc(), Match.id)
     if competition == LIGA_F:
         missing = missing.join(Season, Season.id == Match.season_id).filter(Season.label.in_(("2023/24", "2024/25")))
+    elif competition in DOMESTIC_LEAGUES:
+        # Earlier seasons come complete from the historical CSV; only the running season is fetched.
+        missing = missing.join(Season, Season.id == Match.season_id).filter(
+            Season.label == season_label(datetime.now(timezone.utc).date()))
     matches = [m for m in missing if m.provider_id not in tried][:batches*20]
     updated = 0
     for start in range(0, len(matches), 20):

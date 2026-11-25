@@ -37,13 +37,13 @@ export default async function ModelPerformancePage({
       <div>
         <h1 className="mb-1 flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-100">
           <BarChart3 className="h-5 w-5 text-accent" />
-          Laboratorio del modelo
+          Rendimiento del modelo
         </h1>
         <p className="text-sm text-slate-400">
-          Aquí puedes ver cuántos pronósticos acierta el modelo y si los porcentajes que anuncia coinciden con lo que ocurre.
+          Aquí puedes ver cuántos pronósticos acierta el modelo, qué habría pasado apostando 10 € a cada uno y si los porcentajes que anuncia coinciden con lo que ocurre.
         </p>
       </div>
-      <RoundAccuracyPanel />
+      <div id="acierto" className="scroll-mt-20"><RoundAccuracyPanel filters /></div>
       {coverage && <section className="grid gap-3 sm:grid-cols-3" aria-label="Muestras estadísticas">
         <article className="rounded-xl border border-surface-border bg-card p-4">
           <h2 className="font-semibold">Datos para entrenar y simular</h2>

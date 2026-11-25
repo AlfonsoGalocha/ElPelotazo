@@ -33,3 +33,5 @@ frontend/tsconfig.tsbuildinfo
 
 .DS_Store
 *.log
+data/cache/
+*.dump

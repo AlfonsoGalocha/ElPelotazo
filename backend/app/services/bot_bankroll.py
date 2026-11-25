@@ -27,8 +27,9 @@ from backend.app.prediction.anomaly import compute_anomaly_flags
 from backend.app.prediction.eligibility import observed_corner_total
 from backend.app.prediction.opportunities import assess_opportunity, forecast_priority, valid_probability
 from backend.app.services.bot_capital import (
-    CAPITAL_POLICY_VERSION, COMBO_LEG_ODDS, COMBO_MARKETS, MAX_STAKE_QUOTE_AGE_MINUTES, PROFILES, active_profile,
-    assess_double, choose_portfolio, leg_from_candidate, profile_summary, simulate_profiles,
+    CAPITAL_POLICY_VERSION, COMBO_LEG_ODDS, COMBO_MARKETS, MAX_STAKE_QUOTE_AGE_MINUTES, MIN_STAKE_CENTS, PROFILES,
+    active_profile, assess_double, assess_high_probability_double, choose_portfolio, leg_from_candidate, leg_key,
+    profile_summary, simulate_profiles,
 )
 from backend.app.services.bot_match_context import OUTSIDER_GOAL_BAND, TEAM_SCORE_SIDE, choose_match_pick, match_context, team_win_prices
 from backend.app.services.evaluation_service import market_track_records_with_provenance
@@ -40,10 +41,17 @@ MADRID = ZoneInfo("Europe/Madrid")
 INITIAL_CENTS = 30_000
 POLICY_VERSION = "forward-v5-portfolio"
 CONTINUOUS_POLICY_VERSION = "forward-v5-continuous-portfolio"
-# Later fixtures may join a cut only as the second leg of a double; they keep their own cut.
-COMBO_LOOKAHEAD = dt.timedelta(hours=4)
+# Fixtures of the next 24 h may join a cut only as the second leg of a double; unless used,
+# they keep their own cut. A used fixture is then exposed until it settles.
+COMBO_LOOKAHEAD = dt.timedelta(hours=24)
 POSTPONED_VOID_AFTER = dt.timedelta(hours=48)
+# The virtual trial bank follows every competition with fixtures; competitions without
+# forecasts simply yield no candidates.
 TRIAL_LEAGUES = (*LEAGUES, "bundesliga", "ligue_1", "champions_league", "afc_champions_league", "liga_f")
+
+
+def trial_competitions():
+    return Competition.id.isnot(None)
 START_DATE = dt.date(2026, 11, 23)
 LIVE_STATUSES = {"1H", "HT", "2H", "ET", "BT", "P", "LIVE", "INT", "SUSP"}
 _live_lock = Lock()
@@ -153,23 +161,28 @@ def combo_legs(db, match, rows, settings, now, provenance, lookup):
                                  ev=round(leg["ev"], 4) if leg["ev"] is not None else None, reasons=reasons))
         else:
             legs.append(leg)
-    legs.sort(key=lambda leg: leg["effective_probability"] * leg["price"], reverse=True)
     in_band = [r for r in rejected if COMBO_LEG_ODDS[0] <= r["price"] <= COMBO_LEG_ODDS[1]]
     in_band.sort(key=lambda r: (r["ev"] is not None, r["ev"] or 0), reverse=True)
-    return legs[:2], in_band[:4]
+    # Best confirmed-edge components plus the most likely ones for high-probability doubles.
+    by_edge = sorted(legs, key=lambda leg: leg["effective_probability"] * leg["price"], reverse=True)[:2]
+    likely = sorted(legs, key=lambda leg: leg["probability"], reverse=True)[:2]
+    return list({leg_key(leg): leg for leg in (*by_edge, *likely)}.values()), in_band[:4]
 
 
 def build_doubles(legs_by_match, decision_ids):
-    assessed = []
+    assessed, likely = [], []
     for a_id, b_id in combinations(sorted(legs_by_match), 2):
         if a_id not in decision_ids and b_id not in decision_ids:
             continue
         for a in legs_by_match[a_id]:
             for b in legs_by_match[b_id]:
                 assessed.append(assess_double(a, b))
-    accepted = sorted([d for d in assessed if d["accepted"]], key=lambda d: d["robust_ev"], reverse=True)
-    rejected = [d for d in assessed if not d["accepted"]]
-    return accepted[:3], rejected
+                if (high := assess_high_probability_double(a, b)) is not None:
+                    likely.append(high)
+    accepted = sorted([d for d in assessed if d["accepted"]], key=lambda d: d["robust_ev"], reverse=True)[:3]
+    accepted += sorted([d for d in likely if d["accepted"]], key=lambda d: d["robust_ev"], reverse=True)[:2]
+    rejected = [d for d in (*assessed, *likely) if not d["accepted"]]
+    return accepted, rejected
 
 
 def _public_double(d):
@@ -185,49 +198,42 @@ def capital_state(report):
                 pending_matches=set(report["pending_match_ids"]))
 
 
-def capture_bot_decision(db, *, now=None, early=False, dry_run=False, trial=False, continuous=False):
+def trial_seen_matches(db):
+    """Fixtures already decided by a trial cut or carrying a recorded ticket."""
+    previous = [row.payload for table in (BotTrialDecision, BotTrialCut, BotManualTicket) for row in db.query(table)]
+    seen = {fixture["match_id"] for payload in previous for fixture in payload.get("fixtures", [])}
+    return seen | {leg["match_id"] for payload in previous for ticket in payload["tickets"] for leg in ticket["legs"]}
+
+
+def load_predictions(db, matches, now, *, score_candidates):
+    """Stored forecasts, plus on-the-fly previews for API competitions without stored rows."""
+    predictions = defaultdict(dict)
+    for p in db.query(Prediction).filter(
+        Prediction.match_id.in_([match.id for match in matches]), Prediction.created_at <= now,
+    ).order_by(Prediction.created_at, Prediction.id):
+        predictions[p.match_id][(p.market, p.line, p.selection)] = p
+    if score_candidates:
+        from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS
+        from backend.app.services.prediction_service import _market_line_and_selection, score_api_candidate
+
+        by_id = {match.id: match for match in matches}
+        for code in API_CANDIDATE_COMPETITIONS:
+            targets = [match for match in matches if match.competition.code == code and not predictions[match.id]]
+            version, forecasts, _ = score_api_candidate(db, targets, now, code, preview=True)
+            for index, row in enumerate(forecasts):
+                line, selection = _market_line_and_selection(row.market)
+                predictions[row.match_id][(row.market, line, selection)] = SimpleNamespace(
+                    **vars(row), id=-index-1, match=by_id[row.match_id], line=line,
+                    selection=selection, created_at=now, model_version_id=version.id,
+                )
+    return predictions
+
+
+def evaluate_cut(db, fixtures, lookahead, capital, now, *, continuous, predictions=None, provenance=None):
+    """Joint decision for one cut; pure with respect to the bank (nothing is written here)."""
     from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP
 
-    now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     day = now.replace(tzinfo=dt.timezone.utc).astimezone(MADRID).date()
-    if day < START_DATE:
-        return None
-    decision_model = BotTrialDecision if trial else BotDecision
-    insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
-    if continuous and not trial:
-        raise ValueError("Continuous mode uses the existing virtual trial bank")
-    if db.get_bind().dialect.name == "postgresql" and not dry_run:
-        db.execute(text("SELECT pg_advisory_xact_lock(39178024)"))
-    if trial:
-        continuous = continuous or db.query(BotTrialCut.match_id).first() is not None
-    lookahead = []
-    if continuous:
-        previous = [
-            row.payload for table in (BotTrialDecision, BotTrialCut, BotManualTicket) for row in db.query(table)
-        ]
-        seen = {fixture["match_id"] for payload in previous for fixture in payload.get("fixtures", [])}
-        seen |= {leg["match_id"] for payload in previous for ticket in payload["tickets"] for leg in ticket["legs"]}
-        upcoming = db.query(Match).join(Competition).filter(
-            Competition.code.in_(TRIAL_LEAGUES), Match.status == "scheduled",
-            Match.kickoff_utc > now, Match.kickoff_utc <= now + COMBO_LOOKAHEAD,
-            ~Match.id.in_(seen),
-        ).order_by(Match.kickoff_utc, Match.id).all()
-        fixtures = [match for match in upcoming if match.kickoff_utc <= now + dt.timedelta(hours=1)]
-        lookahead = [match for match in upcoming if match.kickoff_utc > now + dt.timedelta(hours=1)]
-        report = bot_report(db, trial=True)
-        if not fixtures or report["balance_cents"] <= 0:
-            return None
-    else:
-        existing = db.get(decision_model, day)
-        if existing is not None and not dry_run:
-            return existing.payload
-        fixtures = competition_fixtures(db, day)
-        if not fixtures or any(match.status != "scheduled" or match.kickoff_utc <= now for match in fixtures):
-            return None
-        if not early and fixtures[0].kickoff_utc - now > dt.timedelta(hours=1):
-            return None
-        report = bot_report(db, trial=trial)
-    capital = capital_state(report)
     balance = capital["available"]
 
     settings = get_settings()
@@ -239,27 +245,10 @@ def capture_bot_decision(db, *, now=None, early=False, dry_run=False, trial=Fals
         "max_opportunity_odds": min(ceiling, OUTSIDER_GOAL_BAND[1]),
     })
     evaluated = [*fixtures, *lookahead]
-    predictions = defaultdict(dict)
-    for p in db.query(Prediction).filter(
-        Prediction.match_id.in_([match.id for match in evaluated]), Prediction.created_at <= now,
-    ).order_by(Prediction.created_at, Prediction.id):
-        predictions[p.match_id][(p.market, p.line, p.selection)] = p
-
-    if continuous:
-        from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS
-        from backend.app.services.prediction_service import _market_line_and_selection, score_api_candidate
-
-        matches = {match.id: match for match in evaluated}
-        for code in API_CANDIDATE_COMPETITIONS:
-            targets = [match for match in evaluated if match.competition.code == code and not predictions[match.id]]
-            version, forecasts, _ = score_api_candidate(db, targets, now, code, preview=True)
-            for index, row in enumerate(forecasts):
-                line, selection = _market_line_and_selection(row.market)
-                predictions[row.match_id][(row.market, line, selection)] = SimpleNamespace(
-                    **vars(row), id=-index-1, match=matches[row.match_id], line=line,
-                    selection=selection, created_at=now, model_version_id=version.id,
-                )
-    provenance = market_track_records_with_provenance(db, as_of=now)
+    if predictions is None:
+        predictions = load_predictions(db, evaluated, now, score_candidates=continuous)
+    if provenance is None:
+        provenance = market_track_records_with_provenance(db, as_of=now)
     singles = []
     legs_by_match = {}
     decisions = []
@@ -288,17 +277,24 @@ def capture_bot_decision(db, *, now=None, early=False, dry_run=False, trial=Fals
         max_age = settings.max_odds_age_minutes or settings.opportunity_max_odds_age_minutes
         context["team_win_prices"] = team_win_prices(match, now, max_age)
         pick, decision = choose_match_pick(qualified, context)
-        single = None
-        if pick:
-            p, item = pick
-            single = leg_from_candidate(candidate_leg(p, item), p, item, provenance.get((match.competition.code, p.market)), now)
-            singles.append(single)
+        # Every eligible selection competes, including the verified opportunity of the main page
+        # (best ranking score) and the bot's own market-order pick.
+        verified = max(qualified, key=lambda pair: (pair[1].score, *forecast_priority(pair)), default=None)
+        candidates = []
+        for p, item in qualified:
+            leg = leg_from_candidate(candidate_leg(p, item), p, item, provenance.get((match.competition.code, p.market)), now)
+            leg["source"] = [name for name, chosen in (("oportunidad_verificada", verified), ("orden_del_bot", pick))
+                             if chosen is not None and chosen[0] is p] or ["elegible"]
+            candidates.append(leg)
+        candidates.sort(key=lambda leg: (leg["effective_probability"] or 0) * leg["price"], reverse=True)
+        singles.extend(candidates[:3])
+        single = candidates[0] if candidates else None
         decisions.append(dict(
             match_id=match.id, match=f"{match.home_team.canonical_name} – {match.away_team.canonical_name}",
             kickoff=match.kickoff_utc.isoformat() + "Z", assessed=len(rows), eligible=len(qualified),
             reasons=dict(reasons), context=context, decision=decision,
             chosen_market=pick[0].market if pick else None,
-            single=single and {k: single[k] for k in ("market", "price", "probability", "effective_probability",
+            single=single and {k: single[k] for k in ("market", "price", "probability", "effective_probability", "source",
                                                        "confidence", "confidence_gates")},
             combo_candidates=[{k: leg[k] for k in ("market", "price", "probability", "effective_probability", "confidence")}
                               for leg in legs_by_match[match.id]],
@@ -308,6 +304,7 @@ def capture_bot_decision(db, *, now=None, early=False, dry_run=False, trial=Fals
     portfolio = choose_portfolio(
         singles, doubles, profile, equity=capital["equity"], available=capital["available"],
         reserved=capital["reserved"], peak=capital["peak"],
+        min_stake_cents=max(int(round(get_settings().bot_min_stake_eur * 100)), MIN_STAKE_CENTS),
     )
     payload = dict(day=day.isoformat(), captured_at=now.isoformat() + "Z",
                    policy_version=CONTINUOUS_POLICY_VERSION if continuous else POLICY_VERSION,
@@ -321,6 +318,46 @@ def capture_bot_decision(db, *, now=None, early=False, dry_run=False, trial=Fals
                        rejected_doubles=[_public_double(d) for d in rejected[:10]],
                        accepted_doubles=[_public_double(d) for d in doubles], **portfolio,
                    ))
+    return payload
+
+
+def capture_bot_decision(db, *, now=None, early=False, dry_run=False, trial=False, continuous=False):
+    now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    day = now.replace(tzinfo=dt.timezone.utc).astimezone(MADRID).date()
+    if day < START_DATE:
+        return None
+    decision_model = BotTrialDecision if trial else BotDecision
+    insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
+    if continuous and not trial:
+        raise ValueError("Continuous mode uses the existing virtual trial bank")
+    if db.get_bind().dialect.name == "postgresql" and not dry_run:
+        db.execute(text("SELECT pg_advisory_xact_lock(39178024)"))
+    if trial:
+        continuous = continuous or db.query(BotTrialCut.match_id).first() is not None
+    lookahead = []
+    if continuous:
+        seen = trial_seen_matches(db)
+        upcoming = db.query(Match).join(Competition).filter(
+            trial_competitions(), Match.status == "scheduled",
+            Match.kickoff_utc > now, Match.kickoff_utc <= now + COMBO_LOOKAHEAD,
+            ~Match.id.in_(seen),
+        ).order_by(Match.kickoff_utc, Match.id).all()
+        fixtures = [match for match in upcoming if match.kickoff_utc <= now + dt.timedelta(hours=1)]
+        lookahead = [match for match in upcoming if match.kickoff_utc > now + dt.timedelta(hours=1)]
+        report = bot_report(db, trial=True)
+        if not fixtures or report["balance_cents"] <= 0:
+            return None
+    else:
+        existing = db.get(decision_model, day)
+        if existing is not None and not dry_run:
+            return existing.payload
+        fixtures = competition_fixtures(db, day)
+        if not fixtures or any(match.status != "scheduled" or match.kickoff_utc <= now for match in fixtures):
+            return None
+        if not early and fixtures[0].kickoff_utc - now > dt.timedelta(hours=1):
+            return None
+        report = bot_report(db, trial=trial)
+    payload = evaluate_cut(db, fixtures, lookahead, capital_state(report), now, continuous=continuous)
     if dry_run:
         return payload
     if continuous:
@@ -329,6 +366,81 @@ def capture_bot_decision(db, *, now=None, early=False, dry_run=False, trial=Fals
         return payload
     db.execute(insert(decision_model).values(day=day, payload=payload).on_conflict_do_nothing(index_elements=["day"]))
     return db.get(decision_model, day).payload
+
+
+CUT_LEAD = dt.timedelta(hours=1)
+
+
+def _compact_cut(payload):
+    capital = payload["capital"]
+    return dict(
+        fixtures=[dict(match_id=f["match_id"], match=f["match"], kickoff=f["kickoff"], eligible=f["eligible"],
+                       assessed=f["assessed"], single=f.get("single"), combo_rejected=f.get("combo_rejected", [])[:3])
+                  for f in payload["fixtures"]],
+        lookahead=payload.get("lookahead", []), chosen=capital["chosen"], reason=capital["reason"],
+        tickets=payload["tickets"], alternatives=capital["alternatives"][:6],
+        evaluated_alternatives=capital["evaluated_alternatives"], accepted_doubles=capital["accepted_doubles"],
+    )
+
+
+def bot_plan(db, *, now=None):
+    """Provisional route of the trial bot for the rest of the Madrid day; it never records anything.
+
+    Cuts are replayed in kickoff order exactly as the scheduler would trigger them, each one
+    using today's latest forecasts and quotes. Stakes planned in earlier cuts are treated as
+    pending, so later cuts only see the cash that would really remain available.
+    """
+    now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    today = now.replace(tzinfo=dt.timezone.utc).astimezone(MADRID).date()
+    day_end = dt.datetime.combine(today + dt.timedelta(days=1), dt.time.min, MADRID).astimezone(dt.timezone.utc).replace(tzinfo=None)
+    report = bot_report(db, trial=True)
+    capital = capital_state(report)
+    seen = trial_seen_matches(db)
+    remaining = db.query(Match).join(Competition).filter(
+        trial_competitions(), Match.status == "scheduled",
+        Match.kickoff_utc > now, Match.kickoff_utc < day_end + COMBO_LOOKAHEAD, ~Match.id.in_(seen),
+    ).order_by(Match.kickoff_utc, Match.id).all()
+    predictions = load_predictions(db, remaining, now, score_candidates=True)
+    provenance = market_track_records_with_provenance(db, as_of=now)
+    steps = []
+    start = capital["available"]
+    while remaining and remaining[0].kickoff_utc < day_end:
+        cut_at = max(now, remaining[0].kickoff_utc - CUT_LEAD)
+        fixtures = [m for m in remaining if m.kickoff_utc <= cut_at + CUT_LEAD]
+        lookahead = [m for m in remaining if m not in fixtures and m.kickoff_utc <= cut_at + COMBO_LOOKAHEAD]
+        before = dict(available=capital["available"], reserved=capital["reserved"])
+        if capital["available"] > 0:
+            payload = evaluate_cut(db, fixtures, lookahead, capital, now, continuous=True,
+                                   predictions=predictions, provenance=provenance)
+            step = _compact_cut(payload)
+        else:
+            step = dict(fixtures=[dict(match_id=m.id, match=f"{m.home_team.canonical_name} – {m.away_team.canonical_name}",
+                                       kickoff=m.kickoff_utc.isoformat() + "Z") for m in fixtures],
+                        chosen="No apostar", reason="Sin saldo disponible en ese momento.", tickets=[], alternatives=[])
+        used = {m.id for m in fixtures} | {leg["match_id"] for t in step["tickets"] for leg in t["legs"]}
+        staked = sum(t["stake_cents"] for t in step["tickets"])
+        capital = dict(capital, available=capital["available"] - staked, reserved=capital["reserved"] + staked,
+                       pending_matches=capital["pending_matches"] | used)
+        steps.append(dict(step, cut_at=cut_at.isoformat() + "Z", capital_before=before,
+                          capital_after=dict(available=capital["available"], reserved=capital["reserved"])))
+        remaining = [m for m in remaining if m.id not in used]
+    executed = [
+        dict(captured_at=day["captured_at"], policy_version=day.get("policy_version"),
+             chosen=day.get("capital", {}).get("chosen") or ("Apuesta manual" if day.get("policy_version") in MANUAL_POLICIES else None),
+             reason=day.get("capital", {}).get("reason"),
+             fixtures=[dict(match_id=f["match_id"], match=f["match"]) for f in day.get("fixtures", [])],
+             tickets=day["tickets"])
+        for day in report["days"]
+        if dt.datetime.fromisoformat(day["captured_at"].rstrip("Z")).replace(tzinfo=dt.timezone.utc).astimezone(MADRID).date() == today
+    ][::-1]
+    return dict(
+        generated_at=now.isoformat() + "Z", day=today.isoformat(), available_cents=start,
+        reserved_cents=report["reserved_cents"], executed=executed, steps=steps,
+        next=next((step for step in steps), None),
+        note=("Plan provisional: cada corte se congela una hora antes del primer partido con las cuotas de ese momento. "
+              "Las apuestas previstas en cortes anteriores se cuentan como pendientes; si se liquidan antes, "
+              "el saldo y el plan se recalculan."),
+    )
 
 
 def leg_result(leg, match, corners, scores=None, now=None):
@@ -427,6 +539,7 @@ def learning_report(tickets):
               "100 decisiones automáticas liquidadas por grupo y validación en un periodo posterior independiente."),
         min_settled_for_adjustment=100,
         by_kind=_grouped(auto, lambda t: t["kind"]),
+        by_strategy=_grouped(auto, lambda t: t.get("strategy") or "sin_dato"),
         by_staking=_grouped(auto, lambda t: "dinámico" if t.get("capital_policy") else "reparto_total_anterior"),
         by_odds=_grouped(auto, lambda t: _bucket(price(t), [1.0, 1.3, 1.5, 1.8, 2.2, 3.0], lambda a, b: f"{a:.2f}–{b:.2f}" if b else f"≥{a:.2f}")),
         by_probability=_grouped(auto, lambda t: _bucket(probability(t), [0, .5, .65, .75, .85], lambda a, b: f"{a:.0%}–{b:.0%}" if b else f"≥{a:.0%}")),
@@ -633,7 +746,7 @@ def refresh_imminent_odds(db, now=None, horizon=dt.timedelta(minutes=70), stale_
     if not (settings.api_football_enabled and settings.api_football_key):
         return {}
     due = db.query(Match).join(Competition).filter(
-        Competition.code.in_(TRIAL_LEAGUES), Match.status == "scheduled",
+        trial_competitions(), Match.status == "scheduled",
         Match.kickoff_utc > now, Match.kickoff_utc <= now + horizon,
     ).all()
     freshest = dict(db.query(MatchOdds.match_id, func.max(MatchOdds.fetched_at)).filter(

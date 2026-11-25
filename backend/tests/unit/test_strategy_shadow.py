@@ -105,7 +105,8 @@ def test_capture_and_settle_without_rewriting_snapshot(db_session, monkeypatch, 
     for house in ("Offer", "Other 1", "Other 2"):
         for side, price in (("home",1.5),("draw",4),("away",8)):
             data = dict(match_id=match.id, bookmaker=house, market="match_result", selection=side,
-                        price=price, snapshot_type="pre_match", provider_updated_at=now-timedelta(minutes=5),
+                        # Price unchanged for 8 h but downloaded 4 min ago: current under the confirmation rule.
+                        price=price, snapshot_type="pre_match", provider_updated_at=now-timedelta(hours=8),
                         fetched_at=now-timedelta(minutes=4), recorded_at=now-timedelta(minutes=3))
             archived = MatchOddsHistory(**data)
             db.add(archived)
@@ -127,6 +128,7 @@ def test_capture_and_settle_without_rewriting_snapshot(db_session, monkeypatch, 
     assert capture_strategy_due(db, now) == 1
     capture = db.get(StrategyCapture, match.id)
     data = capture.payload
+    assert data["version"] == "shadow-v2-2"
     assert data["decisions"]["original:principal"]["probability"] == pytest.approx(.8)
     corrected = data["decisions"]["corregida:principal"]
     if competition == "champions_league":

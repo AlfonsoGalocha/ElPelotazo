@@ -58,6 +58,18 @@ def quote_age(row, now):
     return (now - origin).total_seconds() / 60
 
 
+def confirmed_quote_age(row, now):
+    """Minutes since we last downloaded this exact, verified price.
+
+    `quote_age` measures how long the bookmaker has kept the price unchanged; a stable price
+    re-confirmed by an hourly download is still current, so currency is judged from the last
+    confirmation while the origin age stays available as information.
+    """
+    if quote_age(row, now) is None:
+        return None
+    return (now - row.fetched_at).total_seconds() / 60
+
+
 def ranking_score(probability, ev, reliability, quality, freshness, interval_quality, *, weights=(.4, .3, .3)):
     # The market band ensures positive-EV candidates already have p > 1/1.90.
     # Saturate EV at 20% to limit sensitivity to extreme model estimates.
@@ -81,7 +93,7 @@ def assess_opportunity(prediction, odds, market_key, settings, now, reliability,
         and isfinite(row.price) and row.price > 1
     ] if market_key else []
     in_band = [row for row in exact if price_floor <= row.price <= price_ceiling]
-    dated = [(age, row) for row in in_band if (age := quote_age(row, now)) is not None]
+    dated = [(age, row) for row in in_band if (age := confirmed_quote_age(row, now)) is not None]
     current = [(age, row) for age, row in dated if age <= max_age]
     age, quote = max(current, key=lambda pair: (pair[1].price, -pair[0], pair[1].bookmaker), default=(None, None))
     reference_pool = in_band or exact
