@@ -175,6 +175,40 @@ export interface Prediction {
   // fuera especifico de esta competicion exacta (ver
   // backend/app/services/evaluation_service.py::TrackRecordEstimate).
   reliability: PredictionReliability | null;
+  // Fase D (revision v2.8): categoria determinista A+/A/B/C/D (ver
+  // backend/app/prediction/opportunity_category.py). `null` en los
+  // endpoints de LISTA (demasiado costoso calcularla para cientos de
+  // predicciones a la vez sin cache todavia); solo viene poblada en el
+  // detalle de una sola prediccion (`/predictions/{id}`,
+  // `/predictions/{id}/detail`).
+  category: OpportunityCategory | null;
+}
+
+export type OpportunityCategory = "A+" | "A" | "B" | "C" | "D";
+
+// Fase E (revision v2.8, seccion 10 del brief): aprendizaje del selector
+// sobre sus propias decisiones (ver
+// backend/app/services/selector_decision_service.py). Puramente
+// prospectivo (sin backfill): `n_snapshots_total` crece desde que esto
+// se desplego, nunca retroactivamente.
+export interface SelectorLearningBucket {
+  key: string;
+  n: number;
+  win_rate: number | null;
+}
+
+export interface SelectorLearningReport {
+  n_snapshots_total: number;
+  n_snapshots_settled: number;
+  n_snapshots_pending: number;
+  selected_n: number;
+  selected_win_rate: number | null;
+  // Snapshots donde la seleccionada perdio pero OTRA candidata (peor
+  // posicion o excluida) SI ganaba.
+  missed_opportunities_n: number;
+  missed_opportunities_rate: number | null;
+  by_rank_position: SelectorLearningBucket[];
+  by_category: SelectorLearningBucket[];
 }
 
 export interface PredictionReliability {

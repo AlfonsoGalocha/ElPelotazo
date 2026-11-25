@@ -104,6 +104,13 @@ class PredictionOut(BaseModel):
     # usuario ("nunca presentar una fiabilidad global como si fuera
     # especifica").
     reliability: ReliabilityOut | None = None
+    # Fase D (revision v2.8): "A+"|"A"|"B"|"C"|"D" (ver
+    # prediction/opportunity_category.py). `None` en los endpoints de
+    # LISTA (demasiado costoso calcularla para cientos de predicciones a
+    # la vez sin cache todavia -- ver comentario de costes en
+    # api/routes/predictions.py::serialize_prediction); solo se calcula
+    # hoy en los endpoints de una sola prediccion.
+    category: str | None = None
 
     model_config = {"from_attributes": True}
 

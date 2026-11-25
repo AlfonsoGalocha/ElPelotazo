@@ -67,6 +67,15 @@ class Match(Base):
     # cascade que `odds`/`statistics`: borrar el partido borra TODO su
     # rastro, nunca deja referencias colgando.
     odds_history: Mapped[list[MatchOddsHistory]] = relationship(cascade="all, delete-orphan")
+    # Mismo motivo que `odds_history` justo arriba: sin esto, borrar un
+    # Match dejaria huerfanos los snapshots de decision del selector
+    # (Fase E, revision v2.8) -- ver db/models/modeling.py::
+    # SelectorDecisionSnapshot. Nombre de clase en string (nunca
+    # importada aqui) para evitar un ciclo matches.py<->modeling.py;
+    # ambos modulos ya se importan juntos via db/models/__init__.py.
+    selector_decision_snapshots = relationship(
+        "SelectorDecisionSnapshot", cascade="all, delete-orphan"
+    )
 
     competition = relationship("Competition", foreign_keys=[competition_id])
     home_team = relationship("Team", foreign_keys=[home_team_id])

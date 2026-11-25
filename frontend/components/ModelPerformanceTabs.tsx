@@ -5,16 +5,18 @@ import type { MatchHistory, PerformanceSegment } from "@/types";
 import HistoryBoard from "./HistoryBoard";
 import ModelPerformanceBoard from "./ModelPerformanceBoard";
 import ModelVersionsBoard from "./ModelVersionsBoard";
+import SelectorReliabilityBoard from "./SelectorReliabilityBoard";
 import StatsOverview from "./StatsOverview";
 import { EmptyState } from "./EmptyState";
 
-export type Tab = "resumen" | "jornadas" | "competiciones" | "versiones";
+export type Tab = "resumen" | "jornadas" | "competiciones" | "versiones" | "fiabilidad-selector";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "resumen", label: "Resumen global" },
   { key: "jornadas", label: "Jornadas" },
   { key: "competiciones", label: "Competiciones y mercados" },
   { key: "versiones", label: "Versiones del modelo" },
+  { key: "fiabilidad-selector", label: "Fiabilidad del selector" },
 ];
 
 // Las 4 subsecciones pedidas por el usuario para "Rendimiento del
@@ -87,6 +89,8 @@ export default function ModelPerformanceTabs({
         ))}
 
       {tab === "versiones" && <ModelVersionsBoard />}
+
+      {tab === "fiabilidad-selector" && <SelectorReliabilityBoard />}
     </div>
   );
 }

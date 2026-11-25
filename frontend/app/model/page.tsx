@@ -4,7 +4,7 @@ import { getHistory, getModelPerformance, getPublicationCoverage, getPublication
 import CalibrationChart from "@/components/CalibrationChart";
 import ModelPerformanceTabs, { type Tab } from "@/components/ModelPerformanceTabs";
 
-const VALID_TABS: Tab[] = ["resumen", "jornadas", "competiciones", "versiones"];
+const VALID_TABS: Tab[] = ["resumen", "jornadas", "competiciones", "versiones", "fiabilidad-selector"];
 
 // "Rendimiento del modelo" (pedido real del usuario -- sustituye tanto
 // al antiguo "Estadísticas" como al "Histórico de jornadas" por

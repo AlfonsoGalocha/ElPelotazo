@@ -626,6 +626,18 @@ def capture_strategies() -> None:
     typer.echo(f"[capture-strategies] {count} cortes registrados")
 
 
+@app.command("capture-selector-decisions")
+def capture_selector_decisions_cmd() -> None:
+    """Fase E (revision v2.8): congela el universo completo de candidatas/
+    excluidas de "Mejores oportunidades" para los partidos de las
+    proximas 48h -- ver services/selector_decision_service.py."""
+    from backend.app.services.selector_decision_service import capture_selector_decisions
+
+    with session_scope() as db:
+        count = capture_selector_decisions(db)
+    typer.echo(f"[capture-selector-decisions] {count} snapshots nuevos registrados")
+
+
 @app.command("bot-decision")
 def bot_decision(
     early: bool = typer.Option(False, help="Fija la decisión de hoy antes de la ventana automática."),

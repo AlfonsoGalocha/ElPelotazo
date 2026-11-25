@@ -343,6 +343,11 @@ def test_predictions_today_returns_all_five_markets(seeded_competition_code):
         assert "calibrated_probability" in prediction
         if prediction["calibrated_probability"] is not None:
             assert 0.0 <= prediction["calibrated_probability"] <= 1.0
+        # Fase D (revision v2.8): el campo existe pero nunca se calcula en
+        # endpoints de LISTA (demasiado costoso para cientos de
+        # predicciones a la vez, ver comentario de costes en
+        # api/routes/predictions.py::serialize_prediction).
+        assert prediction["category"] is None
 
 
 def test_match_predictions_endpoint(seeded_competition_code):
@@ -847,6 +852,12 @@ def test_prediction_detail_endpoint_shows_bookmaker_breakdown_and_explanation(se
     full_text = " ".join(body["explanation_summary"]).lower()
     for word in forbidden:
         assert word not in full_text
+
+    # Fase D (revision v2.8): a diferencia de los endpoints de lista, el
+    # de detalle de UNA sola prediccion SI calcula la categoria real
+    # (coste aceptable para una sola prediccion, ver
+    # api/routes/predictions.py::_category_for_single_prediction).
+    assert body["category"] in {"A+", "A", "B", "C", "D"}
 
 
 def test_attach_odds_reports_unmatched_examples_for_unknown_teams(seeded_competition_code):

@@ -5,6 +5,7 @@ import { formatMatchDateTime } from "@/lib/dates";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
 import MarketQualityBadge from "@/components/MarketQualityBadge";
+import CategoryBadge from "@/components/CategoryBadge";
 
 export default async function SignalDetailPage({ params }: { params: { id: string } }) {
   const predictionId = Number(params.id);
@@ -85,6 +86,7 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
       <div className="flex flex-wrap items-center gap-2">
         <SignalBadge tier={signal.signal_tier} />
         <MarketQualityBadge quality={signal.market_quality} />
+        <CategoryBadge category={signal.category} />
         {signal.is_stale_odds && (
           <span className="rounded border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-400">
             ⚠ CUOTA DESACTUALIZADA

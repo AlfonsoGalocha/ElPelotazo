@@ -185,6 +185,7 @@ services:
           timeout 600 football-edge archive-forecasts || echo "[scheduler] fallo o tiempo agotado: archivo de previsiones";
           timeout 600 football-edge bot-decision --trial --continuous --refresh-odds || echo "[scheduler] fallo o tiempo agotado: banca virtual";
           timeout 600 football-edge capture-strategies || echo "[scheduler] fallo o tiempo agotado: corte de estrategias";
+          timeout 600 football-edge capture-selector-decisions || echo "[scheduler] fallo o tiempo agotado: aprendizaje del selector";
           timeout 600 football-edge publish-upcoming || echo "[scheduler] fallo o tiempo agotado: corte prepartido";
           free_mb=$$(df -Pm / | awk 'NR==2 {print $$4}');
           if [ "$$free_mb" -lt 5000 ]; then echo "[scheduler] AVISO: solo $${free_mb} MB libres en disco"; fi;

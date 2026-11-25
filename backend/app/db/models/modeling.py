@@ -302,3 +302,90 @@ class Backtest(Base):
     n_predictions: Mapped[int] = mapped_column(Integer)
     metrics: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+
+
+class SelectorDecisionSnapshot(Base):
+    """Fase E de la revision v2.8 (Fase 10 del brief original): congela
+    TODO el universo de candidatas/excluidas que "Mejores oportunidades"
+    (v3) vio para UN partido, en UN instante concreto, ANTES de que se
+    sepa el resultado real -- para poder comparar despues, con
+    informacion que de verdad no existia en ese momento, si el selector
+    elige bien o no (seccion 10: "aprendizaje del selector sobre sus
+    propias decisiones").
+
+    Mismo patron append-only ya usado en `PredictionSnapshot`/
+    `MatchOddsHistory`: esta tabla NUNCA actualiza una fila existente,
+    siempre INSERTA una nueva -- permite ver sucesivos "cortes"
+    pre-partido a medida que cambian cuotas/datos (pedido explicito del
+    brief), nunca se pierde el corte anterior. `evaluate_selector_
+    decisions` (services/selector_decision_service.py) es la UNICA
+    lectura que importa de verdad: evalua cada snapshot solo DESPUES de
+    que su partido liquido, nunca reconstruye con informacion que no
+    existia en `captured_at`. Limite honesto (documentado tambien en ese
+    servicio): sin backfill -- las decisiones de antes de que esta tabla
+    existiera no se pueden reconstruir fielmente (el `RankingConfig`/
+    track record de aquel momento no se preservo en ningun sitio), la
+    evaluacion es puramente prospectiva desde que esto se despliega.
+
+    `selected_prediction_id`/`SelectorDecisionCandidate.prediction_id` NO
+    son foreign keys con cascade real (misma filosofia que
+    `PredictionSnapshot.original_prediction_id`): si la `Prediction`
+    candidata se sustituye o se borra mas adelante, este registro
+    historico debe seguir existiendo intacto, nunca actualizarse ni
+    desaparecer con ella -- son enteros de trazabilidad, nunca para JOIN
+    relacional que dependa de que la fila original siga viva."""
+
+    __tablename__ = "selector_decision_snapshots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    match_id: Mapped[int] = mapped_column(ForeignKey("matches.id"))
+    captured_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    selector_version: Mapped[str] = mapped_column(String(32))  # "v3_probability_first"
+    # Banda de "Mejores oportunidades" VIGENTE en `captured_at` (es
+    # editable en runtime via RankingConfig, ver
+    # services/ranking_config_service.py) -- sin congelarla aqui, releer
+    # un snapshot viejo mas adelante mostraria la banda de HOY, no la que
+    # de verdad se uso para decidir en su momento.
+    min_opportunity_odds: Mapped[float] = mapped_column(Float)
+    max_opportunity_odds: Mapped[float] = mapped_column(Float)
+    selected_prediction_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    candidates: Mapped[list[SelectorDecisionCandidate]] = relationship(
+        back_populates="snapshot", cascade="all, delete-orphan"
+    )
+
+
+class SelectorDecisionCandidate(Base):
+    """Una prediccion candidata (incluida o excluida) dentro de UN
+    `SelectorDecisionSnapshot` -- ver esa clase para el contrato
+    completo (append-only, sin backfill, trazabilidad por entero plano
+    en vez de FK con cascade real)."""
+
+    __tablename__ = "selector_decision_candidates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("selector_decision_snapshots.id"))
+    prediction_id: Mapped[int] = mapped_column(Integer)
+    market: Mapped[str] = mapped_column(String(64))
+    calibrated_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ev_conservative: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Ver evaluation_service.py::TrackRecordEstimate -- `None` cuando no
+    # hubo fiabilidad historica real en NINGUN nivel (candidata excluida
+    # por `INSUFFICIENT_TRACK_RECORD` antes de llegar a tener un valor).
+    market_track_record_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_track_record_source_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    uncertainty_width: Mapped[float | None] = mapped_column(Float, nullable=True)
+    data_quality: Mapped[float] = mapped_column(Float)
+    edge: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # "A+"|"A"|"B"|"C"|"D" (Fase D, congelada tal cual se calculo en este
+    # instante -- ver prediction/opportunity_category.py).
+    category: Mapped[str] = mapped_column(String(4))
+    # `None` = candidata EXCLUIDA (nunca llego a tener una posicion en el
+    # ranking); 1 = la mejor de las incluidas, 2 = la segunda, etc.
+    rank_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # `ExclusionReason.value` (prediction/ranking.py) cuando `rank_position`
+    # es `None`; `None` cuando la candidata SI quedo incluida.
+    exclusion_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_selected: Mapped[bool] = mapped_column(default=False)
+
+    snapshot: Mapped[SelectorDecisionSnapshot] = relationship(back_populates="candidates")

@@ -23,6 +23,8 @@ from backend.app.db.models.modeling import (  # noqa: F401
     ModelVersion,
     Prediction,
     PredictionResult,
+    SelectorDecisionCandidate,
+    SelectorDecisionSnapshot,
 )
 
 __all__ = [
@@ -42,4 +44,6 @@ __all__ = [
     "Prediction",
     "PredictionResult",
     "Backtest",
+    "SelectorDecisionSnapshot",
+    "SelectorDecisionCandidate",
 ]

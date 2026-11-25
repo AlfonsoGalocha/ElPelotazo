@@ -8,6 +8,7 @@ import type {
   ModelVersionInfo,
   Prediction,
   RoundInfo,
+  SelectorLearningReport,
   SignalDetail,
   Summary,
   Team,
@@ -308,6 +309,17 @@ export function getModelPerformance(competitionCode?: string, market?: string): 
 // (nunca se borran), para poder comparar version a version.
 export function getModels(): Promise<ModelVersionInfo[]> {
   return apiFetch<ModelVersionInfo[]>("/models");
+}
+
+// Fase E (revision v2.8, seccion 10 del brief): aprendizaje del selector
+// sobre sus propias decisiones -- resumen de
+// backend/app/services/selector_decision_service.py::evaluate_selector_decisions.
+// Puramente prospectivo (sin backfill, ver docstring de
+// SelectorDecisionSnapshot en el backend): puede tardar dias/semanas en
+// tener suficientes partidos liquidados para que las tasas de acierto
+// signifiquen algo.
+export function getSelectorDecisionsReport(): Promise<SelectorLearningReport> {
+  return apiFetch<SelectorLearningReport>("/predictions/selector-decisions");
 }
 
 export interface DataSourcesStatus {

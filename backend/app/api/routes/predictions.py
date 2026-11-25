@@ -12,12 +12,15 @@ from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory
 from backend.app.db.models.modeling import Prediction
 from backend.app.prediction.anomaly import (
     best_prediction_per_match,
+    classify_contradiction,
     compute_anomaly_flags,
     is_strong_signal,
 )
 from backend.app.prediction.confidence import signal_tier
+from backend.app.prediction.evidence import build_market_evidence
 from backend.app.prediction.market_quality import market_quality_tier
 from backend.app.prediction.opportunities import assess_opportunity, select_ranked, valid_probability
+from backend.app.prediction.opportunity_category import OpportunityCategory, opportunity_category
 from backend.app.prediction.ranking import (
     calibrated_probability_or_fallback,
     conservative_probability,
@@ -67,6 +70,7 @@ def serialize_prediction(
     anomaly_flags: list[str] | None = None,
     is_best_prediction: bool = False,
     reliability: TrackRecordEstimate | None = None,
+    category: OpportunityCategory | None = None,
 ) -> dict:
     settings = get_settings()
     age_minutes = odds_age_minutes(prediction)
@@ -138,6 +142,16 @@ def serialize_prediction(
             if reliability is not None
             else None
         ),
+        # Fase D (revision v2.8): categoria A+/A/B/C/D determinista (ver
+        # prediction/opportunity_category.py). `None` cuando el llamador
+        # no la calculo -- calcularla exige `build_market_evidence`
+        # (Fase B), que hace varias consultas reales por prediccion
+        # (~13ms cada una, medido contra produccion real: barato para UNA
+        # prediccion, demasiado para listas de cientos sin cache/batch
+        # todavia sin construir) -- por eso solo se calcula en los
+        # endpoints de UNA sola prediccion (`/predictions/{id}`,
+        # `/predictions/{id}/detail`), nunca en los de lista.
+        "category": category.value if category is not None else None,
     }
 
 
@@ -430,6 +444,20 @@ def _reliability_for(
     ver market_track_records_with_provenance. Reutilizado por todos los
     endpoints que exponen `reliability` en la respuesta."""
     return provenance.get((prediction.match.competition.code, prediction.market))
+
+
+def _category_for_single_prediction(db: Session, prediction: Prediction, settings: Settings) -> OpportunityCategory:
+    """Categoria A+/A/B/C/D de UNA prediccion suelta (Fase D), calculando
+    aqui lo que los endpoints de lista ya calculan para varias a la vez
+    (`anomaly_flags` en el contexto de su partido, `reliability`
+    jerarquica) -- ver comentario de costes en `serialize_prediction`."""
+    siblings = db.query(Prediction).filter(Prediction.match_id == prediction.match_id).all()
+    anomaly_flags = compute_anomaly_flags(prediction, siblings, settings)
+    provenance = market_track_records_with_provenance(db, prediction.match.competition.code)
+    reliability = _reliability_for(prediction, provenance)
+    evidence = build_market_evidence(db, prediction)
+    contradiction_level = classify_contradiction(prediction, evidence)
+    return opportunity_category(prediction, contradiction_level, reliability, anomaly_flags, settings)
 
 
 def _filter_by_quality(included: list, quality: str | None, settings) -> list:
@@ -1086,6 +1114,27 @@ def _build_explanation_summary(prediction: Prediction, serialized: dict) -> list
     return lines
 
 
+@router.get("/selector-decisions")
+def selector_decisions_report(db: Session = Depends(get_db)) -> dict:
+    """Fase E (revision v2.8, seccion 10 del brief): resumen del
+    aprendizaje del selector sobre sus propias decisiones -- ver
+    services/selector_decision_service.py::evaluate_selector_decisions.
+    Definido ANTES de `/{prediction_id}` a proposito (mismo motivo que
+    `/models/performance` en api/routes/models.py): FastAPI resuelve
+    rutas en orden de declaracion.
+
+    Puramente prospectivo desde que esto se desplego (sin backfill, ver
+    docstring de `SelectorDecisionSnapshot`): `n_snapshots_total` puede
+    tardar dias/semanas en crecer lo bastante para que `selected_win_rate`
+    signifique algo -- nunca se rellena con numeros inventados mientras
+    tanto."""
+    from dataclasses import asdict
+
+    from backend.app.services.selector_decision_service import evaluate_selector_decisions
+
+    return asdict(evaluate_selector_decisions(db))
+
+
 @router.get("/{prediction_id}/detail", response_model=SignalDetailOut)
 def get_prediction_detail(prediction_id: int, db: Session = Depends(get_db)) -> dict:
     """Detalle completo de una senhal (seccion 16/17): desglose
@@ -1099,7 +1148,9 @@ def get_prediction_detail(prediction_id: int, db: Session = Depends(get_db)) -> 
     if prediction is None:
         raise HTTPException(status_code=404, detail="Prediccion no encontrada")
 
-    serialized = serialize_prediction(prediction)
+    settings = get_settings()
+    category = _category_for_single_prediction(db, prediction, settings)
+    serialized = serialize_prediction(prediction, category=category)
 
     market_key = ALL_MARKET_TO_ODDS_LOOKUP.get(prediction.market)
     metadata = prediction.features_used or {}
@@ -1143,4 +1194,6 @@ def get_prediction(prediction_id: int, db: Session = Depends(get_db)) -> dict:
     prediction = db.get(Prediction, prediction_id)
     if prediction is None:
         raise HTTPException(status_code=404, detail="Prediccion no encontrada")
-    return serialize_prediction(prediction)
+    settings = get_settings()
+    category = _category_for_single_prediction(db, prediction, settings)
+    return serialize_prediction(prediction, category=category)

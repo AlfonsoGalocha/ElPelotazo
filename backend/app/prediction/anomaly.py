@@ -16,12 +16,15 @@ todavia en la BD), esa senhal se excluye de "mejor prediccion" y de
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import TYPE_CHECKING
 
 from backend.app.config.settings import Settings, get_settings
 from backend.app.db.models.modeling import Prediction
+from backend.app.prediction.evidence import MarketEvidence
 from backend.app.prediction.market_labels import MUTUALLY_EXCLUSIVE_GROUPS
 from backend.app.prediction.market_quality import market_quality_tier
+from backend.app.prediction.ranking import calibrated_probability_or_fallback
 
 if TYPE_CHECKING:
     from sklearn.isotonic import IsotonicRegression
@@ -69,6 +72,121 @@ LOW_VALUE_EDGE_THRESHOLD = 0.03  # edge < 3pp junto a alta probabilidad => "poco
 # todo), hay que remedir sobre predicciones reales ya liquidadas y ajustar
 # este numero con esa evidencia, no a ojo otra vez.
 HIGH_UNCERTAINTY_WIDTH_THRESHOLD = 0.60
+
+
+class ContradictionLevel(str, Enum):
+    """Fase C de la revision v2.8: detector de contradicciones GRADUADO
+    (antes solo existia `CONTRADICTION` binaria, section arriba -- entre
+    predicciones del MISMO partido). Esto es distinto: compara la propia
+    probabilidad calibrada de UNA prediccion contra la frecuencia historica
+    REAL de su mercado (`prediction/evidence.py`, Fase B) -- el caso real
+    que motivo la revision ("Over 9.5 corners pese a baja frecuencia
+    historica", "doble oportunidad con buena cuota pese a baja probabilidad
+    real"). Ver `classify_contradiction`. Al igual que `compute_anomaly_
+    flags`, esto es POST-HOC: nunca excluye nada por si solo, solo etiqueta
+    (alimenta la categoria de oportunidad, Fase D)."""
+
+    SIN_CONTRADICCION = "SIN_CONTRADICCION"
+    LEVE = "LEVE"
+    MODERADA = "MODERADA"
+    FUERTE = "FUERTE"
+    EVIDENCIA_INSUFICIENTE = "EVIDENCIA_INSUFICIENTE"
+
+
+# Minimo de partidos reales (nunca liquidaciones -- `evidence.py` cuenta
+# partidos de forma/historial, no apuestas resueltas) en la ventana elegida
+# para considerar que hay evidencia suficiente. Derivado del error estandar
+# de una proporcion binomial (SE = sqrt(p(1-p)/n), peor caso p=0.5): para
+# que SE no supere 0.20 (una diferencia menor a 20pp entre la probabilidad
+# del modelo y la frecuencia historica seria ruido, no una contradiccion
+# real) se necesita n >= 0.25/0.04 = 6.25 -> 7. No es un numero redondo
+# elegido a ojo, es la cota que hace que el propio z-score de abajo sea
+# informativo en vez de puro ruido de muestra pequenha.
+MIN_SAMPLE_FOR_CONTRADICTION_EVIDENCE = 7
+# Si menos de la mitad de los partidos que se intentaron usar en la
+# ventana elegida tenian el dato real disponible (ver `MarketEvidence.
+# data_coverage`), no se confia en esa ventana por mucho que su `n` ya
+# filtrado parezca suficiente -- demasiados partidos de los que se
+# intentaron consultar no tenian el dato.
+MIN_DATA_COVERAGE_FOR_CONTRADICTION_EVIDENCE = 0.5
+# Varianza minima usada al calcular el error estandar de la frecuencia
+# historica (ver `_standard_error` mas abajo): sin esto, una ventana
+# perfectamente consistente (frecuencia exactamente 0 o 1, p.ej. "ganaron
+# los 7 ultimos partidos de local") daria SE=0 y transformaria cualquier
+# diferencia, por pequenha que sea, en una contradiccion "FUERTE" infinita
+# -- un artefacto de la formula, no una señal real. 0.01 equivale a tratar
+# la resolucion efectiva de la frecuencia historica como de unos 10 puntos
+# porcentuales incluso en el caso mas consistente, conservador pero no
+# arbitrario (misma idea que la correccion de continuidad de Wilson, ya
+# usada en prediction/uncertainty.py).
+MIN_VARIANCE_FLOOR = 0.01
+# Bandas de z-score (desviaciones del error estandar) para LEVE/MODERADA/
+# FUERTE: convencion estadistica estandar (regla 68/95/99.7), no un corte
+# inventado para este modulo -- y resuelve exactamente lo que pedia la
+# revision ("un hueco pequenho con muestra grande debe pesar mas que un
+# hueco grande con muestra chica"): el z-score ya divide por el error
+# estandar, que decrece con `n`, asi que la MISMA diferencia en puntos
+# porcentuales produce un z mayor (mas contradiccion) cuanto mayor es la
+# muestra que la respalda.
+CONTRADICTION_Z_LEVE = 1.0
+CONTRADICTION_Z_MODERADA = 2.0
+CONTRADICTION_Z_FUERTE = 3.0
+
+# Ventanas de `MarketEvidence.windows`/`line_hit_frequency` candidatas,
+# en orden de preferencia cuando varias cumplen el minimo de muestra --
+# "season" y "last20" priorizadas por ser tipicamente las de mayor `n`
+# real (ver docstring de evidence.py); "home"/"away" y "last5" solo como
+# ultimo recurso (menos partidos o menos recientes). El criterio real de
+# seleccion sigue siendo el `n` de cada ventana (ver `_most_reliable_window`
+# mas abajo): este orden solo rompe empates.
+_CONTRADICTION_WINDOW_PRIORITY = ("season", "last20", "last10", "home", "away", "last5")
+
+
+def _standard_error(frequency: float, n: int) -> float:
+    variance = max(frequency * (1.0 - frequency), MIN_VARIANCE_FLOOR)
+    return (variance / n) ** 0.5
+
+
+def _most_reliable_window(evidence: MarketEvidence) -> str | None:
+    """La ventana con mas `n` entre las que cumplen el minimo de muestra
+    (ver `MIN_SAMPLE_FOR_CONTRADICTION_EVIDENCE`), con `_CONTRADICTION_
+    WINDOW_PRIORITY` solo para romper empates. `None` si ninguna cumple."""
+    eligible = [
+        name
+        for name in _CONTRADICTION_WINDOW_PRIORITY
+        if name in evidence.windows
+        and evidence.windows[name].n >= MIN_SAMPLE_FOR_CONTRADICTION_EVIDENCE
+        and evidence.line_hit_frequency.get(name) is not None
+    ]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda name: evidence.windows[name].n)
+
+
+def classify_contradiction(prediction: Prediction, evidence: MarketEvidence) -> ContradictionLevel:
+    """Nivel de contradiccion entre la probabilidad calibrada de
+    `prediction` y la frecuencia historica REAL de su mercado (`evidence`,
+    de `prediction/evidence.py::build_market_evidence`). Nunca excluye
+    nada por si solo (ver docstring de `ContradictionLevel`)."""
+    if evidence.data_coverage < MIN_DATA_COVERAGE_FOR_CONTRADICTION_EVIDENCE:
+        return ContradictionLevel.EVIDENCIA_INSUFICIENTE
+
+    window = _most_reliable_window(evidence)
+    if window is None:
+        return ContradictionLevel.EVIDENCIA_INSUFICIENTE
+
+    frequency = evidence.line_hit_frequency[window]
+    n = evidence.windows[window].n
+    probability = calibrated_probability_or_fallback(prediction)
+
+    z = abs(probability - frequency) / _standard_error(frequency, n)
+    if z < CONTRADICTION_Z_LEVE:
+        return ContradictionLevel.SIN_CONTRADICCION
+    if z < CONTRADICTION_Z_MODERADA:
+        return ContradictionLevel.LEVE
+    if z < CONTRADICTION_Z_FUERTE:
+        return ContradictionLevel.MODERADA
+    return ContradictionLevel.FUERTE
 
 
 def _group_for_market(market: str) -> tuple[str, ...] | None:
