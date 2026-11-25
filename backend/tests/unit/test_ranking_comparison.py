@@ -13,11 +13,16 @@ from __future__ import annotations
 import datetime as dt
 
 from backend.app.backtesting.ranking_comparison import (
+    V3_STRATEGY_NAME,
     WALK_FORWARD_STRATEGIES,
     compare_ranking_strategies,
     compare_ranking_strategies_walk_forward,
 )
-from backend.app.db.models.modeling import Prediction, PredictionResult
+from backend.app.db.database import session_scope
+from backend.app.db.models.core import Competition, Season
+from backend.app.db.models.matches import Match
+from backend.app.db.models.modeling import ModelVersion, Prediction, PredictionResult
+from backend.app.normalization.competitions import COMPETITIONS
 
 
 def _prediction(id: int, **overrides) -> Prediction:
@@ -284,3 +289,167 @@ def test_compare_ranking_strategies_walk_forward_longshot_curve_ignores_non_long
     compare_ranking_strategies_walk_forward(pairs, min_train_n=30, top_n_values=(5,))
 
     assert seen_lengths == []  # nunca hay suficiente muestra de COLA para ajustarla
+
+
+def _seed_backup_settlements(
+    db, competition_code: str, market: str, kickoffs: list[dt.datetime]
+) -> None:
+    """Liquidaciones mínimas (sin cuota/calibración/incertidumbre: solo lo
+    que `market_track_records_with_provenance` necesita -- `model_probability`
+    + `outcome` + `Match.kickoff_utc`) para alimentar el nivel GLOBAL/tier
+    de la jerarquía de fiabilidad histórica, en una competición/mercado
+    DISTINTO del que se evalúa en el test."""
+    COMPETITIONS.setdefault(competition_code, (competition_code, "Testland"))
+    comp = Competition(code=competition_code, name=competition_code, country="Testland")
+    db.add(comp)
+    db.flush()
+    season = Season(competition_id=comp.id, label="2024-2025")
+    db.add(season)
+    model_version = ModelVersion(
+        name="wf-v3-backup", version="v1", market_family="goals",
+        features=[], hyperparameters={}, metrics={}, dataset_version="test",
+    )
+    db.add(model_version)
+    db.flush()
+    for i, kickoff in enumerate(kickoffs):
+        match = Match(
+            provider="wf_v3_backup_test", provider_id=f"wf-v3-backup-{competition_code}-{i}",
+            competition_id=comp.id, season_id=season.id, kickoff_utc=kickoff,
+            home_team_id=1, away_team_id=2, status="finished", home_goals=1, away_goals=0,
+        )
+        db.add(match)
+        db.flush()
+        prediction = Prediction(
+            match_id=match.id, market=market, line=None, selection="away",
+            model_version_id=model_version.id, model_probability=0.6, fair_odds=1 / 0.6,
+            confidence=0.8, data_quality=0.8, explanation={}, features_used={},
+            created_at=kickoff - dt.timedelta(minutes=15),
+        )
+        db.add(prediction)
+        db.flush()
+        db.add(
+            PredictionResult(
+                prediction_id=prediction.id, outcome=(i % 3 != 0), settled_at=kickoff + dt.timedelta(hours=2)
+            )
+        )
+    db.flush()
+
+
+def _seed_v3_eligible_target(db, competition_code: str, market: str, kickoff: dt.datetime) -> Prediction:
+    """Una única predicción liquidada que pasa TODOS los requisitos de
+    `evaluate_quality_gate_v3` salvo, potencialmente, la fiabilidad
+    histórica (que depende de lo que exista en la BD en el momento de la
+    evaluación) -- cuota real en banda, calibración, intervalo de
+    incertidumbre estrecho con EV conservador positivo."""
+    COMPETITIONS.setdefault(competition_code, (competition_code, "Testland"))
+    comp = Competition(code=competition_code, name=competition_code, country="Testland")
+    db.add(comp)
+    db.flush()
+    season = Season(competition_id=comp.id, label="2024-2025")
+    db.add(season)
+    model_version = ModelVersion(
+        name="wf-v3-target", version="v1", market_family="goals",
+        features=[], hyperparameters={}, metrics={}, dataset_version="test",
+    )
+    db.add(model_version)
+    db.flush()
+    match = Match(
+        provider="wf_v3_target_test", provider_id=f"wf-v3-target-{competition_code}",
+        competition_id=comp.id, season_id=season.id, kickoff_utc=kickoff,
+        home_team_id=1, away_team_id=2, status="finished", home_goals=0, away_goals=1,
+    )
+    db.add(match)
+    db.flush()
+    # La cuota es "reciente" respecto al propio `kickoff` (nunca respecto
+    # al reloj real) -- `compare_ranking_strategies_walk_forward` pasa
+    # `now=kickoff` a `evaluate_quality_gate_v3` precisamente para que
+    # esto se mida asi (ver fix real en prediction/ranking.py).
+    prediction = Prediction(
+        match_id=match.id, market=market, line=None, selection="away",
+        model_version_id=model_version.id, model_probability=0.7, calibrated_probability=0.7,
+        uncertainty_low=0.7, uncertainty_high=0.7, fair_odds=1 / 0.7,
+        market_probability=0.55, market_odds=1.5, bookmakers_used=3,
+        confidence=0.8, data_quality=0.8, explanation={}, features_used={},
+        odds_origin_at=kickoff - dt.timedelta(minutes=20),
+        created_at=kickoff - dt.timedelta(minutes=15),
+    )
+    db.add(prediction)
+    db.flush()
+    db.add(
+        PredictionResult(prediction_id=prediction.id, outcome=True, settled_at=kickoff + dt.timedelta(hours=2))
+    )
+    db.flush()
+    return prediction
+
+
+def _filler_pairs(n: int, base: dt.datetime) -> list[tuple[Prediction, PredictionResult, dt.datetime]]:
+    """Predicciones sinteticas SIN BD (igual que el resto de este
+    fichero) solo para superar `min_train_n` -- v3 las excluye enseguida
+    (sin `calibrated_probability`), asi que nunca contaminan su pool ni
+    su track record (que viene exclusivamente de `db` en estos tests)."""
+    return [
+        (_prediction(-(i + 1), edge=0.05, market_odds=1.5), _result(i % 2 == 0), base + dt.timedelta(days=i))
+        for i in range(n)
+    ]
+
+
+def test_compare_ranking_strategies_walk_forward_with_db_uses_production_hierarchy_for_v3():
+    """Bug real corregido (auditoria v2.8): sin `db`, el track record de
+    v3 solo se reconstruye EXACTO (sin jerarquia tier/global), asi que un
+    (competicion, mercado) sin 30 liquidaciones PROPIAS nunca entra en
+    "Mejores oportunidades" en este comparador, aunque SI tenga respaldo
+    real de otras competiciones -- exactamente lo que le pasaba a v3
+    contra la BD de produccion real (0 filas). Con `db`, usa la misma
+    jerarquia real que produccion (`market_track_records_with_provenance`)
+    y el candidato SI entra."""
+    target_kickoff = dt.datetime(2024, 6, 1)
+    backup_kickoffs = [target_kickoff - dt.timedelta(days=d) for d in range(5, 5 + 35)]
+
+    with session_scope() as db:
+        _seed_backup_settlements(db, "wf-v3-hierarchy-backup", "away_win", backup_kickoffs)
+        target = _seed_v3_eligible_target(db, "wf-v3-hierarchy-target", "away_win", target_kickoff)
+        target_id = target.id
+
+    with session_scope() as db:
+        target = db.get(Prediction, target_id)
+        settled = _filler_pairs(30, target_kickoff - dt.timedelta(days=60)) + [
+            (target, target.result, target_kickoff)
+        ]
+
+        report_without_db = compare_ranking_strategies_walk_forward(settled, min_train_n=30)
+        report_with_db = compare_ranking_strategies_walk_forward(settled, min_train_n=30, db=db)
+
+    assert V3_STRATEGY_NAME not in {s.strategy for s in report_without_db.slices}
+    v3_slices_with_db = [s for s in report_with_db.slices if s.strategy == V3_STRATEGY_NAME]
+    assert v3_slices_with_db
+    assert any(s.n_bets == 1 for s in v3_slices_with_db)
+
+
+def test_compare_ranking_strategies_walk_forward_track_record_never_sees_future_backup():
+    """Misma fijacion, verificada al reves: si el respaldo GLOBAL solo
+    tiene liquidaciones suficientes CONTANDO partidos posteriores al
+    punto evaluado, `as_of` debe seguir excluyendolas -- nunca se filtra
+    con el historico completo, solo con lo anterior en el tiempo (mismo
+    principio anti-leakage que `edge_curve`/`longshot_curve`)."""
+    target_kickoff = dt.datetime(2024, 6, 1)
+    # Solo 10 liquidaciones ANTES del partido evaluado (insuficiente,
+    # <30) + 25 DESPUES (que sumarian 35, suficiente, SI se contaran mal).
+    backup_kickoffs = (
+        [target_kickoff - dt.timedelta(days=d) for d in range(5, 15)]
+        + [target_kickoff + dt.timedelta(days=d) for d in range(5, 30)]
+    )
+
+    with session_scope() as db:
+        _seed_backup_settlements(db, "wf-v3-leakage-backup", "draw", backup_kickoffs)
+        target = _seed_v3_eligible_target(db, "wf-v3-leakage-target", "draw", target_kickoff)
+        target_id = target.id
+
+    with session_scope() as db:
+        target = db.get(Prediction, target_id)
+        settled = _filler_pairs(30, target_kickoff - dt.timedelta(days=60)) + [
+            (target, target.result, target_kickoff)
+        ]
+        report = compare_ranking_strategies_walk_forward(settled, min_train_n=30, db=db)
+
+    v3_slices = [s for s in report.slices if s.strategy == V3_STRATEGY_NAME]
+    assert not v3_slices or all(s.n_bets == 0 for s in v3_slices)

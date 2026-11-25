@@ -121,16 +121,16 @@ def test_v3_excludes_odds_below_the_opportunity_band():
 
 
 def test_v3_excludes_odds_above_the_opportunity_band():
-    """Nada por encima de 1.80 debe aparecer nunca en "Mejores oportunidades"
+    """Nada por encima de 1.90 debe aparecer nunca en "Mejores oportunidades"
     (seccion 2 del pedido), aunque EV/probabilidad/fiabilidad serian
     impecables -- es el requisito explicito del usuario."""
-    prediction = _prediction(market_odds=1.81)
+    prediction = _prediction(market_odds=1.91)
     assert evaluate_quality_gate_v3(prediction) == ExclusionReason.ODDS_OUTSIDE_OPPORTUNITY_BAND
 
 
-@pytest.mark.parametrize("boundary_odds", [1.30, 1.80])
+@pytest.mark.parametrize("boundary_odds", [1.35, 1.90])
 def test_v3_opportunity_band_boundaries_are_inclusive(boundary_odds):
-    """Seccion 2: "Ambos limites son inclusivos" -- 1.30 y 1.80 exactos
+    """Seccion 2: "Ambos limites son inclusivos" -- 1.35 y 1.90 exactos
     deben PASAR la comprobacion de cuota (pueden seguir excluidos por otra
     razon distinta, pero nunca por ODDS_OUTSIDE_OPPORTUNITY_BAND)."""
     prediction = _prediction(market_odds=boundary_odds)

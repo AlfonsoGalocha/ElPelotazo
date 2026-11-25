@@ -1436,7 +1436,9 @@ def compare_ranking_strategies_walk_forward_cmd(
         settled = load_settled_predictions_with_kickoff(
             db, competition_code=competition, market=market
         )
-        report_data = compare_ranking_strategies_walk_forward(settled, min_train_n=min_train_n)
+        report_data = compare_ranking_strategies_walk_forward(
+            settled, min_train_n=min_train_n, db=db
+        )
 
     scope = f"{competition or 'todas las competiciones'}/{market or 'todos los mercados'}"
     if not report_data.slices:

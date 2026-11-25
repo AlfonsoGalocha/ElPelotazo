@@ -79,10 +79,11 @@ class ExcludedSignal:
 
 
 def evaluate_quality_gate(
-    prediction: Prediction, settings: Settings | None = None
+    prediction: Prediction, settings: Settings | None = None, now: dt.datetime | None = None
 ) -> ExclusionReason | None:
     """Devuelve la razon de exclusion si la prediccion NO deberia entrar al
-    ranking de senhales, o `None` si pasa el filtro."""
+    ranking de senhales, o `None` si pasa el filtro. `now`: ver
+    `odds_age_minutes` -- por defecto el reloj real."""
     settings = settings or get_settings()
 
     if prediction.market_odds is None or prediction.market_probability is None:
@@ -106,21 +107,33 @@ def evaluate_quality_gate(
     if prediction.data_quality < settings.min_data_quality:
         return ExclusionReason.LOW_DATA_QUALITY
     if settings.max_odds_age_minutes is not None:
-        return _odds_freshness_exclusion(prediction, settings.max_odds_age_minutes)
+        return _odds_freshness_exclusion(prediction, settings.max_odds_age_minutes, now=now)
     return None
 
 
-def odds_age_minutes(prediction: Prediction) -> float | None:
-    """Age of the oldest provider timestamp used in this consensus, in UTC."""
+def odds_age_minutes(prediction: Prediction, now: dt.datetime | None = None) -> float | None:
+    """Age of the oldest provider timestamp used in this consensus, in UTC.
+
+    `now`: opcional, el instante contra el que se mide la frescura. Por
+    defecto `datetime.utcnow()` (comportamiento real de siempre, para
+    "Mejores oportunidades" EN VIVO: una cuota es fresca o no respecto a
+    AHORA). `backtesting/ranking_comparison.py` pasa aqui el `kickoff` del
+    punto evaluado -- BUG REAL corregido (auditoria v2.8): sin esto, CUALQUIER
+    prediccion ya liquidada (por definicion, de hace dias/semanas) fallaba
+    esta comprobacion SIEMPRE, sea cual sea su fiabilidad historica real --
+    v3 nunca podia aparecer en un walk-forward contra datos reales, no por
+    falta de evidencia, sino porque comparaba contra el reloj equivocado."""
     origin = prediction.odds_origin_at
-    now = dt.datetime.utcnow()
+    now = now if now is not None else dt.datetime.utcnow()
     if origin is None or prediction.created_at is None or origin > min(now, prediction.created_at):
         return None
     return (now - origin).total_seconds() / 60.0
 
 
-def _odds_freshness_exclusion(prediction: Prediction, max_minutes: int) -> ExclusionReason | None:
-    age = odds_age_minutes(prediction)
+def _odds_freshness_exclusion(
+    prediction: Prediction, max_minutes: int, now: dt.datetime | None = None
+) -> ExclusionReason | None:
+    age = odds_age_minutes(prediction, now=now)
     if age is None:
         return ExclusionReason.UNVERIFIED_ODDS_ORIGIN
     if age > max_minutes:
@@ -647,6 +660,7 @@ def evaluate_quality_gate_v3(
     prediction: Prediction,
     settings: Settings | None = None,
     market_track_record: float | None = None,
+    now: dt.datetime | None = None,
 ) -> ExclusionReason | None:
     """Filtro duro de "Mejores oportunidades" (v3) -- DELIBERADAMENTE
     INDEPENDIENTE de `evaluate_quality_gate` (v1/v2): reutilizar sus
@@ -657,7 +671,17 @@ def evaluate_quality_gate_v3(
     de 1.40 debe PASAR v3 (esta dentro de [1.35, 1.90]) aunque quede por
     debajo de `min_signal_odds` -- mezclar ambas comprobaciones
     rechazaria cuotas validas para esta estrategia por error.
-    """
+
+    `now`: opcional, ver `odds_age_minutes` -- por defecto el reloj real
+    (comportamiento de produccion EN VIVO, sin cambios). BUG REAL
+    corregido (auditoria v2.8): `backtesting/ranking_comparison.py`
+    evalua predicciones YA LIQUIDADAS (por definicion, de hace dias o
+    semanas); sin pasar aqui el `kickoff` del punto evaluado, la
+    comprobacion de frescura comparaba la cuota de un partido de hace
+    semanas contra el reloj de HOY y la descartaba SIEMPRE
+    (`UNVERIFIED_ODDS_ORIGIN`/`STALE_ODDS`), antes de llegar siquiera a
+    comprobar calibracion/EV/fiabilidad historica -- v3 no aparecia en el
+    walk-forward por este motivo, no por falta de evidencia real."""
     settings = settings or get_settings()
 
     if prediction.market_odds is None or prediction.market_probability is None:
@@ -674,7 +698,7 @@ def evaluate_quality_gate_v3(
     if prediction.data_quality < settings.min_data_quality:
         return ExclusionReason.LOW_DATA_QUALITY
     freshness = _odds_freshness_exclusion(
-        prediction, settings.max_odds_age_minutes or settings.opportunity_max_odds_age_minutes
+        prediction, settings.max_odds_age_minutes or settings.opportunity_max_odds_age_minutes, now=now
     )
     if freshness is not None:
         return freshness

@@ -65,6 +65,7 @@ from backend.app.prediction.ranking import (
     signal_score,
     signal_score_v2,
 )
+from backend.app.services.evaluation_service import market_track_records_with_provenance
 
 TOP_N_VALUES: tuple[int, ...] = (5, 10, 20, 50, 100)
 
@@ -240,12 +241,37 @@ WALK_FORWARD_STRATEGIES: tuple[str, ...] = ("v1", "v2", "v2_edge_cap", "v2_edge_
 # v3 ("Mejores oportunidades", cambio de filosofia del ranking) EXIGE
 # fiabilidad historica real para entrar (nunca el valor neutro 1.0 de
 # v1/v2 cuando falta), asi que el walk-forward necesita su propia
-# reconstruccion INCREMENTAL del track record (ver
-# `_track_records_from_observations` mas abajo) -- calcularlo una sola
-# vez con TODO el historico (como hace `market_track_records()` en
-# produccion) seria leakage: la fiabilidad "de entonces" de un
-# (competicion, mercado) solo puede depender de liquidaciones anteriores
-# a cada punto evaluado, igual que `edge_curve`/`longshot_curve`.
+# reconstruccion INCREMENTAL del track record -- calcularlo una sola vez
+# con TODO el historico (como hace `market_track_records()` en
+# produccion sin `as_of`) seria leakage: la fiabilidad "de entonces" de
+# un (competicion, mercado) solo puede depender de liquidaciones
+# anteriores a cada punto evaluado, igual que `edge_curve`/`longshot_curve`.
+#
+# BUG REAL encontrado y corregido (sesion 2026-11, auditoria v2.8):
+# `_track_records_from_observations` (mas abajo) solo reconstruye el
+# nivel EXACTO (competicion, mercado) con >=30 liquidaciones PREVIAS, sin
+# la jerarquia tier/global con shrinkage bayesiano que SI usa produccion
+# (`evaluation_service.py::market_track_records_with_provenance`). Con
+# los datos reales (1952 liquidaciones con cuota, 22/86 pares
+# competicion-mercado con >=30 liquidaciones en TODA la serie), esto
+# dejaba el candidate pool de v3 permanentemente VACIO en este
+# comparador (0 filas, ni siquiera "all") -- no porque v3 no produzca
+# oportunidades en produccion real (ahi SI tiene la jerarquia), sino
+# porque esta herramienta de diagnostico reconstruia una version mas
+# estricta que la real. Corregido: cuando se pasa `db` a
+# `compare_ranking_strategies_walk_forward`, el track record de v3 se
+# recalcula con la funcion REAL de produccion
+# (`market_track_records_with_provenance(db, as_of=kickoff_del_punto)`,
+# que SI filtra por `Match.kickoff_utc < as_of`/`settled_at <= as_of` --
+# mismo cuidado anti-leakage, nunca con el historico completo), en vez
+# de duplicar una version simplificada sin jerarquia. Se reajusta con la
+# misma cadencia que `edge_curve`/`longshot_curve`
+# (`WALK_FORWARD_REFIT_EVERY`) para no emitir una query por prediccion.
+# `_track_records_from_observations`/`MIN_SETTLED_FOR_WALK_FORWARD_TRACK_RECORD`
+# se CONSERVAN como fallback puro (sin BD) para cuando se llama a esta
+# funcion sin `db` (p.ej. tests unitarios con predicciones sinteticas en
+# memoria, sin sesion real) -- en ese caso sigue sin jerarquia, documentado
+# como limitacion de ese modo, no del mecanismo real.
 MIN_SETTLED_FOR_WALK_FORWARD_TRACK_RECORD = 30
 
 # Nombre de la estrategia nueva en los informes/CLI -- separado de
@@ -279,6 +305,7 @@ def compare_ranking_strategies_walk_forward(
     settled_with_kickoff: list[tuple[Prediction, PredictionResult, dt.datetime]],
     min_train_n: int = 30,
     top_n_values: tuple[int, ...] = TOP_N_VALUES,
+    db: Session | None = None,
 ) -> RankingComparisonReport:
     """Mismo proposito que `compare_ranking_strategies`, pero para
     estrategias que SI dependen de una curva ajustada sobre liquidaciones
@@ -299,6 +326,15 @@ def compare_ranking_strategies_walk_forward(
     `fit_longshot_calibration_curve`), exactamente como
     `backtesting/ensemble_engine.py` excluye los folds sin
     `min_train_seasons` suficientes.
+
+    `db`: opcional. Si se pasa, el track record de v3 usa la jerarquia
+    REAL de produccion (`market_track_records_with_provenance(db,
+    as_of=...)`, tier/global con shrinkage bayesiano) en vez de la
+    reconstruccion simplificada solo-exacta (ver comentario de
+    `MIN_SETTLED_FOR_WALK_FORWARD_TRACK_RECORD` mas arriba para el bug
+    real que esto corrige). Sin `db` (p.ej. tests sinteticos sin sesion),
+    cae al fallback puro `_track_records_from_observations`, sin
+    jerarquia -- documentado como limitacion de ese modo unicamente.
     """
     with_market = [
         (p, r, k) for p, r, k in settled_with_kickoff if p.market_odds is not None
@@ -325,7 +361,7 @@ def compare_ranking_strategies_walk_forward(
     longshot_curve = None
     track_records: dict[tuple[str, str], float] = {}
 
-    for i, (prediction, result, _kickoff) in enumerate(with_market):
+    for i, (prediction, result, kickoff) in enumerate(with_market):
         if i >= min_train_n:
             if edge_curve is None or i % WALK_FORWARD_REFIT_EVERY == 0:
                 edge_curve = (
@@ -342,7 +378,22 @@ def compare_ranking_strategies_walk_forward(
                     if len(prior_longshot_probability) >= min_train_n
                     else None
                 )
-                track_records = _track_records_from_observations(prior_track_record_observations)
+                if db is not None:
+                    # Jerarquia REAL de produccion (tier/global con
+                    # shrinkage), reconstruida solo con lo que existia
+                    # ANTES de este punto (`as_of=kickoff`, mismo filtro
+                    # `Match.kickoff_utc < as_of` que usa produccion) --
+                    # nunca el historico completo.
+                    track_records = {
+                        key: estimate.value
+                        for key, estimate in market_track_records_with_provenance(
+                            db, as_of=kickoff
+                        ).items()
+                    }
+                else:
+                    track_records = _track_records_from_observations(
+                        prior_track_record_observations
+                    )
 
             evaluated.append(prediction)
             scores["v1"][prediction.id] = signal_score(prediction)
@@ -367,7 +418,16 @@ def compare_ranking_strategies_walk_forward(
                 else None
             )
             track_record = track_records.get(track_record_key) if track_record_key else None
-            if evaluate_quality_gate_v3(prediction, settings, track_record) is None:
+            # `now=kickoff`: BUG REAL corregido (auditoria v2.8) -- sin
+            # esto, la comprobacion de frescura de la cuota comparaba
+            # contra el reloj de HOY, no contra el momento real evaluado,
+            # y descartaba TODA liquidacion historica solo por antigua
+            # (ver docstring de `odds_age_minutes`/`evaluate_quality_gate_v3`
+            # para el detalle completo). `kickoff` es el instante correcto:
+            # es la MISMA variable que ya se usa para ordenar
+            # cronologicamente y como `as_of` del track record, nunca una
+            # fecha futura relativa al punto evaluado.
+            if evaluate_quality_gate_v3(prediction, settings, track_record, now=kickoff) is None:
                 v3_evaluated.append(prediction)
                 v3_scores[prediction.id] = ranking_key_v3(prediction, track_record)
 

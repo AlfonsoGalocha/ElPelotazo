@@ -416,7 +416,13 @@ def test_eight_laboratory_strategies_and_ranking_are_untouched():
 
     assert len(WEIGHTS) == 8
     settings = get_settings()
-    assert (settings.min_opportunity_odds, settings.max_opportunity_odds) == (1.30, 1.80)
+    # Banda restaurada a (1.35, 1.90) el 2026-11-25 (auditoria v2.8),
+    # confirmado explicitamente con el usuario: el valor (1.30, 1.80)
+    # fijado por este mismo guardia el 2026-11-23 (commit 7f8b7c9) ya no
+    # aplica -- ver backend/app/config/settings.py::min_opportunity_odds
+    # para el detalle completo. El guardia se actualiza, no se elimina:
+    # sigue protegiendo que esta banda no cambie por accidente de nuevo.
+    assert (settings.min_opportunity_odds, settings.max_opportunity_odds) == (1.35, 1.90)
     from backend.app.config.settings import Settings
 
     # Code defaults stay prudent; the experimental profile only comes from explicit configuration.

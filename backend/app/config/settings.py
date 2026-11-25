@@ -120,14 +120,20 @@ class Settings(BaseSettings):
     # que lee la preferencia guardada y cae aqui solo si no hay ninguna.
     api_football_odds_window_days: int = Field(default=15, ge=1, le=15)
     shadow_min_probability: float = Field(default=.65, ge=0, le=1)
-    min_opportunity_odds: float = 1.30
+    # Valor original de v3 (1.35), bajado a 1.30 sin tocar este comentario
+    # ni los tests el 2026-11-23 (commit 7f8b7c9). Restaurado en la
+    # auditoria v2.8 (2026-11-25) tras confirmarlo explicitamente con el
+    # usuario -- `backend/tests/integration/test_api.py::test_ranking_config_*`
+    # ya esperaban 1.35 desde que v3 se activo, asi que esos tests estaban
+    # en rojo desde esa fecha sin que nadie lo hubiera notado.
+    min_opportunity_odds: float = 1.35
     # Virtual bot capital policy (services/bot_capital.py). The experimental
     # aggressive profile needs BOT_AGGRESSIVE_AUTHORIZED=true as well.
     bot_risk_profile: str = "moderado"
     bot_aggressive_authorized: bool = False
     # Floor for every automatic stake, in euros. It never overrides exposure or reserve limits.
     bot_min_stake_eur: float = 2.0
-    max_opportunity_odds: float = 1.80
+    max_opportunity_odds: float = 1.90  # ver comentario de min_opportunity_odds arriba
 
     # --- Calidad de mercado (prediction/market_quality.py) ---
     # Clasificacion HIGH/MEDIUM/LOW basada en cuantas casas respaldan el

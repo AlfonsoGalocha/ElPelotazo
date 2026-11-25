@@ -132,6 +132,40 @@ def test_odds_age_minutes_reflects_provider_update():
     assert 44.0 <= age <= 46.0
 
 
+def test_odds_age_minutes_now_override_measures_against_a_different_instant():
+    """Bug real corregido (auditoria v2.8): `backtesting/ranking_comparison.py`
+    evalua predicciones YA LIQUIDADAS (semanas/meses en el pasado) --
+    sin un `now` explicito, `odds_age_minutes` siempre comparaba contra
+    el reloj REAL, asi que cualquier liquidacion historica salia como
+    "antiquisima" sin importar su fiabilidad real (ver v3 nunca
+    aparecia en el walk-forward). Con `now` explicito, se mide contra el
+    instante que de verdad importa -- el momento evaluado, nunca hoy."""
+    historical_kickoff = dt.datetime(2024, 1, 15, 12, 0)
+    prediction = _prediction(
+        created_at=historical_kickoff - dt.timedelta(minutes=15),
+        odds_origin_at=historical_kickoff - dt.timedelta(minutes=20),
+    )
+    # Contra el reloj REAL, esta prediccion es antiquisima (anhos).
+    assert odds_age_minutes(prediction) > 60 * 24 * 365
+    # Contra el instante correcto (poco despues de su propio kickoff),
+    # sigue siendo "fresca" -- exactamente lo que era en su momento.
+    age_at_the_time = odds_age_minutes(prediction, now=historical_kickoff)
+    assert 19.0 <= age_at_the_time <= 21.0
+
+
+def test_evaluate_quality_gate_now_override_never_marks_old_settled_predictions_stale():
+    settings = Settings(max_odds_age_minutes=60)
+    historical_kickoff = dt.datetime(2024, 1, 15, 12, 0)
+    prediction = _prediction(
+        created_at=historical_kickoff - dt.timedelta(minutes=15),
+        odds_origin_at=historical_kickoff - dt.timedelta(minutes=20),
+    )
+    # Sin `now`, el reloj real hace que parezca desactualizada.
+    assert evaluate_quality_gate(prediction, settings) == ExclusionReason.STALE_ODDS
+    # Con el `now` correcto (el instante real evaluado), pasa el filtro.
+    assert evaluate_quality_gate(prediction, settings, now=historical_kickoff) is None
+
+
 def test_prediction_passing_all_checks_is_not_excluded():
     prediction = _prediction()
     assert evaluate_quality_gate(prediction) is None
