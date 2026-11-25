@@ -107,10 +107,31 @@ def evaluate_and_promote(db: Session, competition_code: str, candidate: ModelVer
         .order_by(ModelVersion.created_at.desc())
         .first()
     )
+    if previous_active is None:
+        # Bug real confirmado (auditoria v2.8, diagnostico de por que
+        # Champions League/Liga F/AFC Champions League nunca tenian
+        # predicciones): antes esto ponia `is_active = False`
+        # INCONDICIONALMENTE y nunca lo activaba, aunque no hubiera NADA
+        # con que comparar -- cada reentrenamiento siguiente de esa
+        # competicion volvia a chocar con lo mismo (el candidato anterior
+        # tampoco se habia activado nunca), as que la competicion se
+        # quedaba sin ningun modelo activo para siempre, por mucho que se
+        # reentrenara. Esto NUNCA sustituye un modelo titular existente
+        # (la condicion `previous_active is None` significa literalmente
+        # que no hay ninguno) -- solo arranca el primero, que es
+        # exactamente la situacion "mejor que nada" que no tenia forma de
+        # demostrar una mejora por falta de un incumbente con quien
+        # compararse. El guardia de "no reentrenamientos automaticos que
+        # empeoren el sistema sin validacion" (pedido real del usuario,
+        # ver docstring de este modulo) sigue intacto para CUALQUIER
+        # competicion que ya tenga un modelo activo: esa rama de abajo
+        # (con `previous_active`) no se ha tocado.
+        candidate.is_active = True
+        db.flush()
+        return {"competition": competition_code, "promoted": True, "reason": "first_version_for_competition"}
+
     candidate.is_active = False
     db.flush()
-    if previous_active is None:
-        return {"competition": competition_code, "promoted": False, "reason": "no_previous_version"}
 
     competition = db.query(Competition).filter_by(code=competition_code).one()
     matches = load_matches_dataframe(db, competition.id)

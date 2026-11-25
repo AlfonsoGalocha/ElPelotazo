@@ -70,18 +70,31 @@ def _ingest_and_train(competition_code: str, seed: int, n_seasons: int = 3):
         return result["model_version_id"]
 
 
-def test_first_candidate_stays_inactive_without_an_incumbent():
+def test_first_candidate_for_a_competition_is_promoted_without_an_incumbent():
+    """Bug real corregido (auditoria v2.8): antes, sin NADA con que
+    comparar (`previous_active is None`), el candidato se quedaba
+    `is_active=False` para siempre -- y como el candidato tampoco se
+    activaba nunca, el SIGUIENTE reentrenamiento de esa misma competicion
+    volvia a encontrar `previous_active is None` otra vez, en un bucle
+    cerrado. Confirmado contra produccion real: Champions League/Liga F/
+    AFC Champions League nunca tuvieron NINGUN modelo activo por este
+    motivo exacto, así que esas competiciones nunca generaban
+    predicciones (`generate_predictions_for_competition` no encuentra
+    ninguna version activa). Promocionar aqui el primer candidato de una
+    competicion nueva NUNCA sustituye un modelo titular existente (la
+    condicion es literalmente que no hay ninguno) -- solo arranca el
+    primero."""
     competition_code = "promotion_test_league_first"
     version_id = _ingest_and_train(competition_code, seed=101)
 
     with session_scope() as db:
         candidate = db.get(ModelVersion, version_id)
         decision = evaluate_and_promote(db, competition_code, candidate)
-        assert decision["promoted"] is False
-        assert decision["reason"] == "no_previous_version"
+        assert decision["promoted"] is True
+        assert decision["reason"] == "first_version_for_competition"
 
     with session_scope() as db:
-        assert db.get(ModelVersion, version_id).is_active is False
+        assert db.get(ModelVersion, version_id).is_active is True
 
 
 def test_candidate_not_promoted_when_too_few_out_of_sample_matches():
