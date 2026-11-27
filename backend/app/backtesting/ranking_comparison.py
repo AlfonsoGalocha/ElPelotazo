@@ -53,6 +53,9 @@ from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
 from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.models.calibration.metrics import brier_score, expected_calibration_error, log_loss_score
+from backend.app.prediction.anomaly import classify_contradiction
+from backend.app.prediction.candidate_policy import evaluate_quality_gate_candidate, ranking_key_candidate
+from backend.app.prediction.evidence import build_market_evidence
 from backend.app.prediction.ranking import (
     LONGSHOT_ODDS_THRESHOLD,
     RankedSignal,
@@ -116,7 +119,7 @@ def _probability_for_strategy(prediction: Prediction, strategy: str) -> float:
     la probabilidad bruta") -- su Brier/log loss deben medir la
     probabilidad que REALMENTE usa para ordenar, con el mismo fallback a
     la cruda que `ranking.py::calibrated_probability_or_fallback`."""
-    if strategy == V3_STRATEGY_NAME:
+    if strategy in (V3_STRATEGY_NAME, V4_STRATEGY_NAME):
         return calibrated_probability_or_fallback(prediction)
     return prediction.model_probability
 
@@ -281,6 +284,14 @@ MIN_SETTLED_FOR_WALK_FORWARD_TRACK_RECORD = 30
 # consideraria una oportunidad.
 V3_STRATEGY_NAME = "v3_probability_first"
 
+# Politica candidata consciente de contradicciones (v2.8.2, seccion 4):
+# mismo candidate pool que v3 (pasa por `evaluate_quality_gate_v3`
+# primero, dentro de `evaluate_quality_gate_candidate`) MAS la exclusion
+# de contradiccion FUERTE. Nunca sustituye a v3 en este comparador --
+# ambas se reportan siempre juntas, para decidir con datos reales (no
+# asumidos) si excluir FUERTE mejora algo fuera de muestra.
+V4_STRATEGY_NAME = "v4_contradiction_aware"
+
 
 def _track_records_from_observations(
     observations: dict[tuple[str, str], list[tuple[bool, float]]]
@@ -351,6 +362,8 @@ def compare_ranking_strategies_walk_forward(
     evaluated: list[Prediction] = []
     v3_scores: dict[int, tuple[float, ...]] = {}
     v3_evaluated: list[Prediction] = []
+    v4_scores: dict[int, tuple[float, ...]] = {}
+    v4_evaluated: list[Prediction] = []
 
     prior_edge_pp: list[float] = []
     prior_edge_outcome: list[float] = []
@@ -431,6 +444,23 @@ def compare_ranking_strategies_walk_forward(
                 v3_evaluated.append(prediction)
                 v3_scores[prediction.id] = ranking_key_v3(prediction, track_record)
 
+            # v4 ("politica candidata consciente de contradicciones",
+            # seccion 4 del pedido v2.8.2): mismo track record/`now` que
+            # v3 (sin duplicar su reconstruccion), MAS el nivel de
+            # contradiccion calculado con la evidencia REAL disponible
+            # ANTES de este partido (`build_market_evidence` ya filtra
+            # por `kickoff_utc <` el partido evaluado internamente --
+            # ningun leakage nuevo). Solo con `db` real: sin sesion no
+            # hay como consultar el historial de equipos de cada partido.
+            if db is not None and prediction.match is not None:
+                evidence = build_market_evidence(db, prediction, match=prediction.match)
+                contradiction_level = classify_contradiction(prediction, evidence)
+                if evaluate_quality_gate_candidate(
+                    prediction, contradiction_level, settings, track_record, now=kickoff
+                ) is None:
+                    v4_evaluated.append(prediction)
+                    v4_scores[prediction.id] = ranking_key_candidate(prediction, contradiction_level, track_record)
+
         # Esta liquidacion pasa a formar parte del "pasado" SOLO despues
         # de puntuarse (si le tocaba) -- nunca antes, o se puntuaria con
         # una curva/track-record que ya la conoce.
@@ -476,5 +506,19 @@ def compare_ranking_strategies_walk_forward(
                 continue
             report.slices.append(_slice_metrics(V3_STRATEGY_NAME, str(n), top_slice, outcomes))
         report.slices.append(_slice_metrics(V3_STRATEGY_NAME, "all", ranked_v3, outcomes))
+
+    if v4_evaluated:
+        ranked_signals_v4 = sorted(
+            (RankedSignal(prediction=p, score=v4_scores[p.id]) for p in v4_evaluated),
+            key=lambda s: s.score,
+            reverse=True,
+        )
+        ranked_v4 = [s.prediction for s in select_one_per_match(ranked_signals_v4)]
+        for n in top_n_values:
+            top_slice = ranked_v4[:n]
+            if not top_slice:
+                continue
+            report.slices.append(_slice_metrics(V4_STRATEGY_NAME, str(n), top_slice, outcomes))
+        report.slices.append(_slice_metrics(V4_STRATEGY_NAME, "all", ranked_v4, outcomes))
 
     return report

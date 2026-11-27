@@ -343,11 +343,14 @@ def test_predictions_today_returns_all_five_markets(seeded_competition_code):
         assert "calibrated_probability" in prediction
         if prediction["calibrated_probability"] is not None:
             assert 0.0 <= prediction["calibrated_probability"] <= 1.0
-        # Fase D (revision v2.8): el campo existe pero nunca se calcula en
-        # endpoints de LISTA (demasiado costoso para cientos de
-        # predicciones a la vez, ver comentario de costes en
-        # api/routes/predictions.py::serialize_prediction).
+        # v2.8.2 (seccion 5): `category` viene de la cache de
+        # `selector_decision_candidates` -- esta prediccion sintetica
+        # nunca se capturo (no paso por `capture_selector_decisions`), asi
+        # que debe quedar explicitamente "pendiente", nunca mostrada como
+        # si tuviera una categoria favorable.
         assert prediction["category"] is None
+        assert prediction["category_status"] == "pendiente"
+        assert prediction["contradiction_level"] is None
 
 
 def test_match_predictions_endpoint(seeded_competition_code):
@@ -858,6 +861,8 @@ def test_prediction_detail_endpoint_shows_bookmaker_breakdown_and_explanation(se
     # (coste aceptable para una sola prediccion, ver
     # api/routes/predictions.py::_category_for_single_prediction).
     assert body["category"] in {"A+", "A", "B", "C", "D"}
+    assert body["category_status"] == "completada"
+    assert body["contradiction_level"] in {"SIN_CONTRADICCION", "LEVE", "MODERADA", "FUERTE", "EVIDENCIA_INSUFICIENTE"}
 
 
 def test_attach_odds_reports_unmatched_examples_for_unknown_teams(seeded_competition_code):
@@ -1772,3 +1777,128 @@ def test_odds_diagnostics_endpoint_reports_the_latest_real_ingestion_attempts():
     )
     assert "Bet365" in body["bookmakers_seen"]
     assert body["scheduled_matches_with_odds"] >= 1
+
+
+def test_selector_decisions_for_match_returns_404_without_any_snapshot():
+    client = TestClient(app)
+    response = client.get("/predictions/selector-decisions/999999999")
+    assert response.status_code == 404
+
+
+def test_selector_decisions_for_match_returns_the_full_alternatives_table():
+    """v2.8.2 (seccion 7): `GET /predictions/selector-decisions/{match_id}`
+    debe devolver, para el ultimo corte capturado, la fila completa por
+    candidata (ambas politicas) y las dos heuristicas simples pedidas
+    explicitamente.
+
+    Usa `session_scope()` (commit real) a proposito -- el `TestClient`
+    resuelve `get_db` con SU PROPIA conexion, que nunca veria filas
+    insertadas en una transaccion sin confirmar de otra conexion (p.ej.
+    la fixture `db_session`). Pero `evaluate_selector_decisions`/
+    `evaluate_policy_comparison`/`funnel_report` escanean TODOS los
+    `SelectorDecisionSnapshot` sin filtro (su contrato, ver
+    selector_decision_service.py) -- dejar esta fila PERMANENTE
+    rompperia esos tests en otros ficheros (ya paso: auditoria v2.8.2).
+    Por eso se borra todo en el `finally`, dejando la BD compartida
+    exactamente como estaba."""
+    from backend.app.db.models.core import Competition as _Competition
+    from backend.app.db.models.core import Season as _Season
+    from backend.app.db.models.modeling import SelectorDecisionCandidate, SelectorDecisionSnapshot
+
+    match_id = None
+    with session_scope() as db:
+        comp = _Competition(code="selector-decisions-endpoint-test", name="SD Endpoint Test", country="Testland")
+        db.add(comp)
+        db.flush()
+        db.add(_Season(competition_id=comp.id, label="2024-2025"))
+        mv = ModelVersion(
+            name="sd-endpoint-test", version="v1", market_family="goals",
+            features=[], hyperparameters={}, metrics={}, dataset_version="test",
+        )
+        db.add(mv)
+        db.flush()
+        kickoff = dt.datetime.utcnow() + dt.timedelta(hours=5)
+        match = Match(
+            provider="sd-endpoint-test", provider_id="sd-endpoint-test-1",
+            competition_id=comp.id, season_id=1, kickoff_utc=kickoff,
+            home_team_id=1, away_team_id=2, status="scheduled",
+        )
+        db.add(match)
+        db.flush()
+        selected = Prediction(
+            match_id=match.id, market="over_2_5", line=2.5, selection="over", model_version_id=mv.id,
+            model_probability=0.70, calibrated_probability=0.70, market_odds=1.5, fair_odds=1 / 0.70,
+            confidence=0.8, data_quality=0.8, explanation={}, features_used={}, created_at=dt.datetime.utcnow(),
+        )
+        other = Prediction(
+            match_id=match.id, market="btts", line=None, selection="yes", model_version_id=mv.id,
+            model_probability=0.60, calibrated_probability=0.60, market_odds=1.8, fair_odds=1 / 0.60,
+            confidence=0.8, data_quality=0.8, explanation={}, features_used={}, created_at=dt.datetime.utcnow(),
+        )
+        db.add_all([selected, other])
+        db.flush()
+
+        snapshot = SelectorDecisionSnapshot(
+            match_id=match.id, captured_at=dt.datetime.utcnow(), selector_version="v3_probability_first",
+            min_opportunity_odds=1.35, max_opportunity_odds=1.90,
+            selected_prediction_id=selected.id, selected_prediction_id_candidate=other.id,
+        )
+        db.add(snapshot)
+        db.flush()
+        db.add(SelectorDecisionCandidate(
+            snapshot_id=snapshot.id, prediction_id=selected.id, market="over_2_5",
+            model_probability=0.70, calibrated_probability=0.70, market_odds=1.5, market_probability=0.55,
+            ev_conservative=0.02, market_track_record_value=0.6, market_track_record_source_level="competition_market",
+            uncertainty_width=0.04, data_quality=0.8, edge=0.10, category="A", contradiction_level="FUERTE",
+            rank_position=1, exclusion_reason=None, is_selected=True,
+            rank_position_candidate=None, exclusion_reason_candidate="contradiccion_fuerte", is_selected_candidate=False,
+        ))
+        db.add(SelectorDecisionCandidate(
+            snapshot_id=snapshot.id, prediction_id=other.id, market="btts",
+            model_probability=0.60, calibrated_probability=0.60, market_odds=1.8, market_probability=0.52,
+            ev_conservative=0.01, market_track_record_value=0.55, market_track_record_source_level="market_tier",
+            uncertainty_width=0.08, data_quality=0.7, edge=0.05, category="B", contradiction_level="SIN_CONTRADICCION",
+            rank_position=2, exclusion_reason=None, is_selected=False,
+            rank_position_candidate=1, exclusion_reason_candidate=None, is_selected_candidate=True,
+        ))
+        db.flush()
+        match_id = match.id
+        selected_id, other_id = selected.id, other.id
+
+    try:
+        client = TestClient(app)
+        response = client.get(f"/predictions/selector-decisions/{match_id}")
+        assert response.status_code == 200
+        body = response.json()
+
+        assert body["selected_prediction_id_v3"] == selected_id
+        assert body["selected_prediction_id_candidate"] == other_id
+        rows_by_id = {row["prediction_id"]: row for row in body["candidates"]}
+        assert rows_by_id[selected_id]["rank_position_v3"] == 1
+        assert rows_by_id[selected_id]["exclusion_reason_candidate"] == "contradiccion_fuerte"
+        assert rows_by_id[other_id]["rank_position_candidate"] == 1
+
+        # Heuristicas simples: ambas predicciones tienen calibracion
+        # disponible, asi que ambas deben aparecer, ordenadas por esa
+        # sola probabilidad.
+        assert body["heuristics"]["by_calibrated_probability_only"][0] == selected_id  # 0.70 > 0.60
+    finally:
+        with session_scope() as db:
+            db.query(SelectorDecisionCandidate).filter(
+                SelectorDecisionCandidate.snapshot_id.in_(
+                    db.query(SelectorDecisionSnapshot.id).filter(SelectorDecisionSnapshot.match_id == match_id)
+                )
+            ).delete(synchronize_session=False)
+            db.query(SelectorDecisionSnapshot).filter_by(match_id=match_id).delete(synchronize_session=False)
+            db.query(Prediction).filter_by(match_id=match_id).delete(synchronize_session=False)
+            db.query(Match).filter_by(id=match_id).delete(synchronize_session=False)
+
+
+def test_selector_decisions_policy_comparison_has_the_expected_shape():
+    client = TestClient(app)
+    response = client.get("/predictions/selector-decisions/policy-comparison")
+    assert response.status_code == 200
+    body = response.json()
+    assert "v3" in body and "candidate" in body
+    assert "insufficient_sample" in body["v3"]
+    assert "note" in body

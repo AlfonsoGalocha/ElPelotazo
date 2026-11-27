@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from backend.app.models.base import GoalsModel
+from backend.app.models.calibration.corners import correct_probability
 from backend.app.models.goals.ml_classifier import MarketClassifierModel
 from backend.app.prediction.confidence import ConfidenceInputs, confidence_score
 from backend.app.prediction.data_quality import compute_data_quality
@@ -97,6 +98,34 @@ def apply_coherent_calibration(outputs, config):
                 row.expected_value = compute_expected_value(probability, row.market_odds)
             row.calibrated_probability = probability if not source.startswith("original") else None
             row.calibration_source = source
+    return outputs
+
+
+def apply_corner_survival_correction(outputs, artifact):
+    """Aplica `corner_survival` (auditoria v2.8.2) -- la UNICA correccion
+    monotona compartida por las 4 lineas de corners
+    (`models/calibration/corners.py`) -- SOLO a los mercados
+    `corners_over_*` cuya eleccion guardada en el artefacto
+    (`corner_calibration_choice`, decidida en `model_service.py`
+    comparando de verdad contra el calibrador isotonico generico, nunca
+    asumida) sea `"corner_survival"`. REEMPLAZA `calibrated_probability`
+    -- nunca la combina con el isotonico, porque ese mercado ya se retiro
+    de `calibrators` en `model_service.py` precisamente para que esto sea
+    un reemplazo, no una doble calibracion. `corners_under_9_5` se deja
+    intacto aqui a proposito: `apply_coherent_calibration` (llamada justo
+    despues en `_predict_fixture_markets`) ya lo recalcula como
+    `1 - corners_over_9_5` a partir del valor YA corregido, reusando la
+    coherencia over/under que ya existia (`coherent.py::COMPLEMENTS`) en
+    vez de duplicarla aqui."""
+    choice = artifact.get("corner_calibration_choice") or {}
+    params = artifact.get("corner_survival")
+    if not params:
+        return outputs
+    for row in outputs:
+        if choice.get(row.market) != "corner_survival":
+            continue
+        row.calibrated_probability = float(correct_probability(row.model_probability, params, under=False))
+        row.calibration_source = params.get("version", "corner_survival")
     return outputs
 
 

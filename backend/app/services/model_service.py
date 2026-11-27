@@ -137,6 +137,45 @@ def _fit_validated_isotonic_calibrator(
     return IsotonicCalibrator().fit(p_ensemble, y_true), report
 
 
+def _corner_survival_beats_isotonic(
+    corner_survival: dict | None,
+    corner_survival_report: dict,
+    over_markets: list[str],
+    corner_calibration: dict[str, dict],
+) -> bool:
+    """Compara, de forma honesta y conservadora, la mejora de
+    `corner_survival` (correccion monotona COMPARTIDA entre todas las
+    lineas `_over_` de corners) contra la ya validada por
+    `_fit_validated_isotonic_calibrator` para esas mismas lineas (cada
+    una con su propio holdout). Los dos metodos se miden en bloques
+    temporales distintos, asi que nunca se comparan sus valores
+    absolutos de log loss -- se compara el RATIO de mejora (despues/
+    antes de calibrar) de cada uno sobre su propia probabilidad cruda,
+    y se exige que `corner_survival` mejore MAS que el mejor calibrador
+    isotonico individual disponible para ganar."""
+    if corner_survival is None:
+        return False
+    survival_before = corner_survival_report["original_holdout"]["log_loss"]
+    survival_after = corner_survival_report["corrected_holdout"]["log_loss"]
+    if not survival_before or survival_before <= 0:
+        return False
+    survival_ratio = survival_after / survival_before
+    isotonic_ratios = []
+    for market_key in over_markets:
+        report = corner_calibration.get(market_key) or {}
+        if not report.get("accepted"):
+            continue
+        before, after = report.get("log_loss_before"), report.get("log_loss_after")
+        if before and before > 0:
+            isotonic_ratios.append(after / before)
+    if not isotonic_ratios:
+        # Ningun calibrador isotonico individual demostro mejora para
+        # estas lineas, pero corner_survival si (ya se comprobo arriba)
+        # -- gana por ser la unica evidencia real disponible.
+        return True
+    return survival_ratio < min(isotonic_ratios)
+
+
 def _choose_ml_source_per_group(
     candidate_models: dict[str, object],
     eval_finished,
@@ -439,6 +478,7 @@ def train_competition_models(db: Session, competition_code: str, *, rolling=Fals
     # compararse -- ver docstring de secondary_markets.py.
     secondary_models: dict[str, TotalCountPoissonModel] = {}
     corner_calibration = {}
+    corner_calibration_choice: dict[str, str] = {}
     corner_survival = None
     for stat_family in ("corners",):
         try:
@@ -488,17 +528,43 @@ def train_competition_models(db: Session, competition_code: str, *, rolling=Fals
                 corner_calibration[market_key] = report
                 if calibrator is not None:
                     calibrators[market_key] = calibrator
+                corner_calibration_choice[market_key] = "isotonic" if calibrator is not None else "none"
             from backend.app.models.calibration.corners import validate_corner_calibration
             from backend.app.prediction.secondary_markets import SECONDARY_MARKET_DEFINITIONS
 
             over_markets = [market for market in probs if SECONDARY_MARKET_DEFINITIONS[market].kind == "over"]
             if over_markets:
-                corner_survival, metrics["corner_survival_validation"] = validate_corner_calibration(
+                corner_survival, corner_survival_report = validate_corner_calibration(
                     np.column_stack([probs[market] for market in over_markets]),
                     np.column_stack([label_for_secondary_market(eval_rows, market) for market in over_markets]),
                     eval_rows["date"].to_numpy(),
                 )
+                metrics["corner_survival_validation"] = corner_survival_report
+                # Auditoria v2.8.2: `corner_survival` (una UNICA correccion
+                # monotona compartida por las 4 lineas de corners) se
+                # entrenaba y se guardaba desde siempre, pero nunca se
+                # aplicaba en el pipeline real de predicciones -- solo en
+                # la vista previa de candidatos de Champions League. Antes
+                # de conectarla, se compara de verdad contra la alternativa
+                # YA validada (el calibrador isotonico por mercado, cada
+                # uno con su propio holdout fuera de muestra): se usa SOLO
+                # si demuestra una mejora de log loss relativa mayor que la
+                # del mejor calibrador isotonico individual de esas mismas
+                # lineas. "Mayor mejora relativa" (ratio despues/antes), no
+                # el valor absoluto, porque ambos metodos se miden en
+                # bloques temporales de holdout distintos -- nunca se
+                # asume que conectar la calibracion mejora nada sin esta
+                # comparacion. Si gana, sustituye al isotonico para esas
+                # lineas (nunca se aplican ambas: se retira el mercado de
+                # `calibrators` para que no se pueda calibrar dos veces).
+                if _corner_survival_beats_isotonic(
+                    corner_survival, corner_survival_report, over_markets, corner_calibration
+                ):
+                    for market_key in over_markets:
+                        corner_calibration_choice[market_key] = "corner_survival"
+                        calibrators.pop(market_key, None)
     metrics["corners_calibration"] = corner_calibration
+    metrics["corners_calibration_choice"] = corner_calibration_choice
 
     base_ids = train_table["match_id"].astype(int).tolist()
     previous_ids = previous_manifest.get("base_fit_match_ids")
@@ -542,6 +608,7 @@ def train_competition_models(db: Session, competition_code: str, *, rolling=Fals
     if "corners" in secondary_models:
         artifact_payload["corners_model"] = secondary_models["corners"]
         artifact_payload["corner_survival"] = corner_survival
+        artifact_payload["corner_calibration_choice"] = corner_calibration_choice
     joblib.dump(artifact_payload, artifact_path)
 
     model_version = ModelVersion(

@@ -349,6 +349,14 @@ class SelectorDecisionSnapshot(Base):
     min_opportunity_odds: Mapped[float] = mapped_column(Float)
     max_opportunity_odds: Mapped[float] = mapped_column(Float)
     selected_prediction_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # v2.8.2 (seccion 7/8 del pedido): la politica candidata consciente
+    # de contradicciones (`prediction/candidate_policy.py`) se ejecuta
+    # sobre el MISMO universo que v3, en el MISMO instante -- esta es su
+    # elegida, para comparar ambas politicas sobre exactamente las mismas
+    # oportunidades (nunca un segundo corte en otro momento). Columna
+    # NUEVA via `_sync_missing_columns` -- filas antiguas quedan `NULL`,
+    # nunca se reescriben.
+    selected_prediction_id_candidate: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     candidates: Mapped[list[SelectorDecisionCandidate]] = relationship(
         back_populates="snapshot", cascade="all, delete-orphan"
@@ -387,5 +395,28 @@ class SelectorDecisionCandidate(Base):
     # es `None`; `None` cuando la candidata SI quedo incluida.
     exclusion_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_selected: Mapped[bool] = mapped_column(default=False)
+
+    # v2.8.2 (seccion 7 del pedido: "tabla de alternativas comparables").
+    # Columnas NUEVAS via `_sync_missing_columns` -- filas antiguas (de
+    # antes de esta fase) quedan `NULL`, nunca se reescriben ni se borran.
+    # Probabilidad ORIGINAL (antes de calibrar) y cuota/probabilidad
+    # implicita de mercado: hoy solo se guardaba la calibrada, pedido
+    # explicito poder comparar original vs calibrada vs implicita en la
+    # misma fila.
+    model_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_odds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_probability: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Nivel crudo de `ContradictionLevel` (prediction/anomaly.py) -- antes
+    # solo se guardaba la categoria derivada (`category`), nunca el nivel
+    # de contradiccion que la produjo.
+    contradiction_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Resultado de la politica CANDIDATA (`prediction/candidate_policy.py`)
+    # sobre esta MISMA candidata -- en paralelo a `rank_position`/
+    # `exclusion_reason`/`is_selected`, que siguen siendo EXCLUSIVAMENTE
+    # de v3 (nunca se tocan ni se reinterpretan). Misma convencion:
+    # `rank_position_candidate=None` = excluida por la politica candidata.
+    rank_position_candidate: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    exclusion_reason_candidate: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_selected_candidate: Mapped[bool] = mapped_column(default=False)
 
     snapshot: Mapped[SelectorDecisionSnapshot] = relationship(back_populates="candidates")

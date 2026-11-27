@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 from backend.app.config.settings import Settings, get_settings
 from backend.app.db.database import get_db
 from backend.app.db.models.matches import Match, MatchOdds, MatchOddsHistory
-from backend.app.db.models.modeling import Prediction
+from backend.app.db.models.modeling import Prediction, SelectorDecisionCandidate, SelectorDecisionSnapshot
 from backend.app.prediction.anomaly import (
     best_prediction_per_match,
     classify_contradiction,
@@ -71,6 +71,8 @@ def serialize_prediction(
     is_best_prediction: bool = False,
     reliability: TrackRecordEstimate | None = None,
     category: OpportunityCategory | None = None,
+    category_status: str = "pendiente",
+    contradiction_level: str | None = None,
 ) -> dict:
     settings = get_settings()
     age_minutes = odds_age_minutes(prediction)
@@ -143,15 +145,20 @@ def serialize_prediction(
             else None
         ),
         # Fase D (revision v2.8): categoria A+/A/B/C/D determinista (ver
-        # prediction/opportunity_category.py). `None` cuando el llamador
-        # no la calculo -- calcularla exige `build_market_evidence`
-        # (Fase B), que hace varias consultas reales por prediccion
-        # (~13ms cada una, medido contra produccion real: barato para UNA
-        # prediccion, demasiado para listas de cientos sin cache/batch
-        # todavia sin construir) -- por eso solo se calcula en los
-        # endpoints de UNA sola prediccion (`/predictions/{id}`,
-        # `/predictions/{id}/detail`), nunca en los de lista.
+        # prediction/opportunity_category.py). Fase D original dejaba
+        # `category: None` en TODOS los endpoints de lista por coste
+        # (`build_market_evidence` ~13ms/prediccion) -- v2.8.2 (seccion 5)
+        # reemplaza eso con la cache real de `selector_decision_candidates`
+        # (`_category_cache_for_predictions`): gratis (una consulta por
+        # lote, no por prediccion), pero puede estar "pendiente" (nunca
+        # capturada todavia, p.ej. fuera de la ventana de 48h) o
+        # "desactualizada" (la cuota/calibracion ya cambiaron desde que se
+        # capturo) -- `category_status` dice cual de las tres es, NUNCA se
+        # muestra una categoria favorable como si fuera la vigente cuando
+        # no lo es.
         "category": category.value if category is not None else None,
+        "category_status": category_status,
+        "contradiction_level": contradiction_level,
     }
 
 
@@ -189,7 +196,8 @@ def predictions_today(
         query = query.filter(Match.competition_id == competition.id)
 
     predictions = query.order_by(Match.kickoff_utc).all()
-    return [serialize_prediction(p) for p in predictions]
+    category_cache = _category_cache_for_predictions(db, predictions)
+    return [_serialize_with_category_cache(p, category_cache) for p in predictions]
 
 
 @router.get("/summary", response_model=SummaryOut)
@@ -288,6 +296,7 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
         by_match,
         edge_reliability_curve=fit_edge_reliability_curve(db),
     )
+    category_cache = _category_cache_for_predictions(db, predictions)
     return {
         "round": {
             "competition_code": competition_code,
@@ -300,8 +309,8 @@ def predictions_current_round(competition_code: str = Query(...), db: Session = 
             "match_ids": round_info.match_ids,
         },
         "predictions": [
-            serialize_prediction(
-                p,
+            _serialize_with_category_cache(
+                p, category_cache,
                 is_best_prediction=(
                     (best := best_by_match.get(p.match_id)) is not None and p.id == best.id
                 ),
@@ -446,18 +455,92 @@ def _reliability_for(
     return provenance.get((prediction.match.competition.code, prediction.market))
 
 
-def _category_for_single_prediction(db: Session, prediction: Prediction, settings: Settings) -> OpportunityCategory:
+def _category_for_single_prediction(
+    db: Session, prediction: Prediction, settings: Settings
+) -> tuple[OpportunityCategory, str]:
     """Categoria A+/A/B/C/D de UNA prediccion suelta (Fase D), calculando
     aqui lo que los endpoints de lista ya calculan para varias a la vez
     (`anomaly_flags` en el contexto de su partido, `reliability`
-    jerarquica) -- ver comentario de costes en `serialize_prediction`."""
+    jerarquica) -- ver comentario de costes en `serialize_prediction`.
+    Devuelve tambien el nivel de contradiccion CRUDO (gratis, ya se
+    calculo para la categoria) -- esto nunca usa la cache de
+    `selector_decision_candidates` (una sola prediccion es barato
+    calcularlo al vuelo, y asi esta vista siempre refleja los datos MAS
+    recientes, no el ultimo corte del scheduler)."""
     siblings = db.query(Prediction).filter(Prediction.match_id == prediction.match_id).all()
     anomaly_flags = compute_anomaly_flags(prediction, siblings, settings)
     provenance = market_track_records_with_provenance(db, prediction.match.competition.code)
     reliability = _reliability_for(prediction, provenance)
     evidence = build_market_evidence(db, prediction)
     contradiction_level = classify_contradiction(prediction, evidence)
-    return opportunity_category(prediction, contradiction_level, reliability, anomaly_flags, settings)
+    category = opportunity_category(prediction, contradiction_level, reliability, anomaly_flags, settings)
+    return category, contradiction_level.value
+
+
+# v2.8.2 (seccion 5 del pedido: "categorias en las listas", reutilizando
+# el scheduler existente en vez de calcular cientos de predicciones
+# secuencialmente por peticion). `selector_decision_candidates` ya se
+# recalcula cada 600s para todo lo que entra en la ventana de captura de
+# `capture_selector_decisions` (48h) -- aqui se REUTILIZA como cache real,
+# nunca se vuelve a llamar a `build_market_evidence`/`classify_
+# contradiction` en caliente para una lista.
+def _category_cache_for_predictions(db: Session, predictions: list[Prediction]) -> dict[int, dict]:
+    """Para cada `prediction.id`, el ultimo `SelectorDecisionCandidate`
+    capturado (si existe). Devuelve, por id: `category` (`None` si nunca
+    se capturo o si no hay snapshot), `category_status`
+    ("completada"|"desactualizada"|"pendiente" -- NUNCA se muestra una
+    categoria favorable como vigente si la cuota/calibracion ya
+    cambiaron desde que se capturo) y `contradiction_level`."""
+    prediction_ids = [p.id for p in predictions]
+    if not prediction_ids:
+        return {}
+    rows = (
+        db.query(SelectorDecisionCandidate, SelectorDecisionSnapshot.captured_at)
+        .join(SelectorDecisionSnapshot, SelectorDecisionSnapshot.id == SelectorDecisionCandidate.snapshot_id)
+        .filter(SelectorDecisionCandidate.prediction_id.in_(prediction_ids))
+        .all()
+    )
+    latest_by_prediction: dict[int, tuple[SelectorDecisionCandidate, dt.datetime]] = {}
+    for candidate, captured_at in rows:
+        current = latest_by_prediction.get(candidate.prediction_id)
+        if current is None or captured_at > current[1]:
+            latest_by_prediction[candidate.prediction_id] = (candidate, captured_at)
+
+    by_id = {p.id: p for p in predictions}
+    result: dict[int, dict] = {}
+    for prediction_id, (candidate, captured_at) in latest_by_prediction.items():
+        prediction = by_id[prediction_id]
+        stale = (
+            candidate.market_odds is not None
+            and prediction.market_odds is not None
+            and abs(candidate.market_odds - prediction.market_odds) > 1e-9
+        ) or (candidate.calibrated_probability != prediction.calibrated_probability)
+        result[prediction_id] = {
+            "category": candidate.category,
+            "category_status": "desactualizada" if stale else "completada",
+            "contradiction_level": candidate.contradiction_level,
+            "category_computed_at": captured_at,
+        }
+    for prediction_id in prediction_ids:
+        result.setdefault(
+            prediction_id,
+            {"category": None, "category_status": "pendiente", "contradiction_level": None, "category_computed_at": None},
+        )
+    return result
+
+
+def _serialize_with_category_cache(
+    prediction: Prediction, cache: dict[int, dict], **kwargs
+) -> dict:
+    """`serialize_prediction` + la categoria cacheada (ver
+    `_category_cache_for_predictions`) -- helper comun para TODOS los
+    endpoints de lista, para no repetir la misma conversion en cada uno."""
+    entry = cache.get(prediction.id, {"category": None, "category_status": "pendiente", "contradiction_level": None})
+    category = OpportunityCategory(entry["category"]) if entry["category"] else None
+    return serialize_prediction(
+        prediction, category=category, category_status=entry["category_status"],
+        contradiction_level=entry["contradiction_level"], **kwargs,
+    )
 
 
 def _filter_by_quality(included: list, quality: str | None, settings) -> list:
@@ -596,13 +679,15 @@ def top_signals(
     ]
     if sort_by == "edge":
         included = sorted(included, key=lambda s: s.prediction.edge or 0.0, reverse=True)
+    top = included[:limit]
+    category_cache = _category_cache_for_predictions(db, [s.prediction for s in top])
     return [
-        serialize_prediction(
-            s.prediction,
-            compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings),
+        _serialize_with_category_cache(
+            s.prediction, category_cache,
+            anomaly_flags=compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings),
             reliability=_reliability_for(s.prediction, reliability_provenance),
         )
-        for s in included[:limit]
+        for s in top
     ]
 
 
@@ -699,10 +784,14 @@ def available_predictions(
                 remaining, reliability, per_match=per_match, limit=limit - len(ranked),
                 all_prices=all_prices, prefer_calibrated=True, odds_band=odds_band,
             ))
+        category_cache = _category_cache_for_predictions(db, [p for p, _item in ranked])
         return [
             {
-                **serialize_prediction(p, compute_anomaly_flags(p, by_match[p.match_id], settings),
-                                       reliability=_reliability_for(p, provenance)),
+                **_serialize_with_category_cache(
+                    p, category_cache,
+                    anomaly_flags=compute_anomaly_flags(p, by_match[p.match_id], settings),
+                    reliability=_reliability_for(p, provenance),
+                ),
                 "has_statistical_value": not item.reasons,
                 "value_exclusion": item.reasons[0] if item.reasons else None,
                 "opportunity": _execution_details(item),
@@ -724,14 +813,18 @@ def available_predictions(
     if value_only:
         candidates = [p for p in candidates if p.id in value_ids]
 
-    rows = []
-    for prediction in rank_available(
+    ranked_available = rank_available(
         candidates, reliability, per_match=per_match, limit=limit, all_prices=all_prices,
         value_ids=value_ids, prefer_calibrated=True, odds_band=odds_band,
-    ):
+    )
+    category_cache = _category_cache_for_predictions(db, ranked_available)
+    rows = []
+    for prediction in ranked_available:
         flags, reason, has_value = assessments[prediction.id]
         rows.append({
-            **serialize_prediction(prediction, flags, reliability=_reliability_for(prediction, provenance)),
+            **_serialize_with_category_cache(
+                prediction, category_cache, anomaly_flags=flags, reliability=_reliability_for(prediction, provenance)
+            ),
             "has_statistical_value": has_value,
             "value_exclusion": reason.value if reason else None,
         })
@@ -793,13 +886,15 @@ def best_predictions(
         for s in included
         if is_strong_signal(compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings))
     ]
+    top = included[:limit]
+    category_cache = _category_cache_for_predictions(db, [s.prediction for s in top])
     return [
-        serialize_prediction(
-            s.prediction,
-            compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings),
+        _serialize_with_category_cache(
+            s.prediction, category_cache,
+            anomaly_flags=compute_anomaly_flags(s.prediction, by_match[s.prediction.match_id], settings),
             reliability=_reliability_for(s.prediction, reliability_provenance),
         )
-        for s in included[:limit]
+        for s in top
     ]
 
 
@@ -869,9 +964,10 @@ def best_of_day(
 
     prediction = winner.prediction
     flags = compute_anomaly_flags(prediction, by_match[prediction.match_id], settings)
-    serialized = serialize_prediction(
-        prediction,
-        flags,
+    category_cache = _category_cache_for_predictions(db, [prediction])
+    serialized = _serialize_with_category_cache(
+        prediction, category_cache,
+        anomaly_flags=flags,
         is_best_prediction=True,
         reliability=_reliability_for(prediction, reliability_provenance),
     )
@@ -951,10 +1047,18 @@ def best_predictions_debug(
             "max_odds": settings.max_opportunity_odds,
         }
         if not summary_only:
+            # v2.8.2 (seccion 5: "Ranking experimental" -- este mismo
+            # endpoint, `/predictions/best/debug`, es el unico "ranking
+            # experimental" que existe en la app): misma cache que el
+            # resto de listas, nunca se recalcula category al vuelo aqui.
+            category_cache = _category_cache_for_predictions(db, [p for p, _item in pairs])
             summary["candidates"] = [
                 {"prediction_id": p.id, "match_id": p.match_id, "market": p.market,
                  "model_probability": p.model_probability if valid_probability(p.model_probability) else None,
                  "calibrated_probability": p.calibrated_probability if valid_probability(p.calibrated_probability) else None,
+                 "category": category_cache[p.id]["category"],
+                 "category_status": category_cache[p.id]["category_status"],
+                 "contradiction_level": category_cache[p.id]["contradiction_level"],
                  **_execution_details(item)} for p, item in pairs
             ]
         return summary
@@ -1135,6 +1239,102 @@ def selector_decisions_report(db: Session = Depends(get_db)) -> dict:
     return asdict(evaluate_selector_decisions(db))
 
 
+@router.get("/selector-decisions/policy-comparison")
+def selector_decisions_policy_comparison(db: Session = Depends(get_db)) -> dict:
+    """v2.8.2 (seccion 8 del pedido): compara v3 ("Mejores oportunidades")
+    contra la politica candidata consciente de contradicciones
+    (`prediction/candidate_policy.py`) SOBRE LAS MISMAS oportunidades --
+    ver services/selector_decision_service.py::evaluate_policy_comparison.
+    Definido ANTES de `/{prediction_id}` por el mismo motivo que
+    `/selector-decisions`. Puramente prospectivo, nunca promueve la
+    politica candidata por si solo -- si `insufficient_sample` es `True`
+    en cualquiera de las dos, el `note` lo dice explicitamente."""
+    from dataclasses import asdict
+
+    from backend.app.services.selector_decision_service import evaluate_policy_comparison
+
+    return asdict(evaluate_policy_comparison(db))
+
+
+@router.get("/selector-decisions/{match_id}")
+def selector_decisions_for_match(match_id: int, db: Session = Depends(get_db)) -> dict:
+    """v2.8.2 (seccion 7 del pedido): tabla completa de alternativas para
+    UN partido -- el snapshot MAS RECIENTE ya capturado por
+    `capture_selector_decisions` (nunca se recalcula el ranking aqui, es
+    una lectura de lo que el selector vio de verdad en ese corte). Por
+    cada candidata: mercado, cuota, probabilidad original/calibrada/
+    implicita, EV conservador, fiabilidad historica, contradiccion,
+    categoria, posicion y motivo de exclusion de CADA politica (v3 y la
+    candidata). Ademas, dos heuristicas simples pedidas explicitamente
+    para comparar contra el sistema completo (sin ningun filtro duro):
+    ordenar solo por probabilidad calibrada, y solo por probabilidad
+    conservadora -- usando las predicciones REALES actuales (no los
+    valores congelados en el snapshot), para que la comparacion heuristica
+    siempre refleje el estado mas reciente."""
+    from backend.app.prediction.ranking import calibrated_probability_or_fallback, conservative_probability
+
+    snapshot = (
+        db.query(SelectorDecisionSnapshot)
+        .filter(SelectorDecisionSnapshot.match_id == match_id)
+        .order_by(SelectorDecisionSnapshot.captured_at.desc())
+        .first()
+    )
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Sin corte del selector capturado todavia para este partido")
+
+    candidates = snapshot.candidates
+    predictions = {
+        p.id: p
+        for p in db.query(Prediction).filter(Prediction.id.in_([c.prediction_id for c in candidates]))
+    }
+
+    rows = [
+        {
+            "prediction_id": c.prediction_id,
+            "market": c.market,
+            "market_odds": c.market_odds,
+            "model_probability": c.model_probability,
+            "calibrated_probability": c.calibrated_probability,
+            "market_probability_implied": c.market_probability,
+            "ev_conservative": c.ev_conservative,
+            "market_track_record_value": c.market_track_record_value,
+            "market_track_record_source_level": c.market_track_record_source_level,
+            "uncertainty_width": c.uncertainty_width,
+            "category": c.category,
+            "contradiction_level": c.contradiction_level,
+            "rank_position_v3": c.rank_position,
+            "exclusion_reason_v3": c.exclusion_reason,
+            "is_selected_v3": c.is_selected,
+            "rank_position_candidate": c.rank_position_candidate,
+            "exclusion_reason_candidate": c.exclusion_reason_candidate,
+            "is_selected_candidate": c.is_selected_candidate,
+        }
+        for c in candidates
+    ]
+
+    def _heuristic_ranking(score_fn) -> list[int]:
+        scored = [
+            (c.prediction_id, score_fn(predictions[c.prediction_id]))
+            for c in candidates
+            if c.prediction_id in predictions
+        ]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return [prediction_id for prediction_id, _score in scored]
+
+    return {
+        "match_id": match_id,
+        "captured_at": snapshot.captured_at,
+        "selector_version": snapshot.selector_version,
+        "selected_prediction_id_v3": snapshot.selected_prediction_id,
+        "selected_prediction_id_candidate": snapshot.selected_prediction_id_candidate,
+        "candidates": rows,
+        "heuristics": {
+            "by_calibrated_probability_only": _heuristic_ranking(calibrated_probability_or_fallback),
+            "by_conservative_probability_only": _heuristic_ranking(conservative_probability),
+        },
+    }
+
+
 @router.get("/{prediction_id}/detail", response_model=SignalDetailOut)
 def get_prediction_detail(prediction_id: int, db: Session = Depends(get_db)) -> dict:
     """Detalle completo de una senhal (seccion 16/17): desglose
@@ -1149,8 +1349,10 @@ def get_prediction_detail(prediction_id: int, db: Session = Depends(get_db)) -> 
         raise HTTPException(status_code=404, detail="Prediccion no encontrada")
 
     settings = get_settings()
-    category = _category_for_single_prediction(db, prediction, settings)
-    serialized = serialize_prediction(prediction, category=category)
+    category, contradiction_level = _category_for_single_prediction(db, prediction, settings)
+    serialized = serialize_prediction(
+        prediction, category=category, category_status="completada", contradiction_level=contradiction_level
+    )
 
     market_key = ALL_MARKET_TO_ODDS_LOOKUP.get(prediction.market)
     metadata = prediction.features_used or {}
@@ -1195,5 +1397,7 @@ def get_prediction(prediction_id: int, db: Session = Depends(get_db)) -> dict:
     if prediction is None:
         raise HTTPException(status_code=404, detail="Prediccion no encontrada")
     settings = get_settings()
-    category = _category_for_single_prediction(db, prediction, settings)
-    return serialize_prediction(prediction, category=category)
+    category, contradiction_level = _category_for_single_prediction(db, prediction, settings)
+    return serialize_prediction(
+        prediction, category=category, category_status="completada", contradiction_level=contradiction_level
+    )

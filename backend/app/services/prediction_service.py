@@ -13,7 +13,6 @@ import pandas as pd
 from sqlalchemy.orm import Session
 
 from backend.app.config.settings import get_settings
-from backend.app.models.calibration.corners import correct_probability
 from backend.app.prediction.opportunities import assess_opportunity, confirmed_quote_age, market_probability_gap
 from backend.app.db.models.core import Competition
 from backend.app.db.models.features import TeamMatchFeatures
@@ -24,6 +23,7 @@ from backend.app.market.consensus import compute_market_consensus
 from backend.app.prediction.market_labels import DOUBLE_CHANCE_COMPONENTS
 from backend.app.prediction.predictor import (
     apply_coherent_calibration,
+    apply_corner_survival_correction,
     predict_markets_for_table,
     predict_secondary_markets_for_table,
 )
@@ -280,6 +280,7 @@ def _predict_fixture_markets(target_matches, artifact, market_quotes):
             target_matches, artifact["corners_model"], market_quotes=market_quotes,
             calibrators=artifact.get("calibrators"),
         )
+        apply_corner_survival_correction(outputs, artifact)
 
     if "coherent_calibration" in artifact:
         apply_coherent_calibration(outputs, artifact["coherent_calibration"])
@@ -322,19 +323,14 @@ def score_api_candidate(db: Session, fixtures: list[Match], now: dt.datetime, co
     if target.empty:
         return None, [], {}
     quotes = _market_quotes_for_matches({match.id: match.odds for match in fixtures})
+    # `preview` ya no cambia como se calibran los corners (auditoria
+    # v2.8.2): antes aplicaba `corner_survival` sin condicion aqui
+    # (nunca comparado contra el isotonico) y nunca lo aplicaba en el
+    # pipeline real -- ahora `_predict_fixture_markets` aplica la MISMA
+    # eleccion ya validada (ver `model_service.py::corner_calibration_choice`)
+    # en ambos casos, para que la vista previa de candidatos nunca se
+    # comporte distinto del pipeline real que luego se promociona.
     outputs = _predict_fixture_markets(target, artifact, quotes)
-    if preview:
-        params = artifact.get("corner_survival")
-        for row in outputs:
-            spec = SECONDARY_MARKET_DEFINITIONS.get(row.market)
-            if spec is None or spec.stat_family != "corners":
-                continue
-            row.calibrated_probability = (
-                float(correct_probability(row.model_probability, params, under=spec.kind == "under"))
-                if params else None
-            )
-            row.calibration_source = params["version"] if params else "original_corner_unvalidated"
-            row.uncertainty_low = row.uncertainty_high = None
     return version, outputs, quotes
 
 

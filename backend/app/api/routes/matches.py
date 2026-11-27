@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, aliased
 
-from backend.app.api.routes.predictions import serialize_prediction
+from backend.app.api.routes.predictions import _category_cache_for_predictions, _serialize_with_category_cache
 from backend.app.db.database import get_db
 from backend.app.db.models.core import Competition, Team
 from backend.app.db.models.matches import Match
@@ -299,10 +299,11 @@ def get_match_predictions(match_id: int, db: Session = Depends(get_db)) -> list[
         {match_id: predictions},
         edge_reliability_curve=fit_edge_reliability_curve(db),
     ).get(match_id)
+    category_cache = _category_cache_for_predictions(db, predictions)
     return [
-        serialize_prediction(
-            p,
-            compute_anomaly_flags(p, predictions),
+        _serialize_with_category_cache(
+            p, category_cache,
+            anomaly_flags=compute_anomaly_flags(p, predictions),
             is_best_prediction=(best is not None and p.id == best.id),
         )
         for p in predictions

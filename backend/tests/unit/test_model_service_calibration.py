@@ -16,6 +16,7 @@ import numpy as np
 
 from backend.app.services.model_service import (
     MIN_CALIBRATION_VALIDATION_SAMPLES,
+    _corner_survival_beats_isotonic,
     _fit_validated_isotonic_calibrator,
 )
 
@@ -85,3 +86,62 @@ def test_isotonic_temporal_split_does_not_break_simultaneous_kickoffs():
     assert report["n_validation"] == 10
     assert report["n_test"] == 50
     assert report["log_loss_after"] <= report["log_loss_before"]
+
+
+# `_corner_survival_beats_isotonic` (auditoria v2.8.2): antes de conectar
+# `corner_survival` al pipeline real, hay que demostrar que mejora MAS que
+# el calibrador isotonico ya validado para las mismas lineas -- nunca se
+# asume. Los reportes sinteticos aqui replican exactamente la forma real
+# de `corner_calibration[market_key]` (de `_fit_validated_isotonic_calibrator`)
+# y de `corner_survival_report` (de `validate_corner_calibration`).
+
+
+def test_corner_survival_rejected_when_isotonic_already_improves_more():
+    corner_survival = {"slope": 0.8, "intercept": -0.1}
+    # Mejora relativa de corner_survival: 0.60/0.70 ~ 0.857.
+    corner_survival_report = {
+        "original_holdout": {"log_loss": 0.70},
+        "corrected_holdout": {"log_loss": 0.60},
+    }
+    # Mejora relativa isotonic (mercado over_9_5): 0.40/0.70 ~ 0.571 -- mejor.
+    corner_calibration = {
+        "corners_over_9_5": {"accepted": True, "log_loss_before": 0.70, "log_loss_after": 0.40},
+    }
+    assert _corner_survival_beats_isotonic(
+        corner_survival, corner_survival_report, ["corners_over_9_5"], corner_calibration
+    ) is False
+
+
+def test_corner_survival_accepted_when_it_improves_more_than_isotonic():
+    corner_survival = {"slope": 0.8, "intercept": -0.1}
+    corner_survival_report = {
+        "original_holdout": {"log_loss": 0.70},
+        "corrected_holdout": {"log_loss": 0.40},  # 0.571
+    }
+    corner_calibration = {
+        "corners_over_9_5": {"accepted": True, "log_loss_before": 0.70, "log_loss_after": 0.60},  # 0.857
+    }
+    assert _corner_survival_beats_isotonic(
+        corner_survival, corner_survival_report, ["corners_over_9_5"], corner_calibration
+    ) is True
+
+
+def test_corner_survival_accepted_when_no_isotonic_market_improved_at_all():
+    corner_survival = {"slope": 0.8, "intercept": -0.1}
+    corner_survival_report = {
+        "original_holdout": {"log_loss": 0.70},
+        "corrected_holdout": {"log_loss": 0.60},
+    }
+    corner_calibration = {
+        "corners_over_9_5": {"accepted": False, "reason": "holdout_rejected"},
+        "corners_over_8_5": {"accepted": False, "reason": "insufficient_labels"},
+    }
+    assert _corner_survival_beats_isotonic(
+        corner_survival, corner_survival_report, ["corners_over_9_5", "corners_over_8_5"], corner_calibration
+    ) is True
+
+
+def test_corner_survival_rejected_when_not_itself_validated():
+    # `validate_corner_calibration` ya devolvio None -- nunca se usa,
+    # independientemente de lo que diga el isotonic.
+    assert _corner_survival_beats_isotonic(None, {"reason": "holdout_rejected"}, ["corners_over_9_5"], {}) is False

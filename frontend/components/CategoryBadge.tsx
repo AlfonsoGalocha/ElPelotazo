@@ -21,18 +21,47 @@ const TITLES: Record<OpportunityCategory, string> = {
   D: "No pasa el filtro general de calidad, o hay una contradiccion fuerte entre la probabilidad del modelo y la frecuencia historica real -- nunca deberia tratarse como una recomendacion.",
 };
 
-// `null`: el llamador no calculo la categoria (endpoints de lista -- ver
-// comentario de costes en backend/app/api/routes/predictions.py). Nunca
-// se muestra un guion como si fuera "D": null y "sin categoria" son
-// estados distintos.
-export default function CategoryBadge({ category }: { category: OpportunityCategory | null }) {
-  if (category === null) return null;
+// v2.8.2 (seccion 5): `categoryStatus` distingue "completada" (cache
+// fresca, se puede confiar en el color/etiqueta) de "desactualizada" (la
+// cuota/calibracion cambiaron desde que se capturo -- NUNCA se muestra
+// el color favorable como si siguiera vigente, se apaga a gris con un
+// aviso) y "pendiente" (nunca se capturo, p.ej. partido fuera de la
+// ventana de 48h del scheduler) -- nunca se infiere ninguna de las tres
+// a partir de `category === null` a secas.
+const PENDING_TITLE =
+  "Categoria todavia no calculada para esta señal (fuera de la ventana de captura del scheduler, o pendiente del proximo corte).";
+
+export default function CategoryBadge({
+  category,
+  categoryStatus = "completada",
+}: {
+  category: OpportunityCategory | null;
+  categoryStatus?: "completada" | "desactualizada" | "pendiente";
+}) {
+  if (category === null || categoryStatus === "pendiente") {
+    return (
+      <span
+        className="inline-block rounded border px-1.5 py-0.5 text-[9px] font-medium tracking-wide bg-slate-500/10 text-slate-500 border-slate-500/20"
+        title={PENDING_TITLE}
+      >
+        CATEGORIA PENDIENTE
+      </span>
+    );
+  }
+  const stale = categoryStatus === "desactualizada";
   return (
     <span
-      className={`inline-block rounded border px-1.5 py-0.5 text-[9px] font-medium tracking-wide ${STYLES[category]}`}
-      title={TITLES[category]}
+      className={`inline-block rounded border px-1.5 py-0.5 text-[9px] font-medium tracking-wide ${
+        stale ? "bg-slate-500/10 text-slate-400 border-slate-500/20" : STYLES[category]
+      }`}
+      title={
+        stale
+          ? `${TITLES[category]} (OJO: la cuota o la calibracion cambiaron desde que se calculo esta categoria -- puede no reflejar el estado actual.)`
+          : TITLES[category]
+      }
     >
       CATEGORIA {category}
+      {stale ? " ⚠" : ""}
     </span>
   );
 }

@@ -22,6 +22,7 @@ from backend.app.backtesting.calibration import (
     calibration_report_for_table,
     ensemble_calibration_report,
 )
+from backend.app.backtesting.calibration_audit import calibration_audit_report_as_dict
 from backend.app.backtesting.engine import run_walk_forward_backtest, summarize_backtest
 from backend.app.backtesting.ranking_comparison import (
     compare_ranking_strategies,
@@ -636,6 +637,38 @@ def capture_selector_decisions_cmd() -> None:
     with session_scope() as db:
         count = capture_selector_decisions(db)
     typer.echo(f"[capture-selector-decisions] {count} snapshots nuevos registrados")
+
+
+@app.command("selector-funnel-report")
+def selector_funnel_report_cmd(output: str | None = None) -> None:
+    """v2.8.2 (seccion 6 del pedido): embudo real de seleccion sobre el
+    snapshot mas reciente de cada partido ya capturado (ver
+    services/selector_decision_service.py::funnel_report) -- motivos
+    ACUMULADOS (la cascada real que vio el selector) vs INDIVIDUALES
+    (todos los que aplicarian a la vez). Puramente diagnostico, nunca
+    relaja ningun umbral."""
+    from backend.app.services.selector_decision_service import funnel_report
+
+    init_db()
+    with session_scope() as db:
+        report_data = funnel_report(db)
+
+    typer.echo(
+        f"[selector-funnel-report] {report_data['n_matches']} partidos, "
+        f"{report_data['n_candidates_total']} candidatas, "
+        f"{report_data['n_passed_all_checks']} pasan TODOS los requisitos"
+    )
+    typer.echo("  Motivo ACUMULADO (primero que bloquea cada candidata):")
+    for reason, n in sorted(report_data["accumulated_reasons"].items(), key=lambda kv: -kv[1]):
+        typer.echo(f"    {reason}: {n}")
+    typer.echo("  Motivo INDIVIDUAL (todos los que aplicarian, independientemente del orden):")
+    for reason, n in sorted(report_data["individual_reasons"].items(), key=lambda kv: -kv[1]):
+        typer.echo(f"    {reason}: {n}")
+
+    output_path = Path(output) if output else REPO_ROOT / "data" / "processed" / "selector_funnel_report.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report_data, indent=2, default=str))
+    typer.echo(f"[selector-funnel-report] informe completo escrito en {output_path}")
 
 
 @app.command("bot-decision")
@@ -1261,6 +1294,45 @@ def ensemble_calibration_report_cmd(
     typer.echo(f"[ensemble-calibration-report] informe completo escrito en {output_path}")
 
 
+@app.command("calibration-audit-report")
+def calibration_audit_report_cmd(
+    competition: str | None = typer.Option(None),
+    market: str | None = typer.Option(None),
+    output: str | None = None,
+) -> None:
+    """Auditoria de sobreconfianza/infraconfianza (v2.8.2, seccion 2):
+    desglosa Brier/log loss/frecuencia real por rango de probabilidad
+    (50-60/60-70/70-80/80-90/90-100%), comparando probabilidad ORIGINAL
+    contra CALIBRADA por separado, usando SOLO predicciones genuinamente
+    pre-partido (mismo filtro que `/models/performance`, ver
+    `backtesting/calibration_audit.py`). Puramente diagnostico: no cambia
+    nada del pipeline de produccion."""
+    init_db()
+    with session_scope() as db:
+        report_data = calibration_audit_report_as_dict(db, competition_code=competition, market=market)
+
+    n_segments = len(report_data["segments"])
+    typer.echo(
+        f"[calibration-audit-report] {n_segments} segmentos, "
+        f"{report_data['n_predictions_considered']} predicciones pre-partido consideradas"
+    )
+    for segment in report_data["segments"]:
+        for bucket in segment["buckets"]:
+            if bucket["classification"] in ("sobreconfianza", "infraconfianza"):
+                typer.echo(
+                    f"  {segment['competition_code']}/{segment['market']} "
+                    f"[{bucket['probability_column']}] {bucket['probability_range']}: "
+                    f"{bucket['classification']} (predicho={bucket['mean_predicted_probability']:.3f}, "
+                    f"real={bucket['empirical_frequency']:.3f}, n={bucket['n']}, "
+                    f"violaciones_monotonicidad={bucket['n_with_monotonicity_violation']})"
+                )
+
+    output_path = Path(output) if output else REPO_ROOT / "data" / "processed" / "calibration_audit_report.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(report_data, indent=2, default=str))
+    typer.echo(f"[calibration-audit-report] informe completo escrito en {output_path}")
+
+
 @app.command()
 def detect_drift(
     competition: str, current_window: int = 50, output: str | None = None
@@ -1442,6 +1514,13 @@ def compare_ranking_strategies_walk_forward_cmd(
     historica real exigida) -- corre esto contra tu BD real para
     confirmar con datos de verdad que mejora ROI/win-rate/Brier frente a
     v2.
+
+    Incluye tambien `v4_contradiction_aware` (v2.8.2, seccion 4 del
+    pedido): mismo candidate pool que v3 MAS la exclusion de
+    contradiccion FUERTE (`prediction/anomaly.py::classify_contradiction`,
+    con evidencia real previa al partido, sin leakage). NUNCA activada en
+    produccion solo por esto -- esta comparacion es exactamente la
+    evidencia que decide si excluir FUERTE mejora algo fuera de muestra.
     """
     init_db()
     with session_scope() as db:

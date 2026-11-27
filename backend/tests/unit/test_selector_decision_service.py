@@ -32,10 +32,13 @@ from backend.app.db.models.modeling import (
     SelectorDecisionCandidate,
     SelectorDecisionSnapshot,
 )
+import backend.app.services.selector_decision_service as selector_decision_service
 from backend.app.services.selector_decision_service import (
     MIN_RECAPTURE_INTERVAL_MINUTES,
     capture_selector_decisions,
+    evaluate_policy_comparison,
     evaluate_selector_decisions,
+    funnel_report,
 )
 
 _seq = itertools.count(1)
@@ -132,6 +135,87 @@ def test_captura_crea_un_snapshot_con_una_candidata_por_prediccion(db_session):
         assert candidate.exclusion_reason is None
         assert candidate.is_selected is True
         assert snapshot.selected_prediction_id == prediction.id
+
+
+def test_captura_rellena_los_campos_nuevos_de_la_politica_candidata(db_session):
+    """v2.8.2 (seccion 7/8 del pedido): la captura debe registrar, para la
+    MISMA candidata, tanto el resultado de v3 (ya existia) como el de la
+    politica candidata (`rank_position_candidate`/`exclusion_reason_
+    candidate`/`is_selected_candidate`) y los campos de comparacion
+    (`model_probability`/`market_odds`/`market_probability`/
+    `contradiction_level`). Mismo criterio que el test de arriba: no se
+    asume que rama ocurre (depende del track record acumulado en la
+    suite completa), solo que es INTERNAMENTE consistente."""
+    db = db_session
+    now = dt.datetime.utcnow()
+    comp = _competition(db)
+    mv = _model_version(db)
+    match = _match(db, comp.id, now + dt.timedelta(hours=2))
+    prediction = _v3_eligible_prediction(db, match.id, mv.id, now)
+
+    capture_selector_decisions(db, now=now)
+
+    snapshot = db.query(SelectorDecisionSnapshot).filter_by(match_id=match.id, captured_at=now).one()
+    candidate = db.query(SelectorDecisionCandidate).filter_by(snapshot_id=snapshot.id).one()
+
+    assert candidate.model_probability == prediction.model_probability
+    assert candidate.market_odds == prediction.market_odds
+    assert candidate.market_probability == prediction.market_probability
+    assert candidate.contradiction_level is not None
+
+    if candidate.rank_position_candidate is None:
+        assert candidate.exclusion_reason_candidate is not None
+        assert candidate.is_selected_candidate is False
+        assert snapshot.selected_prediction_id_candidate is None
+    else:
+        assert candidate.rank_position_candidate == 1
+        assert candidate.exclusion_reason_candidate is None
+        assert candidate.is_selected_candidate is True
+        assert snapshot.selected_prediction_id_candidate == prediction.id
+
+
+def test_captura_excluye_por_contradiccion_fuerte_en_la_politica_candidata_pero_no_en_v3(db_session, monkeypatch):
+    """Aislamiento del caso real que motivo la politica candidata: con
+    `classify_contradiction` forzada a devolver FUERTE, v3 sigue
+    incluyendo la señal (nunca mira contradiccion) pero la candidata la
+    excluye con `STRONG_CONTRADICTION` -- sin depender de construir
+    evidencia historica real, que ya se prueba por separado en
+    `test_ranking_comparison.py`."""
+    import backend.app.services.selector_decision_service as svc
+    from backend.app.prediction.anomaly import ContradictionLevel
+    from backend.app.services.evaluation_service import TrackRecordEstimate
+
+    monkeypatch.setattr(svc, "classify_contradiction", lambda prediction, evidence: ContradictionLevel.FUERTE)
+
+    db = db_session
+    now = dt.datetime.utcnow()
+    comp = _competition(db)
+    mv = _model_version(db)
+    match = _match(db, comp.id, now + dt.timedelta(hours=2))
+    prediction = _v3_eligible_prediction(db, match.id, mv.id, now)
+
+    # Fiabilidad historica resuelta a mano (nunca 30 filas reales solo
+    # para este aislamiento): lo que se prueba aqui es la distincion
+    # v3-vs-candidata ante contradiccion FUERTE, no la fiabilidad
+    # jerarquica (ya probada aparte en evaluation_service).
+    monkeypatch.setattr(
+        svc, "market_track_records_with_provenance",
+        lambda db: {(comp.code, "over_2_5"): TrackRecordEstimate(value=0.65, source_level="competition_market", n_observations=50)},
+    )
+
+    capture_selector_decisions(db, now=now)
+
+    snapshot = db.query(SelectorDecisionSnapshot).filter_by(match_id=match.id, captured_at=now).one()
+    candidate = db.query(SelectorDecisionCandidate).filter_by(snapshot_id=snapshot.id).one()
+    assert candidate.contradiction_level == "FUERTE"
+    assert candidate.exclusion_reason_candidate == "contradiccion_fuerte"
+    assert candidate.is_selected_candidate is False
+    assert snapshot.selected_prediction_id_candidate is None
+    # v3 nunca mira contradiccion: con la fiabilidad ya resuelta a mano,
+    # sigue incluyendo la señal.
+    assert candidate.rank_position == 1
+    assert candidate.is_selected is True
+    assert snapshot.selected_prediction_id == prediction.id
 
 
 def test_captura_es_idempotente_dentro_del_intervalo_de_recaptura(db_session):
@@ -249,6 +333,167 @@ def _settled_snapshot(db, selected_won: bool, other_won: bool) -> SelectorDecisi
     ))
     db.flush()
     return snapshot
+
+
+def _build_snapshot_for_policy_comparison(db, kickoff: dt.datetime, candidates_spec: list[dict]) -> SelectorDecisionSnapshot:
+    """Snapshot construido a mano (como `_settled_snapshot`) pero con
+    control explicito de AMBAS politicas por candidata -- usado solo por
+    los tests de `evaluate_policy_comparison` (v2.8.2, seccion 8)."""
+    comp = _competition(db)
+    mv = _model_version(db)
+    match = _match(db, comp.id, kickoff, status="finished", home_goals=1, away_goals=1)
+
+    selected_v3_id = None
+    selected_candidate_id = None
+    built: list[tuple[Prediction, dict]] = []
+    for spec in candidates_spec:
+        pred = _v3_eligible_prediction(
+            db, match.id, mv.id, kickoff, market=spec["market"], selection=spec.get("selection", "over"),
+            market_odds=spec.get("market_odds", 1.5),
+        )
+        db.add(PredictionResult(prediction_id=pred.id, outcome=spec["outcome"], settled_at=kickoff + dt.timedelta(hours=2)))
+        db.flush()
+        if spec.get("is_selected"):
+            selected_v3_id = pred.id
+        if spec.get("is_selected_candidate"):
+            selected_candidate_id = pred.id
+        built.append((pred, spec))
+
+    snapshot = SelectorDecisionSnapshot(
+        match_id=match.id, captured_at=kickoff - dt.timedelta(hours=2), selector_version="v3_probability_first",
+        min_opportunity_odds=1.35, max_opportunity_odds=1.90,
+        selected_prediction_id=selected_v3_id, selected_prediction_id_candidate=selected_candidate_id,
+    )
+    db.add(snapshot)
+    db.flush()
+    for pred, spec in built:
+        db.add(SelectorDecisionCandidate(
+            snapshot_id=snapshot.id, prediction_id=pred.id, market=spec["market"],
+            model_probability=spec.get("model_probability", 0.70),
+            calibrated_probability=spec.get("calibrated_probability", 0.70),
+            market_odds=spec.get("market_odds", 1.5), market_probability=spec.get("market_probability", 0.55),
+            ev_conservative=0.02, market_track_record_value=0.6,
+            market_track_record_source_level="competition_market", uncertainty_width=0.04,
+            data_quality=0.8, edge=0.10, category=spec.get("category", "A"),
+            contradiction_level=spec.get("contradiction_level", "SIN_CONTRADICCION"),
+            rank_position=spec.get("rank_position"), exclusion_reason=spec.get("exclusion_reason"),
+            is_selected=spec.get("is_selected", False),
+            rank_position_candidate=spec.get("rank_position_candidate"),
+            exclusion_reason_candidate=spec.get("exclusion_reason_candidate"),
+            is_selected_candidate=spec.get("is_selected_candidate", False),
+        ))
+    db.flush()
+    return snapshot
+
+
+def test_policy_comparison_reports_insufficient_sample_below_threshold(db_session):
+    """Pedido explicito: nunca declarar una politica mejor con muestra
+    pequeña -- con 1 sola seleccion liquidada por politica, ambas deben
+    quedar `insufficient_sample=True` y el mensaje debe decirlo."""
+    db = db_session
+    kickoff = dt.datetime.utcnow() - dt.timedelta(days=1)
+    _build_snapshot_for_policy_comparison(db, kickoff, [
+        {"market": "over_2_5", "outcome": True, "rank_position": 1, "is_selected": True,
+         "rank_position_candidate": 1, "is_selected_candidate": True},
+    ])
+
+    report = evaluate_policy_comparison(db)
+
+    assert report.v3.insufficient_sample is True
+    assert report.candidate.insufficient_sample is True
+    assert "insuficiente" in report.note.lower()
+
+
+def test_policy_comparison_distinguishes_policies_when_they_pick_differently(db_session, monkeypatch):
+    """v3 elige A (pierde, cuota 1.5); la candidata excluye A (contradiccion)
+    y elige B (gana, cuota 2.0) -- top1/ROI deben reflejar esa diferencia
+    real, y la distribucion de mercados/contradiccion debe registrar lo
+    que cada politica elegio de verdad."""
+    monkeypatch.setattr(selector_decision_service, "MIN_SETTLED_FOR_POLICY_COMPARISON", 1)
+    db = db_session
+    kickoff = dt.datetime.utcnow() - dt.timedelta(days=1)
+    _build_snapshot_for_policy_comparison(db, kickoff, [
+        {"market": "over_2_5", "outcome": False, "rank_position": 1, "is_selected": True,
+         "market_odds": 1.5, "exclusion_reason_candidate": "contradiccion_fuerte",
+         "contradiction_level": "FUERTE"},
+        {"market": "btts", "selection": "yes", "outcome": True, "rank_position": 2,
+         "rank_position_candidate": 1, "is_selected_candidate": True, "market_odds": 2.0,
+         "contradiction_level": "SIN_CONTRADICCION"},
+    ])
+
+    report = evaluate_policy_comparison(db)
+
+    assert report.v3.top1_win_rate == 0.0
+    assert report.candidate.top1_win_rate == 1.0
+    assert report.v3.roi_flat_stake == -1.0
+    assert report.candidate.roi_flat_stake == 1.0  # cuota 2.0, gano -> pnl=+1.0
+    assert report.v3.market_distribution == {"over_2_5": 1}
+    assert report.candidate.market_distribution == {"btts": 1}
+    assert report.candidate.contradiction_distribution == {"SIN_CONTRADICCION": 1}
+
+
+def test_policy_comparison_top3_hit_rate_can_exceed_top1_win_rate(db_session, monkeypatch):
+    """La seleccionada (posicion 1) pierde, pero la posicion 3 (peor
+    posicionada, NUNCA mostrada como "la" oportunidad) gana -- el acierto
+    Top-3 debe reflejarlo aunque el Top-1 sea 0."""
+    monkeypatch.setattr(selector_decision_service, "MIN_SETTLED_FOR_POLICY_COMPARISON", 1)
+    db = db_session
+    kickoff = dt.datetime.utcnow() - dt.timedelta(days=1)
+    _build_snapshot_for_policy_comparison(db, kickoff, [
+        {"market": "over_2_5", "outcome": False, "rank_position": 1, "is_selected": True},
+        {"market": "btts", "selection": "yes", "outcome": False, "rank_position": 2},
+        {"market": "under_2_5", "selection": "under", "outcome": True, "rank_position": 3},
+    ])
+
+    report = evaluate_policy_comparison(db)
+
+    assert report.v3.top1_win_rate == 0.0
+    assert report.v3.top3_hit_rate == 1.0
+
+
+def test_funnel_report_counts_accumulated_and_individual_reasons(db_session):
+    """v2.8.2 (seccion 6): una candidata sin calibracion debe aparecer en
+    AMBOS conteos (acumulado -- es el motivo real que la bloqueo -- e
+    individual -- sigue aplicando, independientemente del orden)."""
+    db = db_session
+    now = dt.datetime.utcnow()
+    comp = _competition(db)
+    mv = _model_version(db)
+    match = _match(db, comp.id, now + dt.timedelta(hours=2))
+    _v3_eligible_prediction(db, match.id, mv.id, now, calibrated_probability=None)
+
+    capture_selector_decisions(db, now=now)
+    report = funnel_report(db, now=now)
+
+    assert report["n_matches"] >= 1
+    assert report["n_candidates_total"] >= 1
+    assert report["accumulated_reasons"].get("calibracion_no_disponible", 0) >= 1
+    assert report["individual_reasons"].get("calibracion_no_disponible", 0) >= 1
+
+
+def test_funnel_report_only_uses_the_latest_snapshot_per_match(db_session):
+    """Dos capturas del MISMO partido (pasado el intervalo de recaptura),
+    la segunda con una candidata MAS que la primera (una prediccion
+    nueva) -- el conteo global debe subir en 1 (solo lo que aporta el
+    snapshot MAS RECIENTE), nunca en 2 (que pasaria si se sumaran ambos
+    snapshots del mismo partido)."""
+    db = db_session
+    now = dt.datetime.utcnow()
+    comp = _competition(db)
+    mv = _model_version(db)
+    match = _match(db, comp.id, now + dt.timedelta(hours=5))
+    _v3_eligible_prediction(db, match.id, mv.id, now, market="over_2_5")
+
+    capture_selector_decisions(db, now=now)
+    before = funnel_report(db, now=now)["n_candidates_total"]
+
+    _v3_eligible_prediction(db, match.id, mv.id, now, market="btts", selection="yes")
+    later = now + dt.timedelta(minutes=MIN_RECAPTURE_INTERVAL_MINUTES + 1)
+    capture_selector_decisions(db, now=later)
+
+    assert db.query(SelectorDecisionSnapshot).filter_by(match_id=match.id).count() == 2
+    after = funnel_report(db, now=later)["n_candidates_total"]
+    assert after - before == 1
 
 
 def test_evaluate_reporta_pendiente_cuando_el_partido_aun_no_liquida(db_session):

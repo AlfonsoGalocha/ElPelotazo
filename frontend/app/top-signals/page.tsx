@@ -7,6 +7,7 @@ import { isInternationalCompetition } from "@/lib/internationalCompetitions";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import MarketQualityBadge from "@/components/MarketQualityBadge";
 import AnomalyBadges from "@/components/AnomalyBadge";
+import CategoryBadge from "@/components/CategoryBadge";
 import { EmptyState } from "@/components/EmptyState";
 import CandidateOpportunities from "@/components/CandidateOpportunities";
 
@@ -502,7 +503,10 @@ export default async function TopSignalsPage({
                   </div>
                 </td>
                 <td className="px-3 py-2">
-                  <MarketQualityBadge quality={p.market_quality} />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <MarketQualityBadge quality={p.market_quality} />
+                    <CategoryBadge category={p.category} categoryStatus={p.category_status} />
+                  </div>
                 </td>
                 <td className="px-3 py-2 text-slate-400">
                   {p.reliability ? (

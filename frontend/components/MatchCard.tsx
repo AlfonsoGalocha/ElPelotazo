@@ -8,6 +8,7 @@ import CompetitionBadge from "./CompetitionBadge";
 import SignalBadge from "./SignalBadge";
 import MarketQualityBadge from "./MarketQualityBadge";
 import AnomalyBadges from "./AnomalyBadge";
+import CategoryBadge from "./CategoryBadge";
 
 // Tarjeta de partido del rediseño ("Mejores oportunidades", cambio de
 // filosofia del ranking): escudos de ambos equipos, competicion+jornada,
@@ -107,6 +108,7 @@ export default function MatchCard({ prediction }: { prediction: Prediction }) {
           )}
           <MarketQualityBadge quality={prediction.market_quality} />
           <AnomalyBadges flags={prediction.anomaly_flags} />
+          <CategoryBadge category={prediction.category} categoryStatus={prediction.category_status} />
         </div>
         <span className="flex items-center gap-1 text-xs font-medium text-accent opacity-0 transition-opacity group-hover:opacity-100">
           Análisis completo

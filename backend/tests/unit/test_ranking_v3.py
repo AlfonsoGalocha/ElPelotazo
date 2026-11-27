@@ -20,6 +20,7 @@ from backend.app.prediction.ranking import (
     calibrated_probability_or_fallback,
     conservative_probability,
     ev_with_probability,
+    evaluate_all_gate_reasons_v3,
     evaluate_quality_gate_v3,
     rank_signals_v3,
     ranking_key_v3,
@@ -434,3 +435,57 @@ def test_fresh_prediction_does_not_make_unknown_or_future_odds_fresh():
 def test_main_opportunities_require_calibration_and_interval():
     assert evaluate_quality_gate_v3(_prediction(calibrated_probability=None)) is ExclusionReason.NO_CALIBRATION
     assert evaluate_quality_gate_v3(_prediction(uncertainty_low=None)) is ExclusionReason.NO_UNCERTAINTY
+
+
+# `evaluate_all_gate_reasons_v3` (v2.8.2, seccion 6 del pedido): embudo
+# real -- motivo ACUMULADO (cascada, igual que `evaluate_quality_gate_v3`)
+# vs motivos INDIVIDUALES (todos los que aplicarian).
+
+
+def test_all_gate_reasons_is_empty_when_everything_passes():
+    prediction = _prediction()
+    assert evaluate_all_gate_reasons_v3(prediction, market_track_record=0.6) == []
+    assert evaluate_quality_gate_v3(prediction, market_track_record=0.6) is None
+
+
+def test_first_individual_reason_always_matches_the_accumulated_reason():
+    """El motivo acumulado (lo que ya devuelve/guarda `evaluate_quality_
+    gate_v3`) debe ser siempre `reasons[0]` -- nunca un motivo distinto
+    ni reordenado."""
+    strict_quality = Settings(min_data_quality=0.5)  # por defecto min_data_quality=0.0 (sin filtro adicional)
+    cases = [
+        (_prediction(market_odds=None, market_probability=None), None),
+        (_prediction(market_odds=5.0), None),
+        (_prediction(bookmakers_used=0), None),
+        (_prediction(data_quality=0.1), strict_quality),
+        (_prediction(odds_origin_at=None), None),
+        (_prediction(calibrated_probability=None), None),
+        (_prediction(uncertainty_low=None), None),
+        (_prediction(market_odds=1.01), None),  # EV estimado/conservador negativos a esa cuota
+    ]
+    for prediction, settings in cases:
+        accumulated = evaluate_quality_gate_v3(prediction, settings, market_track_record=0.6)
+        individual = evaluate_all_gate_reasons_v3(prediction, settings, market_track_record=0.6)
+        assert individual, f"caso sin ningun motivo: {prediction}"
+        assert individual[0] == accumulated
+
+
+def test_individual_reasons_is_a_superset_that_surfaces_everything_wrong_at_once():
+    """Una candidata con VARIOS problemas a la vez (cuota fuera de banda,
+    pocas casas, sin calibracion) debe llevarlos TODOS en la lista
+    individual, aunque `evaluate_quality_gate_v3` solo reporte el primero
+    -- el pedido explicito es poder ver "cuanto pesa cada motivo", no solo
+    el primero que bloquea."""
+    prediction = _prediction(market_odds=5.0, bookmakers_used=0, calibrated_probability=None)
+    accumulated = evaluate_quality_gate_v3(prediction, market_track_record=0.6)
+    individual = evaluate_all_gate_reasons_v3(prediction, market_track_record=0.6)
+
+    assert individual[0] == accumulated == ExclusionReason.ODDS_OUTSIDE_OPPORTUNITY_BAND
+    assert ExclusionReason.INSUFFICIENT_BOOKMAKERS in individual
+    assert ExclusionReason.NO_CALIBRATION in individual
+
+
+def test_individual_reasons_includes_insufficient_track_record_independently():
+    prediction = _prediction()
+    individual = evaluate_all_gate_reasons_v3(prediction, market_track_record=None)
+    assert individual == [ExclusionReason.INSUFFICIENT_TRACK_RECORD]

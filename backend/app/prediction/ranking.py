@@ -57,6 +57,13 @@ class ExclusionReason(str, Enum):
     INSUFFICIENT_TRACK_RECORD = (
         "fiabilidad_historica_insuficiente"  # sin track record real para (competicion, mercado)
     )
+    # --- politica candidata consciente de contradicciones (v2.8.2, seccion
+    # 4 del pedido) -- NUNCA usado por `evaluate_quality_gate_v3`, solo por
+    # `candidate_policy.py::evaluate_quality_gate_candidate`. Contradiccion
+    # MODERADA/EVIDENCIA_INSUFICIENTE nunca excluyen por si solas (pedido
+    # explicito: no bloquear en bloque falta de evidencia ni contradiccion
+    # moderada) -- solo FUERTE.
+    STRONG_CONTRADICTION = "contradiccion_fuerte"
 
 
 @dataclass
@@ -721,6 +728,68 @@ def evaluate_quality_gate_v3(
         return ExclusionReason.INSUFFICIENT_TRACK_RECORD
 
     return None
+
+
+def evaluate_all_gate_reasons_v3(
+    prediction: Prediction,
+    settings: Settings | None = None,
+    market_track_record: float | None = None,
+    now: dt.datetime | None = None,
+) -> list[ExclusionReason]:
+    """Embudo real de seleccion (v2.8.2, seccion 6 del pedido): igual que
+    `evaluate_quality_gate_v3`, pero SIN cortar en el primer motivo que
+    falla -- devuelve TODOS los que aplicarian. Distincion explicita
+    pedida: el motivo ACUMULADO (lo que ya devuelve/guarda
+    `evaluate_quality_gate_v3`/`selector_decision_candidates`, "cascada":
+    el primero que bloquea) es siempre `reasons[0]` de esta lista (mismo
+    orden de comprobacion, nunca reordenado); el resto son motivos
+    INDIVIDUALES que tambien fallarian, independientemente de cual se
+    comprobara primero -- utiles para saber si, p.ej., "calibracion
+    ausente" domina un mercado entero incluso para las candidatas que YA
+    se excluyeron antes por otro motivo.
+
+    Lista vacia = la candidata pasa TODO (igual que `evaluate_quality_gate_v3`
+    devolviendo `None`)."""
+    settings = settings or get_settings()
+    reasons: list[ExclusionReason] = []
+
+    if prediction.market_odds is None or prediction.market_probability is None:
+        reasons.append(ExclusionReason.NO_MARKET)
+    elif (
+        prediction.market_odds < settings.min_opportunity_odds
+        or prediction.market_odds > settings.max_opportunity_odds
+    ):
+        reasons.append(ExclusionReason.ODDS_OUTSIDE_OPPORTUNITY_BAND)
+    if (prediction.bookmakers_used or 0) < settings.min_bookmakers:
+        reasons.append(ExclusionReason.INSUFFICIENT_BOOKMAKERS)
+    if prediction.data_quality < settings.min_data_quality:
+        reasons.append(ExclusionReason.LOW_DATA_QUALITY)
+    freshness = _odds_freshness_exclusion(
+        prediction, settings.max_odds_age_minutes or settings.opportunity_max_odds_age_minutes, now=now
+    )
+    if freshness is not None:
+        reasons.append(freshness)
+
+    if prediction.calibrated_probability is None:
+        reasons.append(ExclusionReason.NO_CALIBRATION)
+    if prediction.uncertainty_low is None or prediction.uncertainty_high is None:
+        reasons.append(ExclusionReason.NO_UNCERTAINTY)
+
+    if prediction.market_odds is not None:
+        calibrated = calibrated_probability_or_fallback(prediction)
+        ev_estimated = ev_with_probability(calibrated, prediction.market_odds)
+        if ev_estimated is None or ev_estimated <= 0.0:
+            reasons.append(ExclusionReason.NON_POSITIVE_ESTIMATED_EV)
+
+        conservative = conservative_probability(prediction)
+        ev_conservative = ev_with_probability(conservative, prediction.market_odds)
+        if ev_conservative is None or ev_conservative <= 0.0:
+            reasons.append(ExclusionReason.NON_POSITIVE_CONSERVATIVE_EV)
+
+    if market_track_record is None:
+        reasons.append(ExclusionReason.INSUFFICIENT_TRACK_RECORD)
+
+    return reasons
 
 
 def ranking_key_v3(prediction: Prediction, market_track_record: float) -> tuple[float, float, float, float, float, float]:

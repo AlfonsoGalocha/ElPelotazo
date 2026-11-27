@@ -105,12 +105,22 @@ class PredictionOut(BaseModel):
     # especifica").
     reliability: ReliabilityOut | None = None
     # Fase D (revision v2.8): "A+"|"A"|"B"|"C"|"D" (ver
-    # prediction/opportunity_category.py). `None` en los endpoints de
-    # LISTA (demasiado costoso calcularla para cientos de predicciones a
-    # la vez sin cache todavia -- ver comentario de costes en
-    # api/routes/predictions.py::serialize_prediction); solo se calcula
-    # hoy en los endpoints de una sola prediccion.
+    # prediction/opportunity_category.py). v2.8.2 (seccion 5) la rellena
+    # tambien en los endpoints de LISTA, desde la cache de
+    # `selector_decision_candidates` (nunca se recalcula al vuelo para
+    # una lista -- ver api/routes/predictions.py::_category_cache_for_predictions).
     category: str | None = None
+    # "completada" (vino de un corte capturado y sigue vigente),
+    # "desactualizada" (la cuota/calibracion ya cambiaron desde que se
+    # capturo -- `category` puede no reflejar la realidad actual) o
+    # "pendiente" (nunca se capturo, p.ej. fuera de la ventana de 48h).
+    # Nunca se muestra `category` como favorable sin mirar este campo.
+    category_status: str = "pendiente"
+    # Nivel crudo de `ContradictionLevel` (prediction/anomaly.py) que
+    # produjo `category` -- "SIN_CONTRADICCION"|"LEVE"|"MODERADA"|
+    # "FUERTE"|"EVIDENCIA_INSUFICIENTE", o `None` si `category` tambien
+    # es `None`.
+    contradiction_level: str | None = None
 
     model_config = {"from_attributes": True}
 

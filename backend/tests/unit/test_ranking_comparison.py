@@ -14,6 +14,7 @@ import datetime as dt
 
 from backend.app.backtesting.ranking_comparison import (
     V3_STRATEGY_NAME,
+    V4_STRATEGY_NAME,
     WALK_FORWARD_STRATEGIES,
     compare_ranking_strategies,
     compare_ranking_strategies_walk_forward,
@@ -453,3 +454,102 @@ def test_compare_ranking_strategies_walk_forward_track_record_never_sees_future_
 
     v3_slices = [s for s in report.slices if s.strategy == V3_STRATEGY_NAME]
     assert not v3_slices or all(s.n_bets == 0 for s in v3_slices)
+
+
+# `V4_STRATEGY_NAME` ("v4_contradiction_aware", v2.8.2 seccion 4): mismo
+# candidate pool que v3 MAS la exclusion de contradiccion FUERTE -- caso
+# real que motivo esto (Stuttgart-Frankfurt, `over_3_5`): v3 elige una
+# señal cuya probabilidad calibrada contradice fuertemente la frecuencia
+# historica real de esos dos equipos.
+
+
+def _seed_evidence_history(db, team_id: int, opponent_base: int, season_id: int, before: dt.datetime, n: int = 10) -> None:
+    """`n` partidos reales, TOTAL de goles muy bajo (1), para que
+    `build_market_evidence` encuentre una frecuencia real de "over_3_5"
+    de 0 -- evidencia inequivoca con la que contradecir una probabilidad
+    calibrada alta."""
+    for i in range(n):
+        db.add(
+            Match(
+                provider="wf-v4-evidence-history", provider_id=f"wf-v4-hist-{team_id}-{i}",
+                competition_id=1, season_id=season_id,
+                kickoff_utc=before - dt.timedelta(days=(n - i) * 3),
+                home_team_id=team_id, away_team_id=opponent_base + i,
+                status="finished", home_goals=1, away_goals=0,
+            )
+        )
+    db.flush()
+
+
+def _seed_fuerte_contradiction_target(db, competition_code: str, kickoff: dt.datetime) -> Prediction:
+    """Mismo patron que `_seed_v3_eligible_target`, pero para `over_3_5`
+    con historia real previa (ver `_seed_evidence_history`) que
+    contradice FUERTEMENTE una probabilidad calibrada de 0.95."""
+    COMPETITIONS.setdefault(competition_code, (competition_code, "Testland"))
+    comp = Competition(code=competition_code, name=competition_code, country="Testland")
+    db.add(comp)
+    db.flush()
+    season_id = comp.id * 1000 + 777  # unico por test, sin colisionar con otras filas del fichero
+    db.add(Season(competition_id=comp.id, label="2024-2025"))
+    model_version = ModelVersion(
+        name="wf-v4-target", version="v1", market_family="goals",
+        features=[], hyperparameters={}, metrics={}, dataset_version="test",
+    )
+    db.add(model_version)
+    db.flush()
+
+    home_team_id, away_team_id = 93001, 93002
+    _seed_evidence_history(db, home_team_id, 94001, season_id, kickoff)
+    _seed_evidence_history(db, away_team_id, 94101, season_id, kickoff)
+
+    match = Match(
+        provider="wf_v4_target_test", provider_id=f"wf-v4-target-{competition_code}",
+        competition_id=comp.id, season_id=season_id, kickoff_utc=kickoff,
+        home_team_id=home_team_id, away_team_id=away_team_id, status="finished",
+        home_goals=2, away_goals=2,
+    )
+    db.add(match)
+    db.flush()
+    prediction = Prediction(
+        match_id=match.id, market="over_3_5", line=3.5, selection="over",
+        model_version_id=model_version.id, model_probability=0.72, calibrated_probability=0.95,
+        uncertainty_low=0.93, uncertainty_high=0.97, fair_odds=1 / 0.95,
+        market_probability=0.55, market_odds=1.5, bookmakers_used=3,
+        confidence=0.8, data_quality=0.8, explanation={}, features_used={},
+        odds_origin_at=kickoff - dt.timedelta(minutes=20),
+        created_at=kickoff - dt.timedelta(minutes=15),
+    )
+    db.add(prediction)
+    db.flush()
+    db.add(
+        PredictionResult(prediction_id=prediction.id, outcome=True, settled_at=kickoff + dt.timedelta(hours=2))
+    )
+    db.flush()
+    return prediction
+
+
+def test_compare_ranking_strategies_walk_forward_v4_excludes_strong_contradiction_v3_keeps_it():
+    """El caso real que motivo la politica candidata: v3 (solo probabilidad/
+    EV/fiabilidad) incluye la señal; v4 (misma base + contradiccion) la
+    excluye por `STRONG_CONTRADICTION`, usando evidencia real anterior al
+    partido (sin leakage: `build_market_evidence` filtra por
+    `kickoff_utc <` el partido evaluado)."""
+    target_kickoff = dt.datetime(2024, 6, 1)
+    backup_kickoffs = [target_kickoff - dt.timedelta(days=d) for d in range(5, 5 + 35)]
+
+    with session_scope() as db:
+        _seed_backup_settlements(db, "wf-v4-hierarchy-backup", "over_3_5", backup_kickoffs)
+        target = _seed_fuerte_contradiction_target(db, "wf-v4-hierarchy-target", target_kickoff)
+        target_id = target.id
+
+    with session_scope() as db:
+        target = db.get(Prediction, target_id)
+        settled = _filler_pairs(30, target_kickoff - dt.timedelta(days=90)) + [
+            (target, target.result, target_kickoff)
+        ]
+        report = compare_ranking_strategies_walk_forward(settled, min_train_n=30, db=db)
+
+    v3_slices = [s for s in report.slices if s.strategy == V3_STRATEGY_NAME]
+    v4_slices = [s for s in report.slices if s.strategy == V4_STRATEGY_NAME]
+    assert v3_slices and any(s.n_bets == 1 for s in v3_slices)
+    assert not v4_slices or all(s.n_bets == 0 for s in v4_slices)

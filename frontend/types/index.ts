@@ -175,16 +175,20 @@ export interface Prediction {
   // fuera especifico de esta competicion exacta (ver
   // backend/app/services/evaluation_service.py::TrackRecordEstimate).
   reliability: PredictionReliability | null;
-  // Fase D (revision v2.8): categoria determinista A+/A/B/C/D (ver
-  // backend/app/prediction/opportunity_category.py). `null` en los
-  // endpoints de LISTA (demasiado costoso calcularla para cientos de
-  // predicciones a la vez sin cache todavia); solo viene poblada en el
-  // detalle de una sola prediccion (`/predictions/{id}`,
-  // `/predictions/{id}/detail`).
+  // Fase D (revision v2.8), rellena tambien en listas desde v2.8.2
+  // (seccion 5): categoria determinista A+/A/B/C/D (ver
+  // backend/app/prediction/opportunity_category.py), cacheada desde
+  // `selector_decision_candidates` -- mirar siempre `category_status`
+  // antes de tratar esto como vigente.
   category: OpportunityCategory | null;
+  // "completada" | "desactualizada" | "pendiente" -- ver
+  // backend/app/api/routes/predictions.py::_category_cache_for_predictions.
+  category_status: "completada" | "desactualizada" | "pendiente";
+  contradiction_level: ContradictionLevel | null;
 }
 
 export type OpportunityCategory = "A+" | "A" | "B" | "C" | "D";
+export type ContradictionLevel = "SIN_CONTRADICCION" | "LEVE" | "MODERADA" | "FUERTE" | "EVIDENCIA_INSUFICIENTE";
 
 // Fase E (revision v2.8, seccion 10 del brief): aprendizaje del selector
 // sobre sus propias decisiones (ver
