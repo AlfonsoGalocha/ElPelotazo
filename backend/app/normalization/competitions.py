@@ -18,7 +18,7 @@ def competition_team_name(name: str, competition_code: str) -> str:
     return f"{name} · Liga F" if competition_code == LIGA_F else name
 
 
-COMPETITIONS: dict[str, tuple[str, str]] = {
+_PRIMARY_COMPETITION_CONFIG = {
     # code -> (nombre, pais)
     "laliga": ("La Liga", "Spain"),
     "premier_league": ("Premier League", "England"),
@@ -28,6 +28,11 @@ COMPETITIONS: dict[str, tuple[str, str]] = {
     CHAMPIONS_LEAGUE: ("UEFA Champions League", "Europe"),
     LIGA_F: ("Liga F", "Spain"),
     AFC_CHAMPIONS_LEAGUE: ("AFC Champions League Elite", "Asia"),
+}
+PRIMARY_COMPETITIONS = tuple(_PRIMARY_COMPETITION_CONFIG)
+
+COMPETITIONS: dict[str, tuple[str, str]] = {
+    **_PRIMARY_COMPETITION_CONFIG,
     # Seccion "Selecciones" (pedido real del usuario, 2026-11): a
     # diferencia de las 5 de club, no hay mirror historico tipo
     # football-data.co.uk -- TODO su historico viene de API-Football
@@ -64,11 +69,37 @@ COMPETITIONS: dict[str, tuple[str, str]] = {
 }
 
 
+# Provider IDs and seasons verified in the API-Football coverage audit.
+# Phase two remains catalogued without ingestion or scheduler activation.
+EXPERIMENTAL_CATALOG = {
+    "championship": ("Championship", "England", 40, 1),
+    "segunda_division": ("Segunda División", "Spain", 141, 1),
+    "super_lig": ("Süper Lig", "Turkey", 203, 1),
+    "eredivisie": ("Eredivisie", "Netherlands", 88, 1),
+    "primeira_liga": ("Primeira Liga", "Portugal", 94, 2),
+    "jupiler_pro_league": ("Jupiler Pro League", "Belgium", 144, 2),
+    "europa_league": ("UEFA Europa League", "Europe", 3, 2),
+    "conference_league": ("UEFA Conference League", "Europe", 848, 2),
+}
+EXPERIMENTAL_COMPETITIONS = tuple(code for code, entry in EXPERIMENTAL_CATALOG.items() if entry[3] == 1)
+EXPERIMENTAL_CONTINENTAL = ("europa_league", "conference_league")
+COMPETITIONS.update({code: entry[:2] for code, entry in EXPERIMENTAL_CATALOG.items()})
+
+
+def competition_scope_codes(scope):
+    if scope == "experimental":
+        return EXPERIMENTAL_COMPETITIONS
+    if scope == "all":
+        return (*PRIMARY_COMPETITIONS, *EXPERIMENTAL_COMPETITIONS)
+    return PRIMARY_COMPETITIONS
+
+
 def resolve_competition_id(db: Session, code: str) -> int:
     competition = db.query(Competition).filter_by(code=code).one_or_none()
     if competition is None:
         name, country = COMPETITIONS[code]
-        competition = Competition(code=code, name=name, country=country)
+        competition = Competition(code=code, name=name, country=country,
+                                  tier="EXPERIMENTAL" if code in EXPERIMENTAL_CATALOG else "CORE")
         db.add(competition)
         db.flush()
     return competition.id

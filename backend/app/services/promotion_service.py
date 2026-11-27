@@ -93,6 +93,10 @@ def _paired_metrics(table: pd.DataFrame, previous: dict, candidate: dict) -> dic
 
 def evaluate_and_promote(db: Session, competition_code: str, candidate: ModelVersion) -> dict:
     """Keep the candidate inactive and report the evidence available for review."""
+    from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG
+
+    if competition_code in EXPERIMENTAL_CATALOG:
+        return {"competition": competition_code, "promoted": False, "reason": "experimental_competition"}
     if not candidate.created_at or candidate.training_end is None or candidate.training_end > candidate.created_at.date():
         return {"competition": competition_code, "promoted": False, "reason": "uncertified_training_cutoff"}
 

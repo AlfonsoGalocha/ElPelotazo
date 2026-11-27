@@ -1,6 +1,6 @@
 import RoundAccuracyPanel from "@/components/RoundAccuracy";
 import { BarChart3 } from "lucide-react";
-import { getHistory, getModelPerformance, getPublicationCoverage, getPublications } from "@/lib/api";
+import { getCompetitionResearch, getHistory, getModelPerformance, getPublicationCoverage, getPublications } from "@/lib/api";
 import CalibrationChart from "@/components/CalibrationChart";
 import ModelPerformanceTabs, { type Tab } from "@/components/ModelPerformanceTabs";
 
@@ -21,7 +21,7 @@ export default async function ModelPerformancePage({
   searchParams: { tab?: string };
 }) {
   const initialTab = VALID_TABS.includes(searchParams.tab as Tab) ? (searchParams.tab as Tab) : "resumen";
-  const [report, history, publications, coverage] = await Promise.all([
+  const [report, history, publications, coverage, research] = await Promise.all([
     getModelPerformance().catch(() => ({ segments: [] })),
     // Limite alto, sin filtrar por liga server-side: la subseccion
     // "Jornadas" agrupa/filtra en el cliente (mismo patron que el
@@ -30,6 +30,7 @@ export default async function ModelPerformancePage({
     getHistory(undefined, 150).catch(() => []),
     getPublications().catch(() => null),
     getPublicationCoverage().catch(() => null),
+    getCompetitionResearch().catch(() => []),
   ]);
 
   return (
@@ -43,6 +44,34 @@ export default async function ModelPerformancePage({
           Aquí puedes ver cuántos pronósticos acierta el modelo, qué habría pasado apostando 10 € a cada uno y si los porcentajes que anuncia coinciden con lo que ocurre.
         </p>
       </div>
+      {research.length > 0 && <details className="rounded-xl border border-surface-border bg-card p-4">
+        <summary className="cursor-pointer font-semibold">Investigación por competición</summary>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          {research.map(row => <article key={row.code} className="rounded border border-surface-border p-3 text-sm">
+            <h3 className="font-semibold">{row.name} <span className="text-xs text-amber-300">Experimental</span></h3>
+            <p className="text-slate-400">{row.country} · {row.seasons.length ? `${row.seasons.length} temporadas` :
+              row.phase === 2 ? "Segunda fase" : "Pendiente de datos"}</p>
+            {row.seasons.length > 0 && <>
+              <p>{row.seasons.reduce((sum, season) => sum + season.goals, 0)} partidos con goles · {row.seasons.reduce((sum, season) => sum + season.corners, 0)} con córners</p>
+              <p>{row.quotes} cuotas verificadas · {row.captures} capturas · {row.settled_captures} partidos terminados</p>
+            </>}
+            {row.model && <p>Versión candidata {row.model.id} · {row.model.validation ?
+              `${row.model.validation.evaluation_matches} partidos en evaluación temporal` : "Evaluación pendiente"}</p>}
+            {row.model?.validation && <details className="mt-2 text-xs">
+              <summary className="cursor-pointer">Validación temporal por mercado</summary>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead><tr><th>Mercado</th><th>N</th><th>Brier</th><th>Log Loss</th><th>ECE</th></tr></thead>
+                  <tbody>{Object.entries(row.model.validation.metrics).map(([market, score]) => {
+                    const values = score.calibrated ?? score.original;
+                    return <tr key={market}><td>{market}</td><td>{score.n}</td><td>{values.brier.toFixed(3)}</td><td>{values.log_loss.toFixed(3)}</td><td>{values.ece.toFixed(3)}</td></tr>;
+                  })}</tbody>
+                </table>
+              </div>
+            </details>}
+          </article>)}
+        </div>
+      </details>}
       <div id="acierto" className="scroll-mt-20"><RoundAccuracyPanel filters /></div>
       {coverage && <section className="grid gap-3 sm:grid-cols-3" aria-label="Muestras estadísticas">
         <article className="rounded-xl border border-surface-border bg-card p-4">

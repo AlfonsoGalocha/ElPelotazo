@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime as dt
 from typing import Annotated
 
-from pydantic import BaseModel, PlainSerializer
+from pydantic import BaseModel, PlainSerializer, computed_field
 
 
 def _serialize_as_utc(value: dt.datetime) -> str:
@@ -50,6 +50,15 @@ class CompetitionOut(BaseModel):
     tier: str | None = None
     enabled: bool | None = None
     priority: int | None = None
+
+    @computed_field
+    @property
+    def competition_scope(self) -> str:
+        from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG, PRIMARY_COMPETITIONS
+
+        if self.code in EXPERIMENTAL_CATALOG:
+            return "experimental"
+        return "primary" if self.code in PRIMARY_COMPETITIONS else "other"
 
     model_config = {"from_attributes": True}
 

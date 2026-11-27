@@ -133,14 +133,7 @@ def test_corner_survival_choice_reaches_the_real_stored_prediction():
         )
         expected = correct_probability(stored.model_probability, forced_params, under=False)
         assert stored.calibrated_probability == expected
-        # `apply_coherent_calibration` (sin tocar, ya existente) reetiqueta
-        # TODA probabilidad calibrada como "validated_marginal" al pasar
-        # por el paso de coherencia -- mismo comportamiento de siempre
-        # para los mercados de goles isotonicos, se confirma aqui que
-        # corners no es la excepcion: el VALOR es el de corner_survival,
-        # aunque la etiqueta de procedencia detallada no sobreviva ese
-        # paso (limitacion preexistente, fuera de alcance de esta fase).
-        assert (stored.explanation or {}).get("calibration_source") == "validated_marginal"
+        assert stored.explanation.get("calibration_source") == forced_params["version"]
 
         # Coherencia over/under preservada (seccion "no rompas lo que ya
         # funcionaba"): corners_under_9_5 sigue siendo 1 - el over corregido,
@@ -151,3 +144,4 @@ def test_corner_survival_choice_reaches_the_real_stored_prediction():
             .one()
         )
         assert abs(under.calibrated_probability - (1 - stored.calibrated_probability)) < 1e-9
+        assert under.explanation.get("calibration_source") == forced_params["version"]

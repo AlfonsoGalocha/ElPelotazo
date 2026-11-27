@@ -130,3 +130,54 @@ def test_real_rolling_fit_dedup_and_prospective_capture(db_session, monkeypatch)
     report, = learning.comparison_report(db, as_of=cutoff + dt.timedelta(hours=3))
     assert report["metrics"]["btts"]["matches"] == 1
     assert report["promotion_status"] == "blocked_uncertified_provenance"
+
+
+def test_pinned_corners_freeze_with_no_rolling_pair_and_no_market(db_session, monkeypatch):
+    from backend.app.db.models.core import Competition, Season, Team
+    from backend.app.db.models.matches import Match, MatchStatistics
+    from backend.app.db.models.publication import ModelComparisonCut
+    from backend.app.services import continuous_learning as learning
+
+    db = db_session
+    cutoff = dt.datetime(2026, 12, 1, 10)
+    competition = Competition(code="afc_champions_league", name="AFC test", country="AFC")
+    home, away = Team(canonical_name="Corner test home"), Team(canonical_name="Corner test away")
+    season = Season(competition=competition, label="2026/27")
+    db.add_all([season, home, away])
+    db.flush()
+    fixture = Match(provider="test", provider_id="pinned-corners", competition_id=competition.id,
+                    season_id=season.id, home_team_id=home.id, away_team_id=away.id,
+                    status="scheduled", kickoff_utc=cutoff + dt.timedelta(minutes=20))
+    db.add(fixture)
+    db.flush()
+
+    raw = pd.DataFrame({"match_id": [fixture.id], "date": [fixture.kickoff_utc], "status": ["scheduled"]})
+    probabilities = {
+        "corners_over_8_5": (.70, .65), "corners_over_9_5": (.60, .55),
+        "corners_over_10_5": (.50, .45), "corners_under_9_5": (.40, .45),
+    }
+    monkeypatch.setattr(learning, "load_matches_dataframe", lambda *_: raw)
+    monkeypatch.setattr(learning, "build_match_feature_table", lambda rows: rows)
+    monkeypatch.setattr(learning, "tracked_artifact", lambda *_: {"corners_model": object()})
+    monkeypatch.setattr(learning, "corner_probabilities",
+                        lambda _, artifact: {fixture.id: probabilities} if artifact else {})
+
+    assert learning.capture_comparisons(db, cutoff=cutoff, clock=lambda: fixture.kickoff_utc) == 0
+    assert learning.capture_comparisons(db, cutoff=cutoff, clock=lambda: cutoff) == 1
+    probabilities["corners_over_8_5"] = (.10, .10)
+    assert learning.capture_comparisons(db, cutoff=cutoff, clock=lambda: cutoff) == 0
+    cut = db.get(ModelComparisonCut, fixture.id)
+    tracking = cut.payload["corner_tracking"]
+    assert tracking["candidate"]["source_id"] == 264
+    assert tracking["rows"][0]["candidate"] == .65
+    assert all(row["reference"] is None for row in tracking["rows"])
+
+    fixture.status = "finished"
+    db.add(MatchStatistics(match_id=fixture.id, home_corners=5, away_corners=5))
+    db.flush()
+    report, = learning.comparison_report(db, as_of=cutoff + dt.timedelta(hours=3))
+    track = report["corner_tracking"]
+    assert track["captured"] == track["settled"] == 1
+    assert track["coherence"]["candidate"] == {"checked": 1, "monotonicity": 0, "complement": 0}
+    assert track["coverage"]["corners_over_8_5"] == dict(candidate=1, poisson=1, titular=0, reference=0)
+    assert set(track["metrics"]["corners_over_8_5"]["comparisons"]) == {"poisson"}

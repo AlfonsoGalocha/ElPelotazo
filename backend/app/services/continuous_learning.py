@@ -15,13 +15,16 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from backend.app.db.models.core import Competition
-from backend.app.db.models.matches import Match
+from backend.app.db.models.matches import Match, MatchOddsHistory
 from backend.app.db.models.modeling import ModelVersion
 from backend.app.db.models.publication import ModelComparisonCut
 from backend.app.features.goals import build_match_feature_table
 from backend.app.normalization.competitions import CONTINENTAL_CHAMPIONS
 from backend.app.prediction.eligibility import observed_corner_total
 from backend.app.prediction.opportunities import valid_probability
+from backend.app.services.corner_tracking import (
+    TRACKED, candidate_info, corner_probabilities, frozen_rows, summarize_corners, tracked_artifact,
+)
 from backend.app.services.match_service import load_matches_dataframe
 from backend.app.services.model_service import train_competition_models
 from backend.app.services.prediction_service import ALL_MARKET_TO_ODDS_LOOKUP, _predict_fixture_markets
@@ -130,7 +133,9 @@ def capture_comparisons(db, *, cutoff=None, clock=utcnow):
     count = 0
     for code, fixtures in groups.items():
         active, candidate = versions_for(db, code, cutoff)
-        if not active or not candidate or not active.artifact_path or not candidate.artifact_path:
+        rolling_pair = active and candidate and active.artifact_path and candidate.artifact_path
+        tracked = tracked_artifact(code, cutoff) if code in TRACKED else None
+        if not rolling_pair and tracked is None:
             continue
         target_ids = {match.id for match in fixtures}
         data = load_matches_dataframe(db, fixtures[0].competition_id)
@@ -148,8 +153,11 @@ def capture_comparisons(db, *, cutoff=None, clock=utcnow):
             continue
         data_hash = sha256(data.to_json(orient="records", date_format="iso", double_precision=15).encode()).hexdigest()
         forecasts, versions = {}, []
-        for version in (active, candidate):
-            artifact, artifact_hash = _artifact(version)
+        titular_artifact = titular_hash = None
+        if active and active.artifact_path:
+            titular_artifact, titular_hash = _artifact(active)
+        for version in ((active, candidate) if rolling_pair else ()):
+            artifact, artifact_hash = (titular_artifact, titular_hash) if version is active else _artifact(version)
             versions.append({"id": version.id, "sha256": artifact_hash})
             output = defaultdict(dict)
             for row in _predict_fixture_markets(target.copy(), artifact, {}):
@@ -158,11 +166,22 @@ def capture_comparisons(db, *, cutoff=None, clock=utcnow):
                     _, line, side = ALL_MARKET_TO_ODDS_LOOKUP[row.market]
                     output[row.match_id][row.market] = {"p": float(p), "line": line, "selection": side}
             forecasts[version.id] = output
+        tracking_predictions = corner_probabilities(target, tracked)
+        titular_corners = corner_probabilities(target, titular_artifact) if tracked is not None else {}
+        quotes = defaultdict(list)
+        if tracking_predictions:
+            for quote in db.query(MatchOddsHistory).filter(
+                MatchOddsHistory.match_id.in_(target_ids), MatchOddsHistory.market == "corners_total",
+                MatchOddsHistory.snapshot_type == "pre_match", MatchOddsHistory.recorded_at <= cutoff,
+            ):
+                quotes[quote.match_id].append(quote)
         for match in fixtures:
-            a, b = [forecasts[version["id"]][match.id] for version in versions]
+            a, b = ([forecasts[version["id"]][match.id] for version in versions] if versions else ({}, {}))
+            corners = frozen_rows(tracking_predictions.get(match.id, {}), titular_corners.get(match.id, {}),
+                                  quotes[match.id], cutoff) if tracked is not None else []
             common = sorted(a.keys() & b.keys())
             generated_at = clock()
-            if not common or generated_at >= match.kickoff_utc:
+            if (not common and not corners) or generated_at >= match.kickoff_utc:
                 continue
             payload = {
                 "models": versions, "input_sha256": data_hash, "data_cutoff": cutoff.isoformat() + "Z",
@@ -174,6 +193,12 @@ def capture_comparisons(db, *, cutoff=None, clock=utcnow):
                 "rows": [dict(market=market, line=a[market]["line"], selection=a[market]["selection"],
                               titular=a[market]["p"], candidate=b[market]["p"]) for market in common],
             }
+            if corners:
+                payload["corner_tracking"] = {
+                    "candidate": candidate_info(code),
+                    "titular": {"id": active.id, "sha256": titular_hash} if titular_hash else None,
+                    "rows": corners,
+                }
             result = db.execute(insert(ModelComparisonCut).values(
                 match_id=match.id, captured_at=generated_at, payload=payload,
             ).on_conflict_do_nothing(index_elements=["match_id"]))
@@ -237,16 +262,21 @@ def comparison_report(db, *, as_of=None):
 
     cutoff = as_of or utcnow()
     observations = defaultdict(lambda: defaultdict(list))
+    corner_cuts = defaultdict(list)
     for cut, match, corners in db.query(ModelComparisonCut, Match, observed_corner_total()).join(
         Match, Match.id == ModelComparisonCut.match_id,
-    ).filter(Match.status == "finished", Match.kickoff_utc <= cutoff,
-             ModelComparisonCut.captured_at < Match.kickoff_utc):
+    ).filter(ModelComparisonCut.captured_at <= cutoff, ModelComparisonCut.captured_at < Match.kickoff_utc):
         payload = cut.payload
         key = tuple(model["id"] for model in payload["models"])
-        if corners is None and match.statistics:
+        if match.status == "finished" and corners is None and match.statistics:
             home, away = match.statistics.home_corners, match.statistics.away_corners
             if home is not None and away is not None and min(home, away) >= 0:
                 corners = home + away
+        if tracking := payload.get("corner_tracking"):
+            settled_corners = corners if match.status == "finished" and match.kickoff_utc <= cutoff else None
+            corner_cuts[tracking["candidate"]["sha256"]].append((tracking["rows"], settled_corners))
+        if not key or match.status != "finished" or match.kickoff_utc > cutoff:
+            continue
         markets = {row["market"]: row for row in payload["rows"]}
         if match.home_goals is None or match.away_goals is None:
             continue
@@ -292,7 +322,7 @@ def comparison_report(db, *, as_of=None):
                 ModelVersion.dataset_version.like(f"learning:{competition.code}:%")),
             ModelVersion.created_at <= cutoff,
         ).order_by(ModelVersion.created_at.desc(), ModelVersion.id.desc()).limit(5)
-        output.append({
+        entry = {
             "competition": competition.code, "name": competition.name,
             "titular": info(active), "candidate": info(candidate), "metrics": metrics,
             "comparison_status": "no_titular" if not active else (
@@ -303,5 +333,9 @@ def comparison_report(db, *, as_of=None):
                          "state": "in_service" if active and row.id == active.id else
                          "inactive" if row.is_active is False else "legacy"}
                         for row in history],
-        })
+        }
+        if competition.code in TRACKED:
+            pinned = candidate_info(competition.code)
+            entry["corner_tracking"] = dict(candidate=pinned, **summarize_corners(corner_cuts[pinned["sha256"]]))
+        output.append(entry)
     return output

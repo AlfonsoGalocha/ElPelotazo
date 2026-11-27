@@ -24,13 +24,16 @@ from backend.app.prediction.market_labels import DOUBLE_CHANCE_COMPONENTS
 from backend.app.prediction.opportunities import confirmed_quote_age, ranking_score, valid_probability
 from backend.app.services.publication_service import selection_outcome
 
-from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS, CONTINENTAL_CHAMPIONS
+from backend.app.normalization.competitions import (
+    API_CANDIDATE_COMPETITIONS, CONTINENTAL_CHAMPIONS, EXPERIMENTAL_COMPETITIONS,
+    PRIMARY_COMPETITIONS, competition_scope_codes,
+)
 
 WEIGHTS = {"original": 1., "corregida": None, "mixta_80_20": .8, "mixta_65_35": .65,
            "mixta_50_50": .5, "mixta_35_65": .35, "mixta_20_80": .2, "mercado": 0.}
 BANDS = {"principal": (1.35, 1.90), "1.20-1.34": (1.20, 1.35), "1.35-1.50": (1.35, 1.51),
          "1.51-1.70": (1.51, 1.71), "1.71-1.90": (1.71, 1.90), "1.20-1.90": (1.20, 1.90)}
-LEAGUES = ("laliga", "premier_league", "bundesliga", "ligue_1", "serie_a", *API_CANDIDATE_COMPETITIONS)
+LEAGUES = PRIMARY_COMPETITIONS
 # v2-2: quote currency follows the last confirmed download (as in the ranking), not the origin stamp.
 SCHEMA_VERSION = "shadow-v2-2"
 
@@ -107,7 +110,7 @@ def choose(candidates, strategy, band, minimum):
     return {**record, "probability": probability, "ev": ev_plus_one-1, "score": score}
 
 
-def capture_strategy_due(db, now=None):
+def capture_strategy_due(db, now=None, *, experimental=False):
     from backend.app.services.model_service import load_model_artifact
     from backend.app.services.prediction_service import (
         ALL_MARKET_TO_ODDS_LOOKUP as lookup, _market_line_and_selection, score_api_candidate, score_champions_candidate, shadow_result_forecasts,
@@ -139,14 +142,14 @@ def capture_strategy_due(db, now=None):
             "joint_1x2", {}).get("reason") == "accepted" and coherent_artifact(version)), None)
 
     due = db.query(Match).join(Competition).filter(
-        Competition.code.in_(LEAGUES), Match.status == "scheduled",
+        Competition.code.in_(EXPERIMENTAL_COMPETITIONS if experimental else LEAGUES), Match.status == "scheduled",
         Match.kickoff_utc > cutoff, Match.kickoff_utc <= cutoff + dt.timedelta(hours=1),
         ~Match.id.in_(db.query(StrategyCapture.match_id)),
     ).all()
     insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
     captured = 0
     candidate_rows = defaultdict(dict)
-    for code in API_CANDIDATE_COMPETITIONS:
+    for code in (() if experimental else API_CANDIDATE_COMPETITIONS):
         fixtures = [m for m in due if m.competition.code == code]
         if not fixtures:
             continue
@@ -243,12 +246,29 @@ def capture_strategy_due(db, now=None):
         # Guard a long-running capture that crossed kickoff after querying the fixtures.
         if (now is None and dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) >= match.kickoff_utc):
             continue
+        research = {}
+        if experimental:
+            from backend.app.services.bot_bankroll import INITIAL_CENTS, evaluate_cut
+            from backend.app.services.evaluation_service import market_track_records_with_provenance
+
+            capital = dict(available=INITIAL_CENTS, equity=INITIAL_CENTS, reserved=0,
+                           peak=INITIAL_CENTS, pending_matches=set())
+            policy = evaluate_cut(
+                db, [match], [], capital, cutoff, continuous=True,
+                provenance=market_track_records_with_provenance(db, match.competition.code, as_of=cutoff),
+            )
+            research = {"competition_scope": "experimental", "bot_observation": {
+                "tickets": policy["tickets"], "reason": policy["capital"]["reason"],
+                "reference_capital_cents": INITIAL_CENTS,
+            }}
+            if now is None and dt.datetime.now(dt.timezone.utc).replace(tzinfo=None) >= match.kickoff_utc:
+                continue
         result = db.execute(insert(StrategyCapture).values(
             match_id=match.id, captured_at=cutoff,
             payload={"version": SCHEMA_VERSION, "scheduled_kickoff": match.kickoff_utc.isoformat(),
                      "minimum": minimum, "max_age_minutes": max_age, "universe": len(predictions),
                      "candidate_count": len(candidates), "bands": BANDS, "reason": reason,
-                     "common": list(common.values()), "decisions": decisions, "decision_reasons": passes},
+                     "common": list(common.values()), "decisions": decisions, "decision_reasons": passes, **research},
         ).on_conflict_do_nothing(index_elements=["match_id"]))
         captured += result.rowcount or 0
     return captured
@@ -310,18 +330,29 @@ def economics(rows):
     }
 
 
-def strategy_report(db, band="principal", competition=None):
+def strategy_report(db, band="principal", competition=None, *, scope="primary", market=None,
+                    strategy=None, date_from=None, date_to=None):
     query = db.query(StrategyCapture, Match, observed_corner_total()).join(
         Match, Match.id == StrategyCapture.match_id,
     ).filter(StrategyCapture.captured_at < Match.kickoff_utc)
+    visible = set(competition_scope_codes(scope))
+    query = query.join(Competition).filter(Competition.code.in_(visible))
     if competition:
         codes = CONTINENTAL_CHAMPIONS if competition == "continental_champions" else (competition,)
-        query = query.join(Competition).filter(Competition.code.in_(codes))
+        query = query.filter(Competition.code.in_(codes))
+    if date_from:
+        query = query.filter(Match.kickoff_utc >= date_from)
+    if date_to:
+        query = query.filter(Match.kickoff_utc < date_to + dt.timedelta(days=1))
+    strategies = (strategy,) if strategy else tuple(WEIGHTS)
     captures = query.order_by(Match.kickoff_utc, Match.id).all()
     decisions = defaultdict(list)
     comparisons = defaultdict(list)
+    quality_by_league = defaultdict(list)
     history = []
+    fixture_counts = defaultdict(int)
     for capture, match, corners in captures:
+        fixture_counts[match.competition.code] += 1
         stats = match.statistics
         if corners is None and stats and stats.home_corners is not None and stats.away_corners is not None:
             if min(stats.home_corners, stats.away_corners) >= 0:
@@ -339,19 +370,25 @@ def strategy_report(db, band="principal", competition=None):
         fixture = {"match_id": match.id, "match": label, "league": match.competition.code,
                    "kickoff": match.kickoff_utc.isoformat()+"Z", "capture": capture.captured_at.isoformat()+"Z"}
         tickets = {}
-        for name in WEIGHTS:
+        for name in strategies:
             row = capture.payload["decisions"].get(f"{name}:{band}")
+            if market and row and row["market"] != market:
+                row = None
             tickets[name] = {**fixture, **row, "outcome": outcome(row["market"])} if row else None
             if row:
                 decisions[name].append(tickets[name])
         history.append({**fixture, "decisions": tickets, "decision_reasons": {
-            name: capture.payload.get("decision_reasons", {}).get(f"{name}:{band}") for name in WEIGHTS
-        }})
+            name: capture.payload.get("decision_reasons", {}).get(f"{name}:{band}") for name in strategies
+        }, "bot_observation": capture.payload.get("bot_observation")})
         for row in capture.payload["common"]:
+            if market and row["market"] != market:
+                continue
             result = outcome(row["market"])
             if result in ("won", "lost") and all(name in row["probabilities"] for name in WEIGHTS):
-                for name in WEIGHTS:
-                    comparisons[name].append((row["probabilities"][name], result == "won", fixture["kickoff"]))
+                for name in strategies:
+                    observation = (row["probabilities"][name], result == "won", fixture["kickoff"])
+                    comparisons[name].append(observation)
+                    quality_by_league[name, match.competition.code].append(observation)
 
     def breakdown(rows, key):
         groups = defaultdict(list)
@@ -361,14 +398,23 @@ def strategy_report(db, band="principal", competition=None):
 
     return {
         "mode": "prospective_shadow", "active_strategy": "existing_production", "validation": "experimental",
-        "band": band, "bands": BANDS, "fixtures": len(captures),
+        "band": band, "bands": BANDS, "fixtures": len(captures), "competition_scope": scope,
+        "fixtures_by_league": dict(fixture_counts),
         "strategies": {
             name: {**economics(decisions[name]), "common_quality": _probability_metrics(comparisons[name]),
-                   "by_league": breakdown(decisions[name], lambda r: r["league"]),
+                   "coverage": len(decisions[name]) / len(captures) if captures else None,
+                   "by_scope": {group: economics([row for row in decisions[name] if row["league"] in
+                                                 competition_scope_codes(group)])
+                                for group in ("primary", "experimental")},
+                   "by_league": {code: {**economics([row for row in decisions[name] if row["league"] == code]),
+                                       "fixtures": count,
+                                       "common_quality": _probability_metrics(quality_by_league[name, code]),
+                                       "coverage": sum(row["league"] == code for row in decisions[name]) / count}
+                                 for code, count in fixture_counts.items()},
                    "by_market": breakdown(decisions[name], lambda r: r["market"]),
                    "by_odds": breakdown(decisions[name], lambda r: next(
                        (b for b in list(BANDS)[1:-1] if in_band(r["price"], b)), "other"))}
-            for name in WEIGHTS
+            for name in strategies
         },
         "history": history[-60:][::-1],
     }

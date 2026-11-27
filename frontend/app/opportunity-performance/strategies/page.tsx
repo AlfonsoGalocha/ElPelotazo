@@ -29,12 +29,18 @@ const rate = (n: number | null) => n === null ? "—" : pct.format(n);
 const num = (n: number | null) => n === null ? "—" : n.toFixed(3);
 const money = (n: number) => euros.format(n / 100);
 
-export default async function StrategiesPage({ searchParams }: { searchParams: { band?: string; competition?: string } }) {
+export default async function StrategiesPage({ searchParams }: { searchParams: { band?: string; competition?: string; scope?: string; market?: string; strategy?: string; date_from?: string; date_to?: string } }) {
   const [report, operations, competitions] = await Promise.all([
-    getShadowReport(searchParams.band, searchParams.competition).catch(() => null),
+    getShadowReport(searchParams.band, searchParams.competition, {
+      scope: searchParams.scope, market: searchParams.market, strategy: searchParams.strategy,
+      date_from: searchParams.date_from, date_to: searchParams.date_to,
+    }).catch(() => null),
     getShadowOperations().catch(() => null),
     getCompetitions().catch(() => []),
   ]);
+  const filtersForBand = (band: string) => new URLSearchParams(
+    Object.entries({ ...searchParams, band }).filter((entry): entry is [string, string] => Boolean(entry[1])),
+  ).toString();
   return (
     <main className="space-y-5">
       <Link href="/model" className="text-sm text-accent">Volver a Rendimiento del modelo</Link>
@@ -47,20 +53,36 @@ export default async function StrategiesPage({ searchParams }: { searchParams: {
       {operations ? <Operations report={operations} /> : <p className="text-sm text-slate-400">Estado operativo temporalmente no disponible.</p>}
       {!report ? <p>No se pudo consultar la comparación.</p> : (
         <>
-          <form action="/opportunity-performance/strategies" className="flex items-center gap-2 text-sm">
+          <form action="/opportunity-performance/strategies" className="flex flex-wrap items-center gap-2 text-sm">
             <input type="hidden" name="band" value={report.band} />
+            <label>Ámbito <select name="scope" defaultValue={searchParams.scope ?? "primary"} className="rounded border border-surface-border bg-card p-1">
+              <option value="primary">Principales</option>
+              <option value="experimental">Experimentales</option>
+              <option value="all">Todas</option>
+            </select></label>
             <label htmlFor="competition">Competición</label>
             <select id="competition" name="competition" defaultValue={searchParams.competition ?? ""} className="rounded border border-surface-border bg-card p-1">
               <option value="">Todas</option>
               <option value="continental_champions">Champions UEFA y AFC Elite</option>
-              {competitions.filter(c => ["laliga", "premier_league", "bundesliga", "serie_a", "ligue_1", "champions_league", "liga_f", "afc_champions_league"].includes(c.code))
+              {competitions.filter(c => c.competition_scope === "primary" || c.competition_scope === "experimental")
                 .map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
             </select>
+            <label>Mercado <select name="market" defaultValue={searchParams.market ?? ""} className="rounded border border-surface-border bg-card p-1">
+              <option value="">Todos</option>
+              {Object.entries(MARKET_DISPLAY_NAMES).filter(([key]) => !key.startsWith("cards_"))
+                .map(([key, name]) => <option key={key} value={key}>{name}</option>)}
+            </select></label>
+            <label>Estrategia <select name="strategy" defaultValue={searchParams.strategy ?? ""} className="rounded border border-surface-border bg-card p-1">
+              <option value="">Todas</option>
+              {Object.entries(labels).map(([key, name]) => <option key={key} value={key}>{name}</option>)}
+            </select></label>
+            <label>Desde <input type="date" name="date_from" defaultValue={searchParams.date_from} className="bg-card" /></label>
+            <label>Hasta <input type="date" name="date_to" defaultValue={searchParams.date_to} className="bg-card" /></label>
             <button type="submit" className="rounded border border-surface-border px-2 py-1">Aplicar</button>
           </form>
           <nav aria-label="Rango de cuotas experimental" className="flex flex-wrap gap-2">
             {Object.keys(report.bands).map(band => (
-              <Link key={band} href={`?band=${encodeURIComponent(band)}${searchParams.competition ? `&competition=${encodeURIComponent(searchParams.competition)}` : ""}`}
+              <Link key={band} href={`?${filtersForBand(band)}`}
                 aria-current={report.band === band ? "page" : undefined}
                 className={`rounded border px-3 py-1 text-sm ${report.band === band ? "border-accent text-accent" : "border-surface-border text-slate-300"}`}>
                 {band === "principal" ? "Principal · 1,35–1,90" : band.replaceAll(".", ",").replace("-", "–")}
@@ -95,9 +117,15 @@ export default async function StrategiesPage({ searchParams }: { searchParams: {
               ))}</tbody>
             </table>
           </section>
-          {Object.entries(report.strategies).map(([name, row]) => row.selections > 0 && (
+          {Object.entries(report.strategies).map(([name, row]) => (row.selections > 0 || Object.keys(row.by_league).length > 0) && (
             <details key={name} className="rounded-lg border border-surface-border p-3">
               <summary className="cursor-pointer">{labels[name]} · Evolución y desgloses</summary>
+              <p className="mt-2 text-sm">Cobertura de selección · {rate(row.coverage ?? null)}</p>
+              {searchParams.scope === "all" && row.by_scope && <ul className="mt-2 text-sm">
+                {Object.entries(row.by_scope).map(([group, summary]) => <li key={group}>
+                  {group === "primary" ? "Principales" : "Experimentales"} · {summary.selections} selecciones · {rate(summary.roi)} ROI
+                </li>)}
+              </ul>}
               {row.roi_interval && <p className="mt-2 text-sm">Intervalo descriptivo de ROI por bloques de fecha · {row.roi_interval.map(rate).join(" a ")}</p>}
               <div className="mt-3 overflow-x-auto">
                 <h3 className="text-sm font-semibold">Sus selecciones</h3>
@@ -130,7 +158,22 @@ export default async function StrategiesPage({ searchParams }: { searchParams: {
                     {row.curve.map((point) => <li key={point.at}>{formatMatchDateTime(point.at)} · {money(point.profit_cents)}</li>)}
                   </ol>
                 </div>
-                {([["Por liga", row.by_league], ["Por mercado", row.by_market], ["Por cuota", row.by_odds]] as const).map(([title, groups]) => (
+                <div className="md:col-span-2 overflow-x-auto">
+                  <h3 className="text-sm font-semibold">Por competición</h3>
+                  <table className="w-full whitespace-nowrap text-left text-xs">
+                    <thead><tr>{["Liga", "Partidos", "Selecciones", "A/F", "Cuota", "Beneficio", "ROI", "Caída máx.", "Brier", "Log Loss", "Cobertura"].map(title =>
+                      <th className="pr-2 py-1" key={title}>{title}</th>)}</tr></thead>
+                    <tbody>{Object.entries(row.by_league).map(([code, stats]) => <tr key={code}>
+                      <td>{competitions.find(c => c.code === code)?.name ?? code}</td>
+                      <td>{stats.fixtures ?? "—"}</td><td>{stats.selections}</td><td>{stats.wins}/{stats.losses}</td>
+                      <td>{num(stats.mean_odds)}</td><td>{money(stats.profit_cents)}</td><td>{rate(stats.roi)}</td>
+                      <td>{stats.settled ? money(stats.drawdown_cents) : "—"}</td>
+                      <td>{num(stats.common_quality?.brier ?? null)}</td><td>{num(stats.common_quality?.log_loss ?? null)}</td>
+                      <td>{rate(stats.coverage ?? null)}</td>
+                    </tr>)}</tbody>
+                  </table>
+                </div>
+                {([["Por mercado", row.by_market], ["Por cuota", row.by_odds]] as const).map(([title, groups]) => (
                   <div key={title}>
                     <h3 className="text-sm font-semibold">{title}</h3>
                     <ul className="text-sm text-slate-300">

@@ -1,5 +1,6 @@
 "use client";
 
+import { CompetitionMatchGroups, CompetitionScopeSelect, inCompetitionScope, useCompetitionScope } from "@/components/CompetitionScope";
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Search } from "lucide-react";
@@ -40,6 +41,7 @@ function currentSeasonStartDate(): string {
 // soportaba competicion/fecha/busqueda/estado como filtros.
 export default function MatchesPage() {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
+  const [competitionScope, setCompetitionScope] = useCompetitionScope();
   const [competitionCode, setCompetitionCode] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusFilter>("scheduled");
   const [search, setSearch] = useState("");
@@ -49,8 +51,7 @@ export default function MatchesPage() {
   // Pedido real del usuario: "ponme el mismo filtro de oportunidades en
   // todas las secciones de la app" -- mismo desplegable con optgroup
   // Ligas/Selecciones que /top-signals, nunca botones sueltos.
-  const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code));
-  const internationalCompetitions = competitions.filter((c) => isInternationalCompetition(c.code));
+  const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code) && inCompetitionScope(c, competitionScope));
 
   useEffect(() => {
     getCompetitions()
@@ -63,7 +64,7 @@ export default function MatchesPage() {
     setError(null);
     const timeout = setTimeout(() => {
       getMatchesList({
-        competitionCode: competitionCode ?? undefined,
+        competitionCode: competitionCode ?? undefined, competitionScope,
         status: status === "all" ? undefined : status,
         search: search.trim() || undefined,
         dateFrom: currentSeasonStartDate(),
@@ -83,14 +84,14 @@ export default function MatchesPage() {
         .finally(() => setLoading(false));
     }, 200);
     return () => clearTimeout(timeout);
-  }, [competitionCode, status, search]);
+  }, [competitionCode, competitionScope, status, search]);
 
   return (
     <div className="flex flex-col gap-4">
       <div>
         <h1 className="mb-1 text-2xl font-bold tracking-tight text-slate-100">Partidos</h1>
         <p className="text-sm text-slate-500">
-          Busca cualquier partido de las 5 ligas, próximo o ya jugado.
+          Busca partidos próximos o ya jugados.
         </p>
       </div>
 
@@ -106,6 +107,10 @@ export default function MatchesPage() {
           />
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
+          <CompetitionScopeSelect value={competitionScope} onChange={value => {
+            setCompetitionScope(value);
+            setCompetitionCode(null);
+          }} />
           <span className="text-slate-500">Liga:</span>
           <select
             value={competitionCode ?? ""}
@@ -120,15 +125,7 @@ export default function MatchesPage() {
                 </option>
               ))}
             </optgroup>
-            {internationalCompetitions.length > 0 && (
-              <optgroup label="Selecciones">
-                {internationalCompetitions.map((c) => (
-                  <option key={c.code} value={c.code}>
-                    {c.name}
-                  </option>
-                ))}
-              </optgroup>
-            )}
+
           </select>
         </div>
         <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -169,8 +166,8 @@ export default function MatchesPage() {
       )}
 
       {!error && !loading && matches.length > 0 && (
-        <div className="flex flex-col gap-1.5">
-          {matches.map((match) => (
+        <CompetitionMatchGroups matches={matches}>{group => <div className="flex flex-col gap-1.5">
+          {group.map((match) => (
             <Link
               key={match.id}
               href={`/matches/${match.id}`}
@@ -202,7 +199,7 @@ export default function MatchesPage() {
               />
             </Link>
           ))}
-        </div>
+        </div>}</CompetitionMatchGroups>
       )}
     </div>
   );

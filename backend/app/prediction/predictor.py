@@ -91,6 +91,12 @@ def apply_coherent_calibration(outputs, config):
         )
         for market, (probability, source) in probabilities.items():
             row = rows[market]
+            if source == "validated_marginal" and market.startswith("corners_"):
+                # The coherent under inherits the method used for its over.
+                over_market = market.replace("corners_under_", "corners_over_", 1)
+                marginal = rows.get(over_market)
+                if marginal and marginal.calibration_source:
+                    source = marginal.calibration_source
             if source == "original_derived_1x2":
                 row.model_probability = probability
                 row.fair_odds = float(fair_odds(probability))

@@ -87,8 +87,12 @@ def capture_selector_decisions(db: Session, now: dt.datetime | None = None) -> i
     provenance = market_track_records_with_provenance(db)
     track_records = {key: estimate.value for key, estimate in provenance.items()}
 
+    from backend.app.db.models.core import Competition
+    from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG
+
+    experimental_ids = db.query(Competition.id).filter(Competition.code.in_(EXPERIMENTAL_CATALOG))
     matches = (
-        db.query(Match)
+        db.query(Match).filter(~Match.competition_id.in_(experimental_ids))
         .filter(Match.status == "scheduled", Match.kickoff_utc >= now, Match.kickoff_utc <= horizon)
         .all()
     )

@@ -6,7 +6,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import and_, or_, func, select, union
 from sqlalchemy.orm import Session, joinedload
 
-from backend.app.normalization.competitions import CONTINENTAL_CHAMPIONS
+from backend.app.normalization.competitions import CONTINENTAL_CHAMPIONS, EXPERIMENTAL_CATALOG
 from backend.app.db.database import get_db
 from backend.app.db.models.core import Competition, Season
 from backend.app.db.models.features import TeamMatchFeatures
@@ -42,7 +42,7 @@ def publication_coverage(db: Session = Depends(get_db)):
         func.count(PredictionResult.id).filter(Prediction.created_at < Match.kickoff_utc),
     ).join(Prediction, Prediction.id == PredictionResult.prediction_id).join(
         Match, Match.id == Prediction.match_id
-    ).filter(Match.status == "finished").one()
+    ).filter(Match.status == "finished", ~Match.competition.has(Competition.code.in_(EXPERIMENTAL_CATALOG))).one()
     official = db.query(FixturePublication).join(Match, Match.id == FixturePublication.match_id).filter(
         FixturePublication.captured_at < Match.kickoff_utc
     )
@@ -239,12 +239,23 @@ def bot_bankroll_simulations():
 
 
 @router.get("/strategies")
-def strategies(band: str = "principal", competition: str | None = None, db: Session = Depends(get_db)):
-    from backend.app.services.strategy_shadow import BANDS, strategy_report
+def strategies(
+    band: str = "principal", competition: str | None = None,
+    scope: str = Query("primary", pattern="^(primary|experimental|all)$"),
+    market: str | None = None, strategy: str | None = None,
+    date_from: date | None = None, date_to: date | None = None,
+    db: Session = Depends(get_db),
+):
+    from backend.app.services.strategy_shadow import BANDS, WEIGHTS, strategy_report
 
     if band not in BANDS:
         raise HTTPException(status_code=422, detail="Rango experimental desconocido")
-    return strategy_report(db, band, competition)
+    if strategy is not None and strategy not in WEIGHTS:
+        raise HTTPException(status_code=422, detail="Estrategia desconocida")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=422, detail="Periodo inválido")
+    return strategy_report(db, band, competition, scope=scope, market=market, strategy=strategy,
+                           date_from=date_from, date_to=date_to)
 
 
 @router.get("/strategies/operations")

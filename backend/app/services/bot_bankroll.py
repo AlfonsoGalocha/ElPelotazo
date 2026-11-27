@@ -23,6 +23,7 @@ from backend.app.db.models.matches import Match, MatchOddsHistory
 from backend.app.db.models.modeling import Prediction
 from backend.app.db.models.publication import BotDecision, BotManualTicket, BotTrialCut, BotTrialDecision
 from backend.app.ingestion.api_football.client import ApiFootballClient
+from backend.app.normalization.competitions import PRIMARY_COMPETITIONS
 from backend.app.prediction.anomaly import compute_anomaly_flags
 from backend.app.prediction.eligibility import observed_corner_total
 from backend.app.prediction.opportunities import assess_opportunity, forecast_priority, valid_probability
@@ -45,13 +46,11 @@ CONTINUOUS_POLICY_VERSION = "forward-v5-continuous-portfolio"
 # they keep their own cut. A used fixture is then exposed until it settles.
 COMBO_LOOKAHEAD = dt.timedelta(hours=24)
 POSTPONED_VOID_AFTER = dt.timedelta(hours=48)
-# The virtual trial bank follows every competition with fixtures; competitions without
-# forecasts simply yield no candidates.
-TRIAL_LEAGUES = (*LEAGUES, "bundesliga", "ligue_1", "champions_league", "afc_champions_league", "liga_f")
+# The virtual trial bank follows the configured primary club competitions.
 
 
 def trial_competitions():
-    return Competition.id.isnot(None)
+    return Competition.code.in_(PRIMARY_COMPETITIONS)
 START_DATE = dt.date(2026, 11, 23)
 LIVE_STATUSES = {"1H", "HT", "2H", "ET", "BT", "P", "LIVE", "INT", "SUSP"}
 _live_lock = Lock()
@@ -688,6 +687,8 @@ def record_manual_ticket(db, quote_id, stake_cents):
     if quote is None or market is None or quote.snapshot_type != "pre_match":
         raise ValueError("Se necesita una cuota prepartido archivada de un mercado soportado")
     match = db.get(Match, quote.match_id)
+    if match is None or match.competition.code not in PRIMARY_COMPETITIONS:
+        raise ValueError("La banca virtual solo admite competiciones principales")
     now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     if match.status == "scheduled" and now < match.kickoff_utc:
         origin = quote.fetched_at or quote.recorded_at

@@ -568,6 +568,10 @@ def train(competition: str = typer.Option(None)) -> None:
     nueva se guarda igual, nunca se descarta, solo no se activa.
     """
     init_db()
+    from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG
+
+    if competition in EXPERIMENTAL_CATALOG:
+        raise typer.BadParameter("Usa experimental-refresh para entrenar una versión experimental inactiva.")
     competitions = [competition] if competition else ALL_COMPETITIONS
     from backend.app.services.continuous_learning import training_slot
 
@@ -616,6 +620,32 @@ def publish_upcoming() -> None:
     with session_scope() as db:
         checked = capture_due_publications(db)
     typer.echo(f"[publish-upcoming] {checked} partidos comprobados")
+
+
+@app.command("experimental-refresh")
+def experimental_refresh(
+    competition: str | None = None,
+    historical: bool = False,
+    batches: int = typer.Option(1, min=1, max=110),
+) -> None:
+    """Refresh isolated experimental predictions after the main refresh."""
+    from backend.app.normalization.competitions import EXPERIMENTAL_COMPETITIONS
+    from backend.app.services.experimental_leagues import refresh_experiment
+
+    if competition and competition not in EXPERIMENTAL_COMPETITIONS:
+        raise typer.BadParameter("Competición fuera de la primera fase experimental")
+    for code in (competition,) if competition else EXPERIMENTAL_COMPETITIONS:
+        with session_scope() as db:
+            typer.echo(json.dumps(refresh_experiment(db, code, historical=historical, batches=batches), default=str))
+
+
+@app.command("capture-experimental-strategies")
+def capture_experimental_strategies() -> None:
+    from backend.app.services.strategy_shadow import capture_strategy_due
+
+    with session_scope() as db:
+        count = capture_strategy_due(db, experimental=True)
+    typer.echo(f"[capture-experimental-strategies] {count} cortes registrados")
 
 
 @app.command("capture-strategies")

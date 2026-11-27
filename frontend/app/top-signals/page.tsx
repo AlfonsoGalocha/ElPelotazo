@@ -1,51 +1,19 @@
 import Link from "next/link";
-import { AlertTriangle, TrendingUp } from "lucide-react";
+import { TrendingUp } from "lucide-react";
 import { getCompetitions, getOpportunityDiagnostics, getTopSignals } from "@/lib/api";
 import type { SignalScope } from "@/lib/api";
 import { formatMatchDateOnly } from "@/lib/dates";
 import { isInternationalCompetition } from "@/lib/internationalCompetitions";
 import { MARKET_DISPLAY_NAMES } from "@/types";
-import MarketQualityBadge from "@/components/MarketQualityBadge";
-import AnomalyBadges from "@/components/AnomalyBadge";
-import CategoryBadge from "@/components/CategoryBadge";
 import { EmptyState } from "@/components/EmptyState";
 import CandidateOpportunities from "@/components/CandidateOpportunities";
-
-const EXCLUSION_LABELS: Record<string, string> = {
-  ventaja_extrema_frente_al_mercado: "Revisar: el modelo supera al mercado en más de 25 puntos",
-  sin_mercado: "Sin cuota para ese mercado",
-  cuota_fuera_de_banda: "Fuera del rango de la estrategia",
-  cuota_desactualizada: "Cuota desactualizada",
-  origen_cuota_no_verificado: "Hora de la cuota sin verificar",
-  calibracion_no_disponible: "Probabilidad sin calibrar",
-  calibracion_en_extremo: "Calibración en 0 % o 100 % pendiente de validar",
-  ajuste_calibracion_sin_respaldo: "Ajuste de calibración superior a 15 puntos sin evidencia de la liga y mercado",
-  incertidumbre_elevada_o_no_disponible: "Intervalo amplio o no disponible",
-  cuota_sin_frescura_alta: "Cuota fuera del límite de alta confianza",
-  incertidumbre_no_disponible: "Incertidumbre sin estimar",
-  ev_estimado_no_positivo: "Sin ventaja estimada a esa cuota",
-  ev_conservador_no_positivo: "Sin ventaja con la estimación conservadora",
-  fiabilidad_historica_insuficiente: "Evidencia histórica insuficiente",
-};
+import OpportunityCard from "@/components/OpportunityCard";
+import { exclusionLabel, EXCLUSION_LABELS } from "@/lib/predictionLabels";
 
 const SCOPE_LABELS: Record<SignalScope, string> = {
   current_round: "Jornada actual",
   next_round: "Próxima jornada",
   all_upcoming: "Todas las próximas",
-};
-
-// Mision "oportunidades" seccion 2.2 (fiabilidad jerarquica): nunca
-// mostrar un nivel "market_tier"/"market_global" como si fuera especifico
-// de esta competicion exacta -- la etiqueta deja claro de donde sale.
-const RELIABILITY_SOURCE_LABELS: Record<string, string> = {
-  competition_market: "esta liga",
-  // Bloque 2.2 de la mision (shrinkage bayesiano, ver
-  // evaluation_service.py::TRACK_RECORD_SHRINKAGE_K): mezcla de poca
-  // muestra de esta liga con un respaldo fiable -- nunca se presenta
-  // como igual de especifica que "esta liga" puro.
-  competition_market_shrunk: "esta liga (muestra pequeña, ajustada)",
-  market_tier: "ligas similares",
-  market_global: "global",
 };
 
 export default async function TopSignalsPage({
@@ -151,7 +119,7 @@ export default async function TopSignalsPage({
   const emptyExplanation = view === "main" && inBand > 0 && blockers.length
     ? `De ${inBand} selecciones en el rango de la estrategia, estos fueron los principales descartes: ${blockers.join(", ")}.`
     : undefined;
-  const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code));
+  const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code) && c.competition_scope !== "experimental");
   const internationalCompetitions = competitions.filter((c) => isInternationalCompetition(c.code));
 
   return (
@@ -374,7 +342,7 @@ export default async function TopSignalsPage({
                 <p className="font-medium">{MARKET_DISPLAY_NAMES[market] ?? market} · {stats.high} de {stats.qualified} en alta confianza</p>
                 {Object.keys(stats.confidence_reasons).length > 0 && <p className="text-xs text-slate-400">
                   {Object.entries(stats.confidence_reasons).map(([reason, count]) =>
-                    `${EXCLUSION_LABELS[reason] ?? reason.replaceAll("_", " ")} (${count})`).join(" · ")}
+                    `${exclusionLabel(reason)} (${count})`).join(" · ")}
                 </p>}
               </div>
             ))}
@@ -403,152 +371,41 @@ export default async function TopSignalsPage({
           <details className="mt-2 text-xs text-slate-400">
             <summary>Primer fallo por selección</summary>
             {Object.entries(diagnostics.first_reasons).map(([reason, count]) => (
-              <p key={reason}>{EXCLUSION_LABELS[reason] ?? reason.replaceAll("_", " ")} · {count}</p>
+              <p key={reason}>{exclusionLabel(reason)} · {count}</p>
             ))}
           </details>
           {Object.keys(diagnostics.reasons).length > 0 && (
             <ul className="mt-3 space-y-1 border-t border-surface-border pt-2">
               {Object.entries(diagnostics.reasons).sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
-                <li key={reason}>{EXCLUSION_LABELS[reason] ?? reason.replaceAll("_", " ")} · {count}</li>
+                <li key={reason}>{exclusionLabel(reason)} · {count}</li>
               ))}
             </ul>
           )}
         </details>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-surface-border bg-card">
-        <div className="overflow-x-auto"><table className="w-full text-sm">
-          <thead className="bg-surface-alt/60 text-left text-[11px] uppercase text-slate-500">
-            <tr>
-              <th className="px-3 py-2">Partido</th>
-              <th className="px-3 py-2">Fecha</th>
-              <th className="px-3 py-2">Mercado</th>
-              <th className="px-3 py-2">Prob. modelo</th>
-              <th className="px-3 py-2">Prob. mercado</th>
-              <th className="px-3 py-2">Cuota</th>
-              <th className="px-3 py-2">Casas</th>
-              <th className="px-3 py-2">EV estimado</th>
-              <th className="px-3 py-2">EV conservador</th>
-              <th className="px-3 py-2 text-slate-600">Edge (info)</th>
-              <th className="px-3 py-2">Calidad de datos</th>
-              <th className="px-3 py-2">Calidad de mercado</th>
-              <th className="px-3 py-2">Fiabilidad histórica</th>
-              <th className="px-3 py-2">Cuota actualizada</th>
-            </tr>
-          </thead>
-          <tbody>
-            {predictions.map((p) => {
-              const assessment = p.opportunity;
-              const price = assessment?.quote_price;
-              const ev = assessment?.ev;
-              const conservative = assessment?.conservative_ev;
-              const edge = assessment?.edge;
-              const age = assessment?.quote_age_minutes;
-              return <tr key={p.id} className="border-t border-surface-border hover:bg-surface-alt/40">
-                <td className="px-3 py-2 text-slate-200">
-                  <Link href={`/signals/${p.id}`} className="hover:underline">
-                    {p.match.home_team.canonical_name} vs {p.match.away_team.canonical_name}
-                  </Link>
-                  <div className="text-xs text-slate-400">{p.match.competition.name}</div>
-                </td>
-                <td className="px-3 py-2 text-slate-400">
-                  {formatMatchDateOnly(p.match.kickoff_utc, {
-                    weekday: "short",
-                    day: "2-digit",
-                    month: "short",
-                  })}
-                </td>
-                <td className="px-3 py-2 text-slate-300">{MARKET_DISPLAY_NAMES[p.market] ?? p.market}</td>
-                <td className="px-3 py-2 font-semibold text-slate-100">
-                  {p.calibrated_probability !== null
-                    ? `${(p.calibrated_probability * 100).toFixed(1)}%`
-                    : `${(p.model_probability * 100).toFixed(1)}% (sin calibrar)`}
-                </td>
-                <td className="px-3 py-2 text-slate-300">
-                  {p.market_probability !== null
-                    ? `${(p.market_probability * 100).toFixed(1)}% ${p.market_probability_source?.endsWith("_no_vig") ? "(sin margen)" : "(estimada)"}`
-                    : "—"}
-                </td>
-                <td className="px-3 py-2">
-                  {price != null ? (
-                    <>
-                      {price.toFixed(2)}
-                      <div className="text-xs text-slate-400">{assessment?.bookmaker ?? "Referencia"}</div>
-                      <div className="text-xs text-slate-400">{(100 / price).toFixed(1)}% equilibrio</div>
-                    </>
-                  ) : "—"}
-                </td>
-                <td className="px-3 py-2 text-slate-400">{p.bookmakers_used ?? "—"}</td>
-                <td className={ev != null && ev > 0 && p.has_statistical_value ? "px-3 py-2 text-emerald-400" : "px-3 py-2 text-slate-300"}>
-                  {ev != null ? `${ev >= 0 ? "+" : ""}${(ev * 100).toFixed(1)}%` : "—"}
-                </td>
-                <td className={conservative != null && conservative > 0 && p.has_statistical_value ? "px-3 py-2 text-emerald-400" : "px-3 py-2 text-slate-300"}>
-                  {conservative != null ? `${conservative >= 0 ? "+" : ""}${(conservative * 100).toFixed(1)}%` : "—"}
-                </td>
-                <td className="px-3 py-2 text-slate-600">
-                  {edge != null ? `${edge >= 0 ? "+" : ""}${(edge * 100).toFixed(1)} pp` : "—"}
-                </td>
-                <td className="px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-1">
-                    <span className={p.has_statistical_value ? "font-semibold text-emerald-400" : "text-slate-400"}>
-                      {p.has_statistical_value ? (assessment?.high_confidence ? "Alta confianza" : "Valor estimado · confianza limitada") : "Descartada"}
-                    </span>
-                    <span className="text-xs text-slate-400">
-                      {(p.has_statistical_value ? assessment?.confidence_reasons : assessment?.reasons)?.map(
-                        (reason) => EXCLUSION_LABELS[reason] ?? reason.replaceAll("_", " ")
-                      ).join(" · ")}
-                    </span>
-                    {p.has_statistical_value && <span className="text-xs text-slate-400">EV positivo con cuota verificable</span>}
-                    <AnomalyBadges flags={p.anomaly_flags} />
-                  </div>
-                </td>
-                <td className="px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-1">
-                    <MarketQualityBadge quality={p.market_quality} />
-                    <CategoryBadge category={p.category} categoryStatus={p.category_status} />
-                  </div>
-                </td>
-                <td className="px-3 py-2 text-slate-400">
-                  {p.reliability ? (
-                    <span
-                      className="cursor-help"
-                      title={`${p.reliability.n_observations} liquidaciones reales usadas (${RELIABILITY_SOURCE_LABELS[p.reliability.source_level]})`}
-                    >
-                      {(p.reliability.value * 100).toFixed(0)}%{" "}
-                      <span className="text-[10px] text-slate-500">
-                        ({RELIABILITY_SOURCE_LABELS[p.reliability.source_level]})
-                      </span>
-                    </span>
-                  ) : (
-                    "—"
-                  )}
-                </td>
-                <td className="px-3 py-2 text-slate-400">
-                  <span className="flex items-center gap-1">
-                    {p.is_stale_odds && <AlertTriangle className="h-3 w-3 shrink-0 text-amber-400" />}
-                    {age != null ? `hace ${Math.round(age)} min` : "Origen sin verificar"}
-                  </span>
-                </td>
-              </tr>;
-            })}
-          </tbody>
-        </table></div>
-        {predictions.length === 0 && (
-          <div className="p-2">
-            <EmptyState description={rows && date && diagnostics?.counts.matches === 0
-              ? "Esta vista solo evalúa partidos pendientes. Si la fecha ya pasó, consulta el Histórico de predicciones."
-              : rows ? emptyExplanation : undefined} title={!rows ? "No se pudieron consultar las selecciones" : valueOnly ? (view === "high" ? "Ninguna selección reúne la evidencia adicional de alta confianza" : "Ninguna selección combina cuota verificable y valor esperado positivo") : "No hay selecciones con cuota válida para los criterios actuales"} />
-            {rows && date && diagnostics?.counts.matches === 0 && (
-              <Link href="/prediction-history" className="block pb-4 text-center text-sm text-accent underline">Abrir histórico</Link>
-            )}
-            {rows && valueOnly && diagnostics?.counts.matches !== 0 && (
-              <Link href={{ pathname: "/top-signals", query: { ...searchParams, view: "explore" } }} className="block pb-4 text-center text-sm text-accent underline">
-                Explorar selecciones con cuota
-              </Link>
-            )}
-          </div>
-        )}
-      </div>
+      {predictions.length > 0 && (
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {predictions.map((p) => (
+            <OpportunityCard key={p.id} prediction={p} />
+          ))}
+        </div>
+      )}
+      {predictions.length === 0 && (
+        <div className="overflow-hidden rounded-xl border border-surface-border bg-card p-2">
+          <EmptyState description={rows && date && diagnostics?.counts.matches === 0
+            ? "Esta vista solo evalúa partidos pendientes. Si la fecha ya pasó, consulta el Histórico de predicciones."
+            : rows ? emptyExplanation : undefined} title={!rows ? "No se pudieron consultar las selecciones" : valueOnly ? (view === "high" ? "Ninguna selección reúne la evidencia adicional de alta confianza" : "Ninguna selección combina cuota verificable y valor esperado positivo") : "No hay selecciones con cuota válida para los criterios actuales"} />
+          {rows && date && diagnostics?.counts.matches === 0 && (
+            <Link href="/prediction-history" className="block pb-4 text-center text-sm text-accent underline">Abrir histórico</Link>
+          )}
+          {rows && valueOnly && diagnostics?.counts.matches !== 0 && (
+            <Link href={{ pathname: "/top-signals", query: { ...searchParams, view: "explore" } }} className="block pb-4 text-center text-sm text-accent underline">
+              Explorar selecciones con cuota
+            </Link>
+          )}
+        </div>
+      )}
       {!competitionCode || ["champions_league", "afc_champions_league", "liga_f"].includes(competitionCode) ? <CandidateOpportunities days={Math.max(Number(days) || 3, 1)} /> : null}
     </div>
   );

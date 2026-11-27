@@ -478,13 +478,22 @@ def generate_predictions_for_competition(
     # anterior. `isnot(False)` trata `None` (ModelVersion de antes de
     # este gate) como activa, para no desactivar en silencio todo el
     # historico ya entrenado de un despliegue existente.
-    model_versions = (
-        db.query(ModelVersion)
-        .filter(ModelVersion.dataset_version.like(f"{competition_code}:%"))
-        .filter(ModelVersion.is_active.isnot(False))
-        .order_by(ModelVersion.created_at.desc())
-        .first()
-    )
+    from sqlalchemy import or_
+
+    from backend.app.normalization.competitions import EXPERIMENTAL_COMPETITIONS
+
+    versions = db.query(ModelVersion)
+    if competition_code in EXPERIMENTAL_COMPETITIONS:
+        versions = versions.filter(
+            or_(ModelVersion.dataset_version.like(f"{competition_code}:%"),
+                ModelVersion.dataset_version.like(f"learning:{competition_code}:%")),
+            ModelVersion.is_active.is_(False),
+        )
+    else:
+        versions = versions.filter(
+            ModelVersion.dataset_version.like(f"{competition_code}:%"), ModelVersion.is_active.isnot(False),
+        )
+    model_versions = versions.order_by(ModelVersion.created_at.desc()).first()
     if model_versions is None:
         logger.warning("prediction_service.no_model", extra={"competition": competition_code})
         return []
@@ -503,6 +512,8 @@ def generate_predictions_for_competition(
         & table["home_goals"].isna()
         & table["away_goals"].isna()
     ]
+    if competition_code in EXPERIMENTAL_COMPETITIONS:
+        target_matches = target_matches[target_matches["date"] <= dt.datetime.utcnow() + dt.timedelta(days=10)]
     if target_date is not None:
         target_matches = target_matches[target_matches["date"].dt.date == target_date]
     if target_matches.empty:
@@ -595,7 +606,9 @@ def generate_predictions_for_competition(
     # historico refleje lo mismo que el ranking en vivo habria usado -- no
     # el valor neutro por defecto.
     track_records = market_track_records(db, competition_code)
-    edge_reliability_curve = fit_edge_reliability_curve(db)
+    edge_reliability_curve = (
+        None if competition_code in EXPERIMENTAL_COMPETITIONS else fit_edge_reliability_curve(db)
+    )
 
     predictions = []
     for output in outputs:

@@ -303,7 +303,12 @@ def capture_due_publications(db):
     from backend.app.services.evaluation_service import market_track_records
 
     now = dt.datetime.utcnow()
+    from backend.app.db.models.core import Competition
+    from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG
+
+    experimental_ids = db.query(Competition.id).filter(Competition.code.in_(EXPERIMENTAL_CATALOG))
     due = db.query(Prediction).join(Match, Match.id == Prediction.match_id).filter(
+        ~Match.competition_id.in_(experimental_ids),
         Match.status == "scheduled",
         Match.kickoff_utc > now,
         Match.kickoff_utc <= now + dt.timedelta(hours=1),

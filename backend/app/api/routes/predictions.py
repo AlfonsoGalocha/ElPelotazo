@@ -384,7 +384,13 @@ def _base_signal_query(
     paga la casa". Independiente de MAX_SIGNAL_ODDS (que limita la cuota
     de MERCADO para evitar tiros muy largos, no para segmentar por rango).
     """
-    query = db.query(Prediction).join(Match, Match.id == Prediction.match_id).filter(~Prediction.market.startswith("cards_"))
+    from backend.app.db.models.core import Competition
+    from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG
+
+    experimental_ids = db.query(Competition.id).filter(Competition.code.in_(EXPERIMENTAL_CATALOG))
+    query = db.query(Prediction).join(Match, Match.id == Prediction.match_id).filter(
+        ~Prediction.market.startswith("cards_"), ~Match.competition_id.in_(experimental_ids),
+    )
     if upcoming_only:
         query = query.filter(Match.status == "scheduled", Match.kickoff_utc > dt.datetime.utcnow(), Prediction.created_at < Match.kickoff_utc)
         if date is not None:

@@ -23,6 +23,7 @@ router = APIRouter(prefix="/matches", tags=["matches"])
 
 @router.get("", response_model=list[MatchOut])
 def list_matches(
+    competition_scope: str | None = Query(None, pattern="^(primary|experimental|all)$"),
     competition_code: str | None = None,
     date_from: dt.date | None = Query(None),
     date_to: dt.date | None = Query(None),
@@ -32,6 +33,12 @@ def list_matches(
     db: Session = Depends(get_db),
 ) -> list[Match]:
     query = db.query(Match)
+    if competition_scope:
+        from backend.app.normalization.competitions import competition_scope_codes
+
+        query = query.filter(Match.competition_id.in_(
+            db.query(Competition.id).filter(Competition.code.in_(competition_scope_codes(competition_scope)))
+        ))
     if competition_code:
         competition = db.query(Competition).filter_by(code=competition_code).one_or_none()
         if competition is None:

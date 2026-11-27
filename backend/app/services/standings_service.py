@@ -15,8 +15,10 @@ import datetime as dt
 
 from sqlalchemy.orm import Session
 
+from backend.app.db.models.core import Competition
 from backend.app.db.models.matches import Match
 from backend.app.db.models.standings import StandingsSnapshot
+from backend.app.normalization.competitions import EXPERIMENTAL_COMPETITIONS
 
 
 def compute_current_standings(db: Session, competition_id: int, season_id: int) -> tuple[list[dict], int | None]:
@@ -28,17 +30,17 @@ def compute_current_standings(db: Session, competition_id: int, season_id: int) 
 
     Devuelve `(filas_ordenadas, matchday_ceiling)` -- filas ya en orden
     de posicion (la primera es el lider)."""
-    matches = (
-        db.query(Match)
-        .filter(
-            Match.competition_id == competition_id,
-            Match.season_id == season_id,
-            Match.status == "finished",
-            Match.home_goals.isnot(None),
-            Match.away_goals.isnot(None),
-        )
-        .all()
+    query = db.query(Match).filter(
+        Match.competition_id == competition_id,
+        Match.season_id == season_id,
+        Match.status == "finished",
+        Match.home_goals.isnot(None),
+        Match.away_goals.isnot(None),
     )
+    competition = db.get(Competition, competition_id)
+    if competition is not None and competition.code in EXPERIMENTAL_COMPETITIONS:
+        query = query.filter(Match.round_name.like("Regular Season - %"))
+    matches = query.all()
 
     stats: dict[int, dict] = {}
     matchdays_seen: list[int] = []

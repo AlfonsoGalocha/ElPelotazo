@@ -1,11 +1,13 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { getPredictionDetail } from "@/lib/api";
+import { getPredictionDetail, getSelectorDecisionsForMatch } from "@/lib/api";
 import { formatMatchDateTime } from "@/lib/dates";
 import { MARKET_DISPLAY_NAMES } from "@/types";
 import SignalBadge from "@/components/SignalBadge";
 import MarketQualityBadge from "@/components/MarketQualityBadge";
 import CategoryBadge from "@/components/CategoryBadge";
+import ContradictionBadge from "@/components/ContradictionBadge";
+import SelectorExplanation from "@/components/SelectorExplanation";
 
 export default async function SignalDetailPage({ params }: { params: { id: string } }) {
   const predictionId = Number(params.id);
@@ -13,6 +15,7 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
 
   const signal = await getPredictionDetail(predictionId).catch(() => null);
   if (!signal) notFound();
+  const selectorDecisions = await getSelectorDecisionsForMatch(signal.match.id).catch(() => null);
   const probability = signal.calibrated_probability ?? signal.model_probability;
   const gap = signal.market_probability === null ? null : probability - signal.market_probability;
   const signed = (value: number) => (value >= 0 ? "+" : "") + (value * 100).toFixed(1);
@@ -87,6 +90,7 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
         <SignalBadge tier={signal.signal_tier} />
         <MarketQualityBadge quality={signal.market_quality} />
         <CategoryBadge category={signal.category} categoryStatus={signal.category_status} />
+        <ContradictionBadge level={signal.contradiction_level} />
         {signal.is_stale_odds && (
           <span className="rounded border border-amber-500/30 bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-400">
             ⚠ CUOTA DESACTUALIZADA
@@ -105,6 +109,13 @@ export default async function SignalDetailPage({ params }: { params: { id: strin
             ))}
           </ul>
         </div>
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">
+          Qué evaluó el selector y por qué
+        </h2>
+        <SelectorExplanation data={selectorDecisions} currentPredictionId={signal.id} />
       </section>
 
       {signal.bookmaker_odds.length > 0 && (

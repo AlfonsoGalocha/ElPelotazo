@@ -12,6 +12,7 @@ export interface Competition {
   code: string;
   name: string;
   country: string;
+  competition_scope?: "primary" | "experimental" | "other";
 }
 
 export interface Match {
@@ -213,6 +214,40 @@ export interface SelectorLearningReport {
   missed_opportunities_rate: number | null;
   by_rank_position: SelectorLearningBucket[];
   by_category: SelectorLearningBucket[];
+}
+
+// v2.8.3 (explicacion de la seleccion, pedido real del usuario): lectura
+// textual del snapshot MAS RECIENTE que `capture_selector_decisions` ya
+// guardo para un partido (ver backend/app/api/routes/predictions.py
+// ::selector_decisions_for_match) -- nunca se recalcula el ranking aqui,
+// solo se muestra lo que el selector vio de verdad en ese corte. Solo se
+// usan los campos de la politica OFICIAL (v3); los campos "_candidate"
+// son de una politica experimental interna, fuera del alcance de esta
+// pantalla.
+export interface SelectorDecisionCandidate {
+  prediction_id: number;
+  market: string;
+  market_odds: number | null;
+  model_probability: number;
+  calibrated_probability: number | null;
+  market_probability_implied: number | null;
+  ev_conservative: number | null;
+  market_track_record_value: number | null;
+  market_track_record_source_level: string | null;
+  uncertainty_width: number | null;
+  category: OpportunityCategory | null;
+  contradiction_level: ContradictionLevel | null;
+  rank_position_v3: number | null;
+  exclusion_reason_v3: string | null;
+  is_selected_v3: boolean;
+}
+
+export interface SelectorDecisionsForMatch {
+  match_id: number;
+  captured_at: string;
+  selector_version: string;
+  selected_prediction_id_v3: number | null;
+  candidates: SelectorDecisionCandidate[];
 }
 
 export interface PredictionReliability {

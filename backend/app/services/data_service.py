@@ -18,7 +18,7 @@ from backend.app.ingestion.base import (
 )
 from backend.app.ingestion.odds.provider import OddsApiProvider
 from backend.app.normalization.bookmakers import canonical_bookmaker, is_excluded_bookmaker
-from backend.app.normalization.competitions import resolve_competition_id, resolve_season_id
+from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG, resolve_competition_id, resolve_season_id
 from backend.app.normalization.players import resolve_referee_id
 from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS
 from backend.app.normalization.teams import is_excluded_team, resolve_team_id
@@ -195,8 +195,9 @@ def _find_absorbable_duplicate(
 def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, season_id: int) -> Match:
     home_team_id = resolve_team_id(db, record.provider, record.home_team_raw)
     away_team_id = resolve_team_id(db, record.provider, record.away_team_raw)
-    _update_team_logo(db, home_team_id, record.home_logo_url)
-    _update_team_logo(db, away_team_id, record.away_logo_url)
+    if record.competition_code not in EXPERIMENTAL_CATALOG:
+        _update_team_logo(db, home_team_id, record.home_logo_url)
+        _update_team_logo(db, away_team_id, record.away_logo_url)
     referee_id = resolve_referee_id(db, record.referee_raw)
     # Bug real reportado por el usuario: API-Football da `fixture.date` CON
     # offset (p.ej. "2026-10-05T14:00:00+00:00"), a diferencia de
@@ -215,9 +216,11 @@ def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, seas
         .filter_by(provider=record.provider, provider_id=record.provider_id)
         .one_or_none()
     )
+    if record.competition_code in EXPERIMENTAL_CATALOG and match is not None and match.competition_id != competition_id:
+        raise ValueError(f"Fixture {record.provider_id} belongs to another competition")
     is_finished = record.home_goals is not None and record.away_goals is not None
 
-    if match is None and record.competition_code not in API_CANDIDATE_COMPETITIONS:
+    if match is None and record.competition_code not in (*API_CANDIDATE_COMPETITIONS, *EXPERIMENTAL_CATALOG):
         match = _find_absorbable_duplicate(
             db, competition_id, season_id, home_team_id, away_team_id, kickoff
         )
@@ -404,6 +407,8 @@ def _attach_odds_snapshots(
             continue
 
         recorded_at = dt.datetime.utcnow()
+        if log_prefix == "experimental_odds" and recorded_at >= match.kickoff_utc:
+            continue
         # Bug real reportado por el usuario: si el mismo (bookmaker, market,
         # line, selection) aparece MAS DE UNA VEZ en `snapshot.odds` (una
         # unica respuesta de la API con una entrada repetida -- real,

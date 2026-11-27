@@ -1,5 +1,6 @@
 "use client";
 
+import { CompetitionMatchGroups, CompetitionScopeSelect, inCompetitionScope, useCompetitionScope } from "@/components/CompetitionScope";
 import Link from "next/link";
 import { useState } from "react";
 import { useCachedData } from "@/lib/clientCache";
@@ -101,7 +102,7 @@ function PreviewDetails({ preview }: { preview: TodayPreview }) {
   );
 }
 
-function ScheduleRows({ matches, picks, failed }: { matches: Match[]; picks?: Record<string, TodayPreview> | null; failed?: boolean }) {
+function MatchScheduleRows({ matches, picks, failed }: { matches: Match[]; picks?: Record<string, TodayPreview> | null; failed?: boolean }) {
   return (
     <ul className="divide-y divide-surface-border rounded-lg border border-surface-border bg-card">
       {matches.map((match) => {
@@ -132,6 +133,12 @@ function ScheduleRows({ matches, picks, failed }: { matches: Match[]; picks?: Re
   );
 }
 
+function ScheduleRows(props: Parameters<typeof MatchScheduleRows>[0]) {
+  return <CompetitionMatchGroups matches={props.matches}>{group =>
+    <MatchScheduleRows {...props} matches={group} />}
+  </CompetitionMatchGroups>;
+}
+
 type QualityFilter = "ALL" | "HIGH" | "MEDIUM" | "LOW";
 
 const QUALITY_LABELS: Record<QualityFilter, string> = {
@@ -142,20 +149,22 @@ const QUALITY_LABELS: Record<QualityFilter, string> = {
 };
 
 export default function DashboardBoard() {
+  const [competitionScope, setCompetitionScope] = useCompetitionScope();
   const [competitionCode, setCompetitionCode] = useState<string | null>(null);
   const [quality, setQuality] = useState<QualityFilter>("ALL");
   const competitions = useCachedData<Competition[]>("competitions", getCompetitions).data ?? [];
   const summary = useCachedData<Summary>("summary", getSummary).data ?? null;
   // The calendar API accepts UTC dates. Include the preceding UTC date around Madrid midnight.
-  const scheduleState = useCachedData<Match[]>(`schedule:${competitionCode ?? "all"}`, () => {
+  const scheduleState = useCachedData<Match[]>(`schedule:${competitionScope}:${competitionCode ?? "all"}`, () => {
     const now = Date.now();
     const dateFrom = new Date(now - 86_400_000).toISOString().slice(0, 10);
     const dateTo = new Date(now + 14 * 86_400_000).toISOString().slice(0, 10);
-    return getMatchesList({ dateFrom, dateTo, competitionCode: competitionCode ?? undefined, limit: 500 });
+    return getMatchesList({ dateFrom, dateTo, competitionCode: competitionCode ?? undefined, competitionScope, limit: 500 });
   });
-  const schedule = scheduleState.data ?? null;
+  const schedule = scheduleState.data?.filter(match => inCompetitionScope(match.competition, competitionScope)
+    && (!competitionCode || match.competition.code === competitionCode)) ?? null;
   const scheduleError = scheduleState.error;
-  const signals = useCachedData<Prediction[]>(`top-signals:${competitionCode ?? "all"}:${quality}`, () => getTopSignals({
+  const signals = useCachedData<Prediction[]>(competitionScope === "experimental" ? null : `top-signals:${competitionCode ?? "all"}:${quality}`, () => getTopSignals({
     limit: 24,
     opportunityView: "explore",
     scope: "all_upcoming",
@@ -163,9 +172,9 @@ export default function DashboardBoard() {
     competitionCode: competitionCode ?? undefined,
     quality,
   }, true), { delayMs: 150 });
-  const predictions = signals.data ?? [];
-  const loading = signals.data === undefined && !signals.error;
-  const error = signals.error ? "No se pudieron cargar las selecciones de hoy." : null;
+  const predictions = competitionScope === "experimental" ? [] : signals.data ?? [];
+  const loading = competitionScope !== "experimental" && signals.data === undefined && !signals.error;
+  const error = competitionScope !== "experimental" && signals.error ? "No se pudieron cargar las selecciones de hoy." : null;
 
   const today = madridDate.format(new Date());
   const todayPicks = predictions.filter(p => madridDate.format(new Date(p.match.kickoff_utc)) === today);
@@ -187,13 +196,16 @@ export default function DashboardBoard() {
   // Pedido real del usuario: "ponme el mismo filtro de oportunidades en
   // todas las secciones de la app" -- mismo desplegable con optgroup
   // Ligas/Selecciones que /top-signals, nunca botones sueltos.
-  const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code));
-  const internationalCompetitions = competitions.filter((c) => isInternationalCompetition(c.code));
+  const clubCompetitions = competitions.filter((c) => !isInternationalCompetition(c.code) && inCompetitionScope(c, competitionScope));
 
   return (
     <div className="flex flex-col gap-6">
       <section className="flex flex-wrap items-center gap-2 rounded-xl border border-surface-border bg-card p-3">
         <SlidersHorizontal className="h-4 w-4 shrink-0 text-slate-500" />
+        <CompetitionScopeSelect value={competitionScope} onChange={value => {
+          setCompetitionScope(value);
+          setCompetitionCode(null);
+        }} />
         <span className="text-xs text-slate-500">Liga:</span>
         <select
           value={competitionCode ?? ""}
@@ -208,15 +220,7 @@ export default function DashboardBoard() {
               </option>
             ))}
           </optgroup>
-          {internationalCompetitions.length > 0 && (
-            <optgroup label="Selecciones">
-              {internationalCompetitions.map((c) => (
-                <option key={c.code} value={c.code}>
-                  {c.name}
-                </option>
-              ))}
-            </optgroup>
-          )}
+
         </select>
         <span className="ml-2 text-xs text-slate-500">Confianza:</span>
         {(Object.keys(QUALITY_LABELS) as QualityFilter[]).map((key) => (

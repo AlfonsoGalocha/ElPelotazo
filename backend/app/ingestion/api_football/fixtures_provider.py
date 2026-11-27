@@ -30,7 +30,7 @@ import re
 
 from backend.app.ingestion.api_football.client import LEAGUE_IDS, ApiFootballClient
 from backend.app.ingestion.base import DataProvider, RawMatchRecord
-from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS, CONTINENTAL_CHAMPIONS, LIGA_F, competition_team_name
+from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS, CONTINENTAL_CHAMPIONS, EXPERIMENTAL_CATALOG, EXPERIMENTAL_CONTINENTAL, LIGA_F, competition_team_name
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -95,13 +95,19 @@ def parse_matchday(round_name: str) -> int | None:
 class ApiFootballMatchProvider(ApiFootballClient, DataProvider):
     name = "api_football"
 
+    fixture_window = None
+
     def fetch_matches(self, competition_code: str, season_label: str) -> list[RawMatchRecord]:
         league_id = LEAGUE_IDS.get(competition_code)
         if league_id is None:
             raise ValueError(f"Competicion no soportada por este adapter: {competition_code}")
         season_year = int(season_label.split("/")[0])
 
-        fixtures = self._get("/fixtures", {"league": league_id, "season": season_year})
+        params = {"league": league_id, "season": season_year}
+        if self.fixture_window:
+            start, end = self.fixture_window
+            params.update({"from": start.isoformat(), "to": end.isoformat()})
+        fixtures = self._get("/fixtures", params)
 
         records: list[RawMatchRecord] = []
         unrecognized_rounds = 0
@@ -114,7 +120,7 @@ class ApiFootballMatchProvider(ApiFootballClient, DataProvider):
             halftime = (payload.get("score", {}) or {}).get("halftime") or {}
             round_name = (payload.get("league", {}) or {}).get("round", "")
             matchday = parse_matchday(round_name)
-            champions = competition_code in CONTINENTAL_CHAMPIONS
+            champions = competition_code in (*CONTINENTAL_CHAMPIONS, *EXPERIMENTAL_CONTINENTAL)
             if champions:
                 if not re.match(r"^(League Stage|League Phase|Group Stage|Group [A-Z]) - \d+$", round_name or "", re.I):
                     matchday = None
@@ -122,8 +128,10 @@ class ApiFootballMatchProvider(ApiFootballClient, DataProvider):
                     goals = (payload.get("score") or {}).get("fulltime") or {}
                 if status_short in {"1H", "HT", "2H", "ET", "BT", "P", "LIVE"}:
                     match_status = "live"
-            api_candidate = competition_code in API_CANDIDATE_COMPETITIONS
-            if competition_code == LIGA_F and status_short in {"1H", "HT", "2H", "ET", "BT", "P", "LIVE"}:
+            api_candidate = competition_code in API_CANDIDATE_COMPETITIONS or competition_code in EXPERIMENTAL_CATALOG
+            if (competition_code == LIGA_F or competition_code in EXPERIMENTAL_CATALOG) and status_short in {
+                "1H", "HT", "2H", "ET", "BT", "P", "LIVE",
+            }:
                 match_status = "live"
             if matchday is None and not champions:
                 unrecognized_rounds += 1

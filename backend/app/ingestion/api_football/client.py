@@ -23,6 +23,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from backend.app.config.settings import get_settings
+from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG
 from backend.app.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -96,6 +97,7 @@ LEAGUE_IDS: dict[str, int] = {
     # odds=True SOLO para su ultima edicion listada (2025) -- las
     # anteriores (2020/2022/2023/2024) siguen sin cuota real.
     "concacaf_nations_league": 536,
+    **{code: entry[2] for code, entry in EXPERIMENTAL_CATALOG.items()},
 }
 
 # API-Football etiqueta cada EDICION de una competicion de selecciones con

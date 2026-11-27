@@ -8,6 +8,7 @@ import type {
   ModelVersionInfo,
   Prediction,
   RoundInfo,
+  SelectorDecisionsForMatch,
   SelectorLearningReport,
   SignalDetail,
   Summary,
@@ -164,6 +165,15 @@ export function getPredictionDetail(predictionId: number): Promise<SignalDetail>
   return apiFetch<SignalDetail>(`/predictions/${predictionId}/detail`);
 }
 
+// Explicacion de la seleccion (v2.8.3): 404 cuando el scheduler todavia
+// no ha capturado ningun corte del selector para ese partido (fuera de
+// su ventana de 48h, o partido muy reciente) -- el llamador debe tratarlo
+// como "no disponible", nunca como un error que oculte el resto de la
+// pagina.
+export function getSelectorDecisionsForMatch(matchId: number): Promise<SelectorDecisionsForMatch> {
+  return apiFetch<SelectorDecisionsForMatch>(`/predictions/selector-decisions/${matchId}`);
+}
+
 export function getBestPredictions(limit = 5, marketFamily?: string): Promise<Prediction[]> {
   const qs = new URLSearchParams({ limit: String(limit) });
   if (marketFamily) qs.set("market_family", marketFamily);
@@ -228,6 +238,7 @@ export function searchMatches(query: string): Promise<Match[]> {
 }
 
 export interface MatchesListFilters {
+  competitionScope?: "primary" | "experimental" | "all";
   competitionCode?: string;
   dateFrom?: string; // YYYY-MM-DD
   dateTo?: string;
@@ -241,6 +252,7 @@ export interface MatchesListFilters {
 // pagina de frontend que los expusiera todos juntos).
 export function getMatchesList(filters: MatchesListFilters = {}): Promise<Match[]> {
   const qs = new URLSearchParams();
+  if (filters.competitionScope) qs.set("competition_scope", filters.competitionScope);
   if (filters.competitionCode) qs.set("competition_code", filters.competitionCode);
   if (filters.dateFrom) qs.set("date_from", filters.dateFrom);
   if (filters.dateTo) qs.set("date_to", filters.dateTo);
@@ -662,7 +674,10 @@ export type ShadowReport = {
   bands: Record<string, [number, number]>;
   strategies: Record<string, ShadowEconomics & {
     common_quality: { n: number; brier: number | null; log_loss: number | null; brier_interval: [number, number] | null };
-    by_league: Record<string, ShadowEconomics>;
+    coverage: number | null;
+    by_scope: Record<string, ShadowEconomics>;
+    by_league: Record<string, ShadowEconomics & { fixtures: number; coverage: number;
+      common_quality: { brier: number | null; log_loss: number | null } }>;
     by_market: Record<string, ShadowEconomics>;
     by_odds: Record<string, ShadowEconomics>;
   }>;
@@ -676,9 +691,12 @@ export type ShadowReport = {
   }[];
 };
 
-export function getShadowReport(band = "principal", competition?: string) {
+export type ShadowFilters = { scope?: string; market?: string; strategy?: string; date_from?: string; date_to?: string };
+
+export function getShadowReport(band = "principal", competition?: string, filters: ShadowFilters = {}) {
   const params = new URLSearchParams({ band });
   if (competition) params.set("competition", competition);
+  for (const [key, value] of Object.entries(filters)) if (value) params.set(key, value);
   return apiFetch<ShadowReport>(`/publications/strategies?${params}`);
 }
 
@@ -769,4 +787,21 @@ export function getModelLearning() {
     metrics: Record<string, { matches: number; titular: Scores; candidate: Scores }>;
     history: { id: number; created_at: string; state: "in_service" | "inactive" | "legacy" }[];
   }[]>("/publications/learning");
+}
+
+
+export type CompetitionResearch = {
+  code: string; name: string; country: string; phase: number; api_id: number;
+  data_status: string; model_status: string; tracking_status: string; evaluation_status: string;
+  seasons: { season: string; fixtures: number; finished: number; goals: number; corners: number }[];
+  model: { id: number; version: string; validation: {
+    fit_before: string; evaluation_matches: number; corner_matches: number;
+    metrics: Record<string, { n: number; original: { brier: number; log_loss: number; ece: number };
+      calibrated?: { brier: number; log_loss: number; ece: number } }>;
+  } | null } | null;
+  quotes: number; captures: number; settled_captures: number;
+};
+
+export function getCompetitionResearch() {
+  return apiFetch<CompetitionResearch[]>("/competitions/research/status");
 }

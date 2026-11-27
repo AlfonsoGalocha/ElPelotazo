@@ -47,6 +47,7 @@ from backend.app.db.models.modeling import Prediction, PredictionResult
 from backend.app.features.goals import build_match_feature_table
 from backend.app.market.clv import compute_clv
 from backend.app.market.consensus import compute_market_consensus
+from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG
 from backend.app.prediction.eligibility import active_market, historical_evidence, stored_pre_kickoff
 from backend.app.prediction.market_labels import MARKET_DEFINITIONS, label_for_market
 from backend.app.prediction.uncertainty import wilson_interval
@@ -595,6 +596,10 @@ def market_track_records_with_provenance(
         .join(Match, Match.id == Prediction.match_id)
         .join(Competition, Competition.id == Match.competition_id)
     )
+    if competition_code in EXPERIMENTAL_CATALOG:
+        query = query.filter(Competition.code.in_(EXPERIMENTAL_CATALOG))
+    else:
+        query = query.filter(~Competition.code.in_(EXPERIMENTAL_CATALOG))
     by_exact: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
     by_tier: dict[tuple[str, str], list[tuple[bool, float]]] = defaultdict(list)
     by_market: dict[str, list[tuple[bool, float]]] = defaultdict(list)
@@ -730,6 +735,9 @@ def fit_edge_reliability_curve(db: Session) -> IsotonicRegression | None:
         .filter(Prediction.edge.isnot(None))
         .join(Match, Match.id == Prediction.match_id)
     )
+    query = query.filter(~Match.competition_id.in_(
+        db.query(Competition.id).filter(Competition.code.in_(EXPERIMENTAL_CATALOG))
+    ))
     rows = historical_evidence(query).all()
     if len(rows) < MIN_SETTLED_FOR_EDGE_RELIABILITY:
         return None
@@ -795,6 +803,9 @@ def fit_odds_reliability_curve(db: Session) -> IsotonicRegression | None:
         .filter(Prediction.market_odds.isnot(None))
         .join(Match, Match.id == Prediction.match_id)
     )
+    query = query.filter(~Match.competition_id.in_(
+        db.query(Competition.id).filter(Competition.code.in_(EXPERIMENTAL_CATALOG))
+    ))
     rows = historical_evidence(query).all()
     if len(rows) < MIN_SETTLED_FOR_ODDS_RELIABILITY:
         return None
@@ -861,6 +872,9 @@ def fit_longshot_calibration_curve(
         .filter(Prediction.market_odds >= odds_threshold)
         .join(Match, Match.id == Prediction.match_id)
     )
+    query = query.filter(~Match.competition_id.in_(
+        db.query(Competition.id).filter(Competition.code.in_(EXPERIMENTAL_CATALOG))
+    ))
     rows = historical_evidence(query).all()
     if len(rows) < MIN_SETTLED_FOR_LONGSHOT_CALIBRATION:
         return None

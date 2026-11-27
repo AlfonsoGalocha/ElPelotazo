@@ -248,7 +248,7 @@ def rolling_training_split(table):
     return table[table["date"] < boundary], table[table["date"] >= boundary]
 
 
-def train_competition_models(db: Session, competition_code: str, *, rolling=False, skip_unchanged=False, closed_result_ids=None, open_round_result_ids=None) -> dict:
+def train_competition_models(db: Session, competition_code: str, *, rolling=False, skip_unchanged=False, closed_result_ids=None, open_round_result_ids=None, fit_before=None) -> dict:
     """Entrena baseline + Dixon-Coles + clasificador ML para una competicion,
     evalua en la ultima temporada disponible como holdout, y persiste
     artefactos + ModelVersion. Devuelve un resumen (dict) del entrenamiento.
@@ -265,7 +265,7 @@ def train_competition_models(db: Session, competition_code: str, *, rolling=Fals
     if matches.empty:
         return {"competition": competition_code, "status": "insufficient_data", "n_matches": 0}
     finished = matches[
-        (matches["status"] == "finished") & (matches["date"] < observed_at)
+        (matches["status"] == "finished") & (matches["date"] < (fit_before or observed_at))
     ].dropna(subset=["home_goals", "away_goals"])
     if rolling:
         finished = finished[(finished["home_goals"] >= 0) & (finished["away_goals"] >= 0)]

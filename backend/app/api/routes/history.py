@@ -121,7 +121,11 @@ def list_history(
     ),
     db: Session = Depends(get_db),
 ) -> list[dict]:
+    from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG
+
     query = db.query(Match).filter(Match.status == "finished")
+    if competition_code is None:
+        query = query.filter(~Match.competition.has(Competition.code.in_(EXPERIMENTAL_CATALOG)))
     if competition_code:
         competition = db.query(Competition).filter_by(code=competition_code).one_or_none()
         if competition is None:
