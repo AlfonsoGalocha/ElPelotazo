@@ -826,10 +826,15 @@ def test_prediction_detail_endpoint_shows_bookmaker_breakdown_and_explanation(se
             away_team_raw="IntegrationTeam2",
             commence_time=match.kickoff_utc.replace(tzinfo=dt.timezone.utc),
             odds=[
-                RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
-                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.95),
-                RawOddsRecord("pinnacle", "over_under_goals", 2.5, "over", 1.85),
-                RawOddsRecord("pinnacle", "over_under_goals", 2.5, "under", 2.00),
+                # Dentro de la banda de oportunidad por defecto (1.30-1.80,
+                # ver Settings.min/max_opportunity_odds): este partido lo
+                # reutilizan tests mas adelante en el archivo (via
+                # `_two_valid_predictions_from_distinct_matches`) que
+                # dependen de que su `market_odds` pase el filtro real.
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.70),
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.75),
+                RawOddsRecord("pinnacle", "over_under_goals", 2.5, "over", 1.65),
+                RawOddsRecord("pinnacle", "over_under_goals", 2.5, "under", 1.80),
             ],
         )
         attach_odds_to_scheduled_matches(db, _FakeOddsProvider([snapshot]), seeded_competition_code)
@@ -950,8 +955,11 @@ def test_top_signals_default_window_excludes_far_future_matches(seeded_competiti
             away_team_raw="IntegrationTeam4",
             commence_time=far_kickoff.replace(tzinfo=dt.timezone.utc),
             odds=[
-                RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
-                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.85),
+                # Dentro de la banda de oportunidad por defecto (1.30-1.80)
+                # y con margen suficiente para que `_force_positive_ev`
+                # (calibrada 0.65/0.60 fijas) de EV conservador positivo.
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.78),
+                RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.78),
             ],
         )
         attach_odds_to_scheduled_matches(db, _FakeOddsProvider([snapshot]), seeded_competition_code)
@@ -1035,8 +1043,10 @@ def test_top_signals_default_scope_excludes_next_round_even_with_higher_edge(see
                 away_team_raw="IntegrationTeam6",
                 commence_time=current_round_kickoff.replace(tzinfo=dt.timezone.utc),
                 odds=[
-                    RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
-                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.85),
+                    # Dentro de la banda de oportunidad por defecto
+                    # (1.30-1.80) y con margen para `_force_positive_ev`.
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.78),
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.78),
                 ],
             ),
             FixtureOddsSnapshot(
@@ -1044,8 +1054,8 @@ def test_top_signals_default_scope_excludes_next_round_even_with_higher_edge(see
                 away_team_raw="IntegrationTeam8",
                 commence_time=next_round_kickoff.replace(tzinfo=dt.timezone.utc),
                 odds=[
-                    RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.90),
-                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.85),
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "over", 1.78),
+                    RawOddsRecord("bet365", "over_under_goals", 2.5, "under", 1.78),
                 ],
             ),
         ]
@@ -1566,8 +1576,8 @@ def test_ranking_config_band_is_actually_applied_to_top_signals(seeded_competiti
     default_config = client.get("/config/ranking")
     assert default_config.status_code == 200
     default_body = default_config.json()
-    assert default_body["min_opportunity_odds"] == pytest.approx(1.35)
-    assert default_body["max_opportunity_odds"] == pytest.approx(1.90)
+    assert default_body["min_opportunity_odds"] == pytest.approx(1.30)
+    assert default_body["max_opportunity_odds"] == pytest.approx(1.80)
 
     fixture_date = (dt.datetime.utcnow() + dt.timedelta(days=20)).date()
     with session_scope() as db:
@@ -1628,7 +1638,7 @@ def test_ranking_config_band_is_actually_applied_to_top_signals(seeded_competiti
 
     window_params = {"limit": 100, "days": 30, "scope": "all_upcoming"}
     try:
-        # Con el default (1.35-1.90), la cuota real del partido (1.70)
+        # Con el default (1.30-1.80), la cuota real del partido (1.70)
         # esta DENTRO de la banda: debe aparecer.
         with_default_band = client.get("/predictions/top-signals", params=window_params)
         assert with_default_band.status_code == 200
@@ -1638,9 +1648,9 @@ def test_ranking_config_band_is_actually_applied_to_top_signals(seeded_competiti
         # (nunca una banda inventada: se calcula justo por debajo de la
         # cuota real del partido, para que el cambio sea deterministico).
         narrow_max = round(market_odds - 0.05, 2)
-        assert narrow_max > 1.35
+        assert narrow_max > 1.30
         put_response = client.put(
-            "/config/ranking", json={"min_opportunity_odds": 1.35, "max_opportunity_odds": narrow_max}
+            "/config/ranking", json={"min_opportunity_odds": 1.30, "max_opportunity_odds": narrow_max}
         )
         assert put_response.status_code == 200
         assert put_response.json()["max_opportunity_odds"] == pytest.approx(narrow_max)
@@ -1653,9 +1663,9 @@ def test_ranking_config_band_is_actually_applied_to_top_signals(seeded_competiti
     finally:
         # Nunca dejar un estado global (RankingConfig es una fila UNICA)
         # que contamine el resto de tests de este modulo, que asumen la
-        # banda por defecto (1.35-1.90).
+        # banda por defecto (1.30-1.80).
         reset_response = client.put(
-            "/config/ranking", json={"min_opportunity_odds": 1.35, "max_opportunity_odds": 1.90}
+            "/config/ranking", json={"min_opportunity_odds": 1.30, "max_opportunity_odds": 1.80}
         )
         assert reset_response.status_code == 200
 
@@ -1670,8 +1680,8 @@ def test_ranking_config_put_rejects_an_invalid_band(seeded_competition_code):
 
     # El rechazo no debe haber dejado nada a medias guardado.
     unchanged = client.get("/config/ranking")
-    assert unchanged.json()["min_opportunity_odds"] == pytest.approx(1.35)
-    assert unchanged.json()["max_opportunity_odds"] == pytest.approx(1.90)
+    assert unchanged.json()["min_opportunity_odds"] == pytest.approx(1.30)
+    assert unchanged.json()["max_opportunity_odds"] == pytest.approx(1.80)
 
 
 def test_odds_diagnostics_endpoint_reports_the_latest_real_ingestion_attempts():

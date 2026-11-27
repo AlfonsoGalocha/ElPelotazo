@@ -17,6 +17,13 @@ from backend.app.services.ranking_config_service import (
 
 
 def test_get_opportunity_odds_band_defaults_to_settings_when_nothing_was_saved(db_session):
+    # `RankingConfig` es una fila UNICA compartida por TODA la BD de test
+    # (incluida la real, no transaccional, que usan los tests de
+    # integracion vía `/config/ranking`) -- sin este borrado explicito,
+    # una fila guardada por otro modulo en una ejecucion de la suite
+    # COMPLETA haria que este test leyera esa preferencia en vez de "nada
+    # guardado todavia" (mismo patron defensivo que el test de abajo).
+    db_session.query(RankingConfig).delete()
     settings = Settings(min_opportunity_odds=1.35, max_opportunity_odds=1.90)
     min_odds, max_odds = get_opportunity_odds_band(db_session, settings)
     assert (min_odds, max_odds) == (1.35, 1.90)
