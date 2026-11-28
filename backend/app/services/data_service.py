@@ -18,9 +18,11 @@ from backend.app.ingestion.base import (
 )
 from backend.app.ingestion.odds.provider import OddsApiProvider
 from backend.app.normalization.bookmakers import canonical_bookmaker, is_excluded_bookmaker
-from backend.app.normalization.competitions import EXPERIMENTAL_CATALOG, resolve_competition_id, resolve_season_id
+from backend.app.normalization.competitions import (
+    API_CANDIDATE_COMPETITIONS, EXPERIMENTAL_CATALOG, PRIMARY_COMPETITIONS,
+    resolve_competition_id, resolve_season_id,
+)
 from backend.app.normalization.players import resolve_referee_id
-from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS
 from backend.app.normalization.teams import is_excluded_team, resolve_team_id
 from backend.app.services.provider_response_service import archive_raw_responses
 from backend.app.services.standings_service import snapshot_standings
@@ -29,7 +31,7 @@ from backend.app.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def _update_team_logo(db: Session, team_id: int, logo_url: str | None) -> None:
+def _update_team_logo(db: Session, team_id: int, logo_url: str | None, *, experimental: bool = False) -> None:
     """Guarda el escudo real de un equipo si la fuente lo trae (ver
     `RawMatchRecord.home_logo_url`/`away_logo_url`, hoy solo API-Football).
 
@@ -42,8 +44,20 @@ def _update_team_logo(db: Session, team_id: int, logo_url: str | None) -> None:
     if not logo_url:
         return
     team = db.get(Team, team_id)
-    if team is not None and team.logo_url != logo_url:
-        team.logo_url = logo_url
+    if team is None or team.logo_url == logo_url:
+        return
+    if experimental:
+        if team.logo_url:
+            return
+        from sqlalchemy import or_
+
+        primary_match = db.query(Match.id).join(Competition).filter(
+            Competition.code.in_(PRIMARY_COMPETITIONS),
+            or_(Match.home_team_id == team_id, Match.away_team_id == team_id),
+        ).first()
+        if primary_match:
+            return
+    team.logo_url = logo_url
 
 
 def _archive_if_api_football(db: Session, provider: object, operation: str, competition_code: str | None) -> None:
@@ -195,9 +209,9 @@ def _find_absorbable_duplicate(
 def _upsert_match(db: Session, record: RawMatchRecord, competition_id: int, season_id: int) -> Match:
     home_team_id = resolve_team_id(db, record.provider, record.home_team_raw)
     away_team_id = resolve_team_id(db, record.provider, record.away_team_raw)
-    if record.competition_code not in EXPERIMENTAL_CATALOG:
-        _update_team_logo(db, home_team_id, record.home_logo_url)
-        _update_team_logo(db, away_team_id, record.away_logo_url)
+    experimental = record.competition_code in EXPERIMENTAL_CATALOG
+    _update_team_logo(db, home_team_id, record.home_logo_url, experimental=experimental)
+    _update_team_logo(db, away_team_id, record.away_logo_url, experimental=experimental)
     referee_id = resolve_referee_id(db, record.referee_raw)
     # Bug real reportado por el usuario: API-Football da `fixture.date` CON
     # offset (p.ej. "2026-10-05T14:00:00+00:00"), a diferencia de

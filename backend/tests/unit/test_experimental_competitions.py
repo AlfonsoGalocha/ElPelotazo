@@ -12,6 +12,7 @@ from backend.app.normalization.competitions import PRIMARY_COMPETITIONS, resolve
 from backend.app.services import bot_bankroll
 from backend.app.services.promotion_service import evaluate_and_promote
 from backend.app.services.strategy_shadow import WEIGHTS, capture_strategy_due, strategy_report
+from backend.app.services.today_preview import build_today_previews
 
 
 def test_experimental_fixture_is_visible_only_in_its_scope_and_never_in_official_decisions(db_session):
@@ -22,7 +23,8 @@ def test_experimental_fixture_is_visible_only_in_its_scope_and_never_in_official
     teams = [Team(canonical_name=f"Research isolation {side}") for side in ("home", "away")]
     season = Season(competition_id=competition_id, label="2099/00")
     version = ModelVersion(name="research", version="r1", market_family="goals", features=[],
-                           hyperparameters={}, metrics={}, dataset_version="championship:1_matches", is_active=False)
+                           hyperparameters={}, metrics={}, dataset_version="championship:1_matches", is_active=False,
+                           created_at=now - dt.timedelta(days=1))
     db.add_all([*teams, season, version])
     db.flush()
     match = Match(provider="test", provider_id="experimental-isolation", competition_id=competition_id,
@@ -49,7 +51,16 @@ def test_experimental_fixture_is_visible_only_in_its_scope_and_never_in_official
     with pytest.raises(ValueError, match="competiciones principales"):
         bot_bankroll.record_manual_ticket(db, quote.id, 100)
     assert not evaluate_and_promote(db, "championship", version)["promoted"]
+    preview = build_today_previews(db, [match], now)[match.id]
+    assert preview["experimental_forecast"] == {"market": "over_2_5", "probability": .68}
+    assert preview["opportunity"] is None
 
+    from backend.app.services.strategy_operations import operations_report
+
+    assert operations_report(db, now, scope="experimental")["upcoming"][0]["reason"] == "pending_analysis"
+    preview = capture_strategy_due(db, now, experimental=True, preview_match_ids=[match.id])[match.id]
+    assert preview["predictions"] == 1 and len(preview["decision_reasons"]) == 48
+    assert db.get(StrategyCapture, match.id) is None
     assert capture_strategy_due(db, now) == 0
     assert capture_strategy_due(db, now, experimental=True) == 1
     saved = db.get(StrategyCapture, match.id)

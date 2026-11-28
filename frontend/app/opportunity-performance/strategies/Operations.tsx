@@ -10,18 +10,18 @@ const reasons: Record<string, string> = {
   before_deployment: "El laboratorio aún no estaba desplegado",
   no_recorded_scan: "Sin comprobación registrada durante la ventana",
   scan_failed: "Fallaron las comprobaciones registradas durante la ventana",
-  unknown: "Causa sin confirmar", no_prediction: "Sin pronóstico prepartido",
+  pending_analysis: "Pendiente de analizar", unknown: "Causa sin confirmar", no_prediction: "Sin pronóstico prepartido",
   no_valid_quotes: "Sin cuota verificable", no_eligible_market: "Sin mercado elegible", captured: "Corte registrado",
 };
 const date = (timestamp: string | null) => timestamp ? formatMatchDateTime(timestamp, {
   day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
 }) : "Sin registro";
 
-export default function Operations({ report }: { report: ShadowOperations }) {
+export default function Operations({ report, title }: { report: ShadowOperations; title: string }) {
   const { next_capture: next } = report;
   return (
     <section className="space-y-3 rounded-lg border border-surface-border bg-card p-4">
-      <h2 className="font-semibold">Estado operativo</h2>
+      <h2 className="font-semibold">Estado operativo · {title}</h2>
       <p className="text-sm text-slate-300">{states[report.status] ?? report.status} · {report.scheduler_active ? "Scheduler activo" : "Sin actividad reciente"}</p>
       <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
         {[
@@ -38,7 +38,7 @@ export default function Operations({ report }: { report: ShadowOperations }) {
         <details key={label} className="border-t border-surface-border pt-2 text-sm">
           <summary className="cursor-pointer">{label} · {rows.length}</summary>
           <ul className="mt-2 max-h-56 space-y-1 overflow-auto text-slate-400">
-            {rows.map(row => <li key={row.match_id}>{row.match} · {date(row.captured_at ?? row.kickoff)}{row.reason ? ` · ${reasons[row.reason] ?? row.reason}` : ""}{row.selections != null ? ` · ${row.selections} estrategias con selección` : ""}</li>)}
+            {rows.map(row => <li key={row.match_id}>{row.match} · {date(row.captured_at ?? row.kickoff)}{row.reason ? ` · ${reasons[row.reason] ?? row.reason}` : ""}{row.selections != null ? ` · ${row.selections} estrategias con selección` : ""}{row.match_status === "finished" ? " · Partido finalizado" : ""}</li>)}
           </ul>
         </details>
       ))}

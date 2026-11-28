@@ -702,7 +702,7 @@ export function getShadowReport(band = "principal", competition?: string, filter
 
 type ShadowOperationalFixture = {
   match_id: number; match: string; league: string; kickoff: string; window_opens: string;
-  reason?: string; captured_at?: string; selections?: number;
+  reason?: string; captured_at?: string; selections?: number; match_status?: string;
 };
 
 export type ShadowOperations = {
@@ -716,8 +716,8 @@ export type ShadowOperations = {
   calibrations: { id: number; dataset: string; reason: string }[];
 };
 
-export function getShadowOperations() {
-  return apiFetch<ShadowOperations>("/publications/strategies/operations");
+export function getShadowOperations(scope: "primary" | "experimental" = "primary") {
+  return apiFetch<ShadowOperations>(`/publications/strategies/operations?scope=${scope}`);
 }
 
 export type MatchPreview = {
@@ -760,6 +760,7 @@ export type TodayForecast = {
 };
 
 export type TodayPreview = {
+  experimental_forecast?: { market: string; probability: number } | null;
   forecast: TodayForecast | null;
   forecast_unavailable_reason: string | null;
   opportunity: (ChampionsPreviewPick & { ev: number; quote_age_minutes: number }) | null;

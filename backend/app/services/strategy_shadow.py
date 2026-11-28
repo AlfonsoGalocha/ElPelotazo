@@ -110,7 +110,7 @@ def choose(candidates, strategy, band, minimum):
     return {**record, "probability": probability, "ev": ev_plus_one-1, "score": score}
 
 
-def capture_strategy_due(db, now=None, *, experimental=False):
+def capture_strategy_due(db, now=None, *, experimental=False, preview_match_ids=None):
     from backend.app.services.model_service import load_model_artifact
     from backend.app.services.prediction_service import (
         ALL_MARKET_TO_ODDS_LOOKUP as lookup, _market_line_and_selection, score_api_candidate, score_champions_candidate, shadow_result_forecasts,
@@ -143,9 +143,15 @@ def capture_strategy_due(db, now=None, *, experimental=False):
 
     due = db.query(Match).join(Competition).filter(
         Competition.code.in_(EXPERIMENTAL_COMPETITIONS if experimental else LEAGUES), Match.status == "scheduled",
-        Match.kickoff_utc > cutoff, Match.kickoff_utc <= cutoff + dt.timedelta(hours=1),
-        ~Match.id.in_(db.query(StrategyCapture.match_id)),
-    ).all()
+        Match.kickoff_utc > cutoff,
+    )
+    if preview_match_ids is None:
+        due = due.filter(Match.kickoff_utc <= cutoff + dt.timedelta(hours=1),
+                         ~Match.id.in_(db.query(StrategyCapture.match_id)))
+    else:
+        due = due.filter(Match.id.in_(preview_match_ids))
+    due = due.all()
+    previews = {}
     insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
     captured = 0
     candidate_rows = defaultdict(dict)
@@ -240,6 +246,12 @@ def capture_strategy_due(db, now=None, *, experimental=False):
         }
         reason = ("no_prediction" if not predictions else "no_valid_quotes" if not candidates else
                   "no_eligible_market" if not any(value is not None for value in decisions.values()) else "captured")
+        if preview_match_ids is not None:
+            previews[match.id] = {
+                "predictions": len(predictions), "verified_quotes": len(quotes),
+                "candidates": len(candidates), "reason": reason, "decision_reasons": passes,
+            }
+            continue
         # Give the regular refresh another chance when its inputs are absent.
         if reason in ("no_prediction", "no_valid_quotes") and match.kickoff_utc-cutoff > dt.timedelta(minutes=15):
             continue
@@ -269,9 +281,9 @@ def capture_strategy_due(db, now=None, *, experimental=False):
                      "minimum": minimum, "max_age_minutes": max_age, "universe": len(predictions),
                      "candidate_count": len(candidates), "bands": BANDS, "reason": reason,
                      "common": list(common.values()), "decisions": decisions, "decision_reasons": passes, **research},
-        ).on_conflict_do_nothing(index_elements=["match_id"]))
-        captured += result.rowcount or 0
-    return captured
+        ).on_conflict_do_nothing(index_elements=["match_id"]).returning(StrategyCapture.match_id))
+        captured += result.scalar_one_or_none() is not None
+    return captured if preview_match_ids is None else previews
 
 
 def _probability_metrics(pairs):

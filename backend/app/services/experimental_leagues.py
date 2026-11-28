@@ -55,6 +55,7 @@ def refresh_live_odds(db, code, *, limit=12):
     from backend.app.ingestion.api_football.odds_provider import ApiFootballOddsProvider
     from backend.app.ingestion.base import FixtureOddsSnapshot
     from backend.app.services.data_service import _archive_if_api_football, _attach_odds_snapshots
+    from backend.app.services.odds_diagnostics_service import record_ingestion_run
 
     provider = ApiFootballOddsProvider()
     now = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -82,7 +83,11 @@ def refresh_live_odds(db, code, *, limit=12):
                 match.kickoff_utc, rows, match.provider_id, frozenset(suspended),
             ))
     _archive_if_api_football(db, provider, "experimental_odds", code)
-    return _attach_odds_snapshots(db, snapshots, provider.name, competition.id, "experimental_odds").matched
+    result = _attach_odds_snapshots(db, snapshots, provider.name, competition.id, "experimental_odds")
+    record_ingestion_run(db, provider.name, "experimental_odds", code, now,
+                         datetime.now(timezone.utc).replace(tzinfo=None),
+                         fixtures_fetched=len(fixtures), matched=result.matched)
+    return result.matched
 
 
 def refresh_experiment(db, code, *, historical=False, batches=1):

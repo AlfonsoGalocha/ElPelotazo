@@ -6,7 +6,7 @@ from sqlalchemy import or_
 
 from backend.app.db.models.core import Competition, ProviderResponse, Season
 from backend.app.db.models.matches import Match, MatchStatistics
-from backend.app.normalization.competitions import CHAMPIONS_LEAGUE, LIGA_F
+from backend.app.normalization.competitions import CHAMPIONS_LEAGUE, EXPERIMENTAL_COMPETITIONS, LIGA_F
 from backend.app.services.data_service import _archive_if_api_football
 from backend.app.utils.dates import season_label
 
@@ -37,14 +37,18 @@ def regulation_statistics(payload):
 
 
 def refresh_champions_statistics(db, provider, batches, competition=CHAMPIONS_LEAGUE):
-    operation = f"update_{competition.removesuffix('_league')}_statistics"
+    operation = (
+        "experimental_statistics" if competition in EXPERIMENTAL_COMPETITIONS
+        else f"update_{competition.removesuffix('_league')}_statistics"
+    )
     if not provider.is_available():
         return 0
     recent = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=7)
     tried = {
         f"api-football-{fixture_id}"
         for (params,) in db.query(ProviderResponse.params).filter(
-            ProviderResponse.operation == operation, ProviderResponse.fetched_at >= recent,
+            ProviderResponse.operation == operation, ProviderResponse.competition_code == competition,
+            ProviderResponse.fetched_at >= recent,
         )
         for fixture_id in str(params.get("ids", "")).split("-") if fixture_id.isdigit()
     }

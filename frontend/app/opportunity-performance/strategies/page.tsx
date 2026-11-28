@@ -30,13 +30,14 @@ const num = (n: number | null) => n === null ? "—" : n.toFixed(3);
 const money = (n: number) => euros.format(n / 100);
 
 export default async function StrategiesPage({ searchParams }: { searchParams: { band?: string; competition?: string; scope?: string; market?: string; strategy?: string; date_from?: string; date_to?: string } }) {
-  const [report, operations, competitions] = await Promise.all([
+  const [report, operations, competitions, experimentalOperations] = await Promise.all([
     getShadowReport(searchParams.band, searchParams.competition, {
       scope: searchParams.scope, market: searchParams.market, strategy: searchParams.strategy,
       date_from: searchParams.date_from, date_to: searchParams.date_to,
     }).catch(() => null),
-    getShadowOperations().catch(() => null),
+    getShadowOperations(searchParams.scope === "experimental" ? "experimental" : "primary").catch(() => null),
     getCompetitions().catch(() => []),
+    searchParams.scope === "all" ? getShadowOperations("experimental").catch(() => null) : null,
   ]);
   const filtersForBand = (band: string) => new URLSearchParams(
     Object.entries({ ...searchParams, band }).filter((entry): entry is [string, string] => Boolean(entry[1])),
@@ -50,7 +51,8 @@ export default async function StrategiesPage({ searchParams }: { searchParams: {
         <p>La estrategia activa de la app funciona por separado.</p>
         <p><Link className="text-accent underline" href="/model#acierto">Ver la jornada anterior y la simulación retrospectiva de 10 €</Link></p>
       </div>
-      {operations ? <Operations report={operations} /> : <p className="text-sm text-slate-400">Estado operativo temporalmente no disponible.</p>}
+      {operations ? <Operations report={operations} title={searchParams.scope === "experimental" ? "Experimentales" : "Principales"} /> : <p className="text-sm text-slate-400">Estado operativo temporalmente no disponible.</p>}
+      {experimentalOperations && <Operations report={experimentalOperations} title="Experimentales" />}
       {!report ? <p>No se pudo consultar la comparación.</p> : (
         <>
           <form action="/opportunity-performance/strategies" className="flex flex-wrap items-center gap-2 text-sm">

@@ -3,8 +3,10 @@
 from collections import defaultdict
 from math import isclose, isfinite
 
+from sqlalchemy import and_, or_
+
 from backend.app.config.settings import get_settings
-from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS, CHAMPIONS_LEAGUE
+from backend.app.normalization.competitions import API_CANDIDATE_COMPETITIONS, CHAMPIONS_LEAGUE, EXPERIMENTAL_COMPETITIONS
 from backend.app.normalization.bookmakers import is_excluded_bookmaker
 
 from backend.app.db.models.modeling import ModelVersion, Prediction
@@ -107,11 +109,16 @@ def build_today_previews(db, fixtures, now):
     for match in fixtures:
         groups[match.competition.code].append(match)
     domestic_ids = [match.id for match in fixtures if match.competition.code not in API_CANDIDATE_COMPETITIONS]
+    experimental_ids = [match.id for match in fixtures if match.competition.code in EXPERIMENTAL_COMPETITIONS]
     domestic = defaultdict(dict)
     if domestic_ids:
         saved = (db.query(Prediction).join(ModelVersion)
                  .filter(Prediction.match_id.in_(domestic_ids), Prediction.created_at <= now,
-                         ModelVersion.created_at <= now, ModelVersion.is_active.isnot(False))
+                         ModelVersion.created_at <= now,
+                         or_(
+                             and_(Prediction.match_id.in_(experimental_ids), ModelVersion.is_active.is_(False)),
+                             and_(~Prediction.match_id.in_(experimental_ids), ModelVersion.is_active.isnot(False)),
+                         ))
                  .order_by(Prediction.created_at.desc(), Prediction.id.desc()))
         for row in saved:
             domestic[row.match_id].setdefault(row.market, row)
@@ -156,7 +163,20 @@ def build_today_previews(db, fixtures, now):
                 failure = ("error_tecnico" if technical_failure else
                            "sin_candidato_informativo" if match_rows else
                            "sin_prediccion_disponible" if has_model else "sin_modelo_valido")
+            experimental_forecast = None
+            if code in EXPERIMENTAL_COMPETITIONS:
+                probabilities = [
+                    (row.calibrated_probability if row.calibrated_probability is not None else row.model_probability,
+                     row.market)
+                    for row in match_rows
+                ]
+                valid = [(p, market) for p, market in probabilities if valid_probability(p) and 0 < p < 1]
+                if valid:
+                    probability, market = max(valid)
+                    experimental_forecast = {"market": market, "probability": probability}
+                picks.pop(match.id, None)
             result[match.id] = {
+                "experimental_forecast": experimental_forecast,
                 "forecast": info, "opportunity": picks.get(match.id), "forecast_unavailable_reason": failure,
                 "counts": {
                     "evaluated": len(checks),

@@ -634,17 +634,24 @@ def experimental_refresh(
 
     if competition and competition not in EXPERIMENTAL_COMPETITIONS:
         raise typer.BadParameter("Competición fuera de la primera fase experimental")
+    failed = False
     for code in (competition,) if competition else EXPERIMENTAL_COMPETITIONS:
-        with session_scope() as db:
-            typer.echo(json.dumps(refresh_experiment(db, code, historical=historical, batches=batches), default=str))
+        try:
+            with session_scope() as db:
+                report = refresh_experiment(db, code, historical=historical, batches=batches)
+            typer.echo(json.dumps(report, default=str))
+        except Exception as exc:
+            typer.echo(f"[experimental-refresh] {code}: {type(exc).__name__}", err=True)
+            failed = True
+    if failed:
+        raise typer.Exit(code=1)
 
 
 @app.command("capture-experimental-strategies")
 def capture_experimental_strategies() -> None:
-    from backend.app.services.strategy_shadow import capture_strategy_due
+    from backend.app.services.strategy_operations import run_strategy_scan
 
-    with session_scope() as db:
-        count = capture_strategy_due(db, experimental=True)
+    count = run_strategy_scan(experimental=True)
     typer.echo(f"[capture-experimental-strategies] {count} cortes registrados")
 
 

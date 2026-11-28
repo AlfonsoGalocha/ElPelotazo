@@ -89,6 +89,7 @@ class StrategyScan(Base):
     ok: Mapped[bool]
     captures: Mapped[int | None]
     error_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    competition_scope: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
 class ModelComparisonCut(Base):

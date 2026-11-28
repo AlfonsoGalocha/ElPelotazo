@@ -259,10 +259,11 @@ def strategies(
 
 
 @router.get("/strategies/operations")
-def strategies_operations(db: Session = Depends(get_db)):
+def strategies_operations(scope: str = Query("primary", pattern="^(primary|experimental)$"),
+                          db: Session = Depends(get_db)):
     from backend.app.services.strategy_operations import operations_report
 
-    return operations_report(db)
+    return operations_report(db, scope=scope)
 
 
 @router.get("/learning")

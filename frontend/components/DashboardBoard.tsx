@@ -36,6 +36,12 @@ const percent = (value: number) => `${(value * 100).toFixed(1)} %`;
 
 function PreviewDetails({ preview }: { preview: TodayPreview }) {
   const { forecast, opportunity, counts, markets, sensitivity } = preview;
+  if (preview.experimental_forecast) {
+    const { market, probability } = preview.experimental_forecast;
+    return <p className="px-3 pb-3 text-xs text-slate-300">
+      <span className="text-amber-300">Pronóstico experimental</span> · {label(market)} · {percent(probability)}
+    </p>;
+  }
   const countsLabels: Record<string, string> = {
     evaluated: "Evaluados", with_price: "Con cuota", minimum_probability: "Probabilidad ≥65 %",
     price_in_band: "Cuota en rango", current_price_in_band: "Cuota vigente en rango",
